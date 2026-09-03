@@ -98,6 +98,9 @@ struct RosterView: View {
         if let rosterError = error as? RosterError {
             return rosterError.message
         }
+        if let socketError = error as? RosterSocketError {
+            return socketError.message
+        }
         return error.localizedDescription
     }
 

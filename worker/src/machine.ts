@@ -63,13 +63,36 @@ export class MachineDO extends DurableObject {
     this.ctx.acceptWebSocket(pair[1]);
     // Attachments survive hibernation; an in-memory Set would not.
     pair[1].serializeAttachment({ role });
+    if (role === "watcher") {
+      // Without this, a watcher sees nothing until some Mac's state next
+      // changes — an hour-old snapshot reads as current, and a machine
+      // first appearing while the app is open sits blank indefinitely.
+      // Only this one new socket needs it; broadcast() is for an actual
+      // state change reaching every existing watcher.
+      const snapshot = this.currentSnapshot();
+      if (snapshot) {
+        try {
+          pair[1].send(JSON.stringify(snapshot));
+        } catch {
+          // The socket can't plausibly be gone already; matches broadcast()'s guard.
+        }
+      }
+    }
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
 
   webSocketMessage(_ws: WebSocket, message: string | ArrayBuffer): void {
     if (typeof message !== "string") return;
-    const parsed = JSON.parse(message) as MachineSnapshot;
-    this.applySnapshot(parsed);
+    const parsed = JSON.parse(message) as Partial<MachineSnapshot>;
+    // Narrow shape check, not a schema validator: a malformed publish must
+    // not be persisted and served back to the phone, where — until the
+    // RosterSocket fix — an undecodable frame permanently ended that
+    // machine's watch socket.
+    if (typeof parsed.machineId !== "string" || parsed.machineId.length === 0 || !Array.isArray(parsed.panes)) {
+      console.error("rejected publish: malformed snapshot shape");
+      return;
+    }
+    this.applySnapshot(parsed as MachineSnapshot);
     this.broadcast();
   }
 

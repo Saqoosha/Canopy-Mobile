@@ -121,6 +121,13 @@ struct CanopyMobileApp: App {
             socket.connect(machine: id) { snapshot in
                 snapshots[id] = snapshot
                 errors[id] = nil
+            } onFailure: { error in
+                // The receive loop has stopped for this machine — surface it
+                // through the same `errors` slot `refresh()` uses, so the
+                // section says its live connection dropped instead of
+                // silently keeping the last snapshot on screen with the
+                // elapsed counter still ticking as though nothing happened.
+                errors[id] = error
             }
         }
     }

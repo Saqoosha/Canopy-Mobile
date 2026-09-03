@@ -14,6 +14,17 @@ function authorized(request: Request, env: Env): boolean {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    // A missing/empty SHARED_SECRET makes `Bearer ${env.SHARED_SECRET}`
+    // compare against the literal "Bearer undefined" (or "Bearer "), which a
+    // deployed-but-unconfigured worker would then accept from anyone. Fail
+    // closed instead of silently serving every request as authorized.
+    if (!env.SHARED_SECRET) {
+      console.error("relay misconfigured: SHARED_SECRET binding is missing or empty");
+      return new Response(JSON.stringify({ error: "relay misconfigured: SHARED_SECRET not set" }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     if (!authorized(request, env)) {
       return new Response(JSON.stringify({ error: "unauthorized" }), {
         status: 401,

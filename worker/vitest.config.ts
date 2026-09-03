@@ -9,10 +9,19 @@
 import { defineConfig } from "vitest/config";
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 
+// SHARED_SECRET is bound only here, for the test pool — it has no `[vars]`
+// entry in wrangler.toml and no `.dev.vars`, on purpose (it's a real secret
+// in production, set via `wrangler secret put`). Without this binding
+// `env.SHARED_SECRET` is undefined in every test, and comparing against
+// `Bearer ${undefined}` would pass with no secret configured at all — see
+// index.test.ts's TEST_SHARED_SECRET constant, which must match this value.
 export default defineConfig({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./wrangler.toml" },
+      miniflare: {
+        bindings: { SHARED_SECRET: "test-secret" },
+      },
     }),
   ],
 });

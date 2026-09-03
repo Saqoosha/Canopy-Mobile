@@ -12,6 +12,10 @@ struct RosterView: View {
         // `stateSince` from a later refresh could land ahead of.
         TimelineView(.periodic(from: .now, by: 1)) { context in
             List {
+                if let accountQuotaText {
+                    Text(accountQuotaText)
+                        .font(.subheadline.weight(.semibold))
+                }
                 if let directoryError {
                     Section {
                         Text(message(for: directoryError))
@@ -33,9 +37,21 @@ struct RosterView: View {
         }
     }
 
-    /// Sorted by `displayName` — a Mac at 95% quota and one at 2% are
-    /// different places to start work, and the header is where that shows.
-    /// A machine with no snapshot yet sorts by its raw id instead.
+    /// Rate limits are per-account, not per-Mac (`SharedRateLimitData`'s own
+    /// doc comment on the Canopy side) — two Macs signed into the same
+    /// account report identical figures, so showing it under every
+    /// machine's header only doubled the number and let a stale Mac's
+    /// event make it look like the two disagreed. Shown once here, taken
+    /// from the freshest loaded snapshot (`accountQuotaText`) so a Mac that
+    /// hasn't reported in a while can't supply it.
+    private var accountQuotaText: String? {
+        guard let newest = snapshots.values.max(by: { $0.publishedAt < $1.publishedAt }) else { return nil }
+        return "5h \(newest.sessionPct)% · wk \(newest.weeklyPct)%"
+    }
+
+    /// Sorted by `displayName` so the list doesn't reorder itself as each
+    /// header's elapsed-time text ticks. A machine with no snapshot yet
+    /// sorts by its raw id instead.
     private var sortedMachineIds: [String] {
         machineIds.sorted { lhs, rhs in
             let lname = snapshots[lhs]?.displayName ?? lhs
@@ -65,13 +81,28 @@ struct RosterView: View {
                     .foregroundStyle(.red)
             }
         } header: {
-            Text(headerText(id: id, snapshot: snapshot))
+            Text(headerText(id: id, snapshot: snapshot, now: now))
         }
+        // Canopy publishes on every state change, so silence past the
+        // threshold means the Mac went to sleep or is gone — not that
+        // nothing happened. Greyed out so a shut-down Mac can't be
+        // mistaken for one that's merely idle.
+        .opacity(isStale(snapshot: snapshot, now: now) ? 0.35 : 1)
     }
 
-    private func headerText(id: String, snapshot: MachineSnapshot?) -> String {
+    private func headerText(id: String, snapshot: MachineSnapshot?, now: Date) -> String {
         guard let snapshot else { return id }
-        return "\(snapshot.displayName) — 5h \(snapshot.sessionPct)% · wk \(snapshot.weeklyPct)%"
+        return "\(snapshot.displayName) — \(elapsed(since: snapshot.publishedAt, now: now)) ago"
+    }
+
+    /// A Mac is presumed asleep or gone once its last publish is older than
+    /// this. Canopy republishes on every pane state change, so five minutes
+    /// of silence is not a quiet Mac — it is one that stopped publishing.
+    private static let staleThreshold: TimeInterval = 5 * 60
+
+    private func isStale(snapshot: MachineSnapshot?, now: Date) -> Bool {
+        guard let snapshot else { return false }
+        return TimeInterval(now.timeIntervalSince1970 - Double(snapshot.publishedAt)) >= Self.staleThreshold
     }
 
     private func paneRow(_ pane: PaneRow, now: Date) -> some View {

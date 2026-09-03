@@ -19,44 +19,102 @@ struct CanopyMobileApp: App {
     @State private var connectTask: Task<Void, Never>?
     @Environment(\.scenePhase) private var scenePhase
 
-    private let baseURL = URL(string: ProcessInfo.processInfo.environment["ROSTER_URL"] ?? "https://example.invalid")!
-    private let secret = ProcessInfo.processInfo.environment["ROSTER_SECRET"] ?? ""
+    // Configurable from inside the app now (see `SettingsView`) — an app
+    // launched by tapping its icon gets no `ProcessInfo` environment at
+    // all, so that was never reachable on a real phone. `rosterUrl` lives
+    // in UserDefaults via `@AppStorage` so this scene and `SettingsView`
+    // read and write the same key without any relay of their own; `secret`
+    // is a plain `@State` seeded once from the Keychain and handed to
+    // `SettingsView` by `Binding`, so a save there is visible here on the
+    // next `directory`/`client` read — never cached into a `let`.
+    @AppStorage("rosterUrl") private var rosterUrl = ""
+    @State private var secret: String = KeychainHelper.load(key: "rosterSecret") ?? ""
+    @State private var showingSettings = false
 
-    private var directory: MachineDirectory { MachineDirectory(baseURL: baseURL, secret: secret) }
-    private var client: RosterClient { RosterClient(baseURL: baseURL, secret: secret) }
+    private var baseURL: URL? {
+        rosterUrl.isEmpty ? nil : URL(string: rosterUrl)
+    }
+
+    private var directory: MachineDirectory? {
+        baseURL.map { MachineDirectory(baseURL: $0, secret: secret) }
+    }
+    private var client: RosterClient? {
+        baseURL.map { RosterClient(baseURL: $0, secret: secret) }
+    }
 
     var body: some Scene {
         WindowGroup {
-            RosterView(machineIds: machineIds, snapshots: snapshots, errors: errors, directoryError: directoryError)
-                .task {
-                    await refresh()
-                }
-                .refreshable {
-                    await refresh()
-                }
-                .onChange(of: scenePhase, initial: true) { _, phase in
-                    switch phase {
-                    case .active:
-                        connectTask?.cancel()
-                        connectTask = Task { await connectAll() }
-                    default:
-                        // Cancel before disconnecting: a `connectAll()` still
-                        // waiting on `directory.all()` must see cancellation
-                        // (checked right after that await, see below) rather
-                        // than resume and install sockets we just tore down.
-                        connectTask?.cancel()
-                        connectTask = nil
-                        disconnectAll()
+            NavigationStack {
+                Group {
+                    if baseURL == nil {
+                        Text("Set the relay URL in Settings")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        RosterView(machineIds: machineIds, snapshots: snapshots, errors: errors, directoryError: directoryError)
+                            .refreshable {
+                                await refresh()
+                            }
                     }
                 }
+                .navigationTitle("Canopy")
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            showingSettings = true
+                        } label: {
+                            Image(systemName: "gearshape")
+                        }
+                    }
+                }
+                .sheet(isPresented: $showingSettings) {
+                    SettingsView(rosterUrl: $rosterUrl, secret: $secret)
+                }
+            }
+            .task {
+                await refresh()
+            }
+            .onChange(of: scenePhase, initial: true) { _, phase in
+                switch phase {
+                case .active:
+                    reconnect()
+                default:
+                    // Cancel before disconnecting: a `connectAll()` still
+                    // waiting on `directory.all()` must see cancellation
+                    // (checked right after that await, see below) rather
+                    // than resume and install sockets we just tore down.
+                    connectTask?.cancel()
+                    connectTask = nil
+                    disconnectAll()
+                }
+            }
+            // Neither the URL nor the secret is cached into a client/socket
+            // `let` anywhere in this file — `directory`/`client` above and
+            // `connectAll()` below all read `rosterUrl`/`secret` fresh, so
+            // tearing down and reconnecting is enough to pick up an edit
+            // made in Settings without relaunching. Guarded on `.active`
+            // because Settings can only be open while the scene already is.
+            .onChange(of: rosterUrl) { _, _ in
+                guard scenePhase == .active else { return }
+                reconnect()
+            }
+            .onChange(of: secret) { _, _ in
+                guard scenePhase == .active else { return }
+                reconnect()
+            }
         }
     }
 
     /// Pulls the directory, then every listed machine's roster over REST.
     /// A machine whose own fetch fails keeps whatever snapshot it already
     /// had (stale, not cleared) and records the failure in `errors` so the
-    /// view can say so — see `RosterView`.
+    /// view can say so — see `RosterView`. A no-op, deliberately, when the
+    /// relay isn't configured (`directory`/`client` are `nil`).
     private func refresh() async {
+        guard let directory, let client else {
+            directoryError = nil
+            return
+        }
         do {
             let ids = try await directory.all()
             machineIds = ids
@@ -89,6 +147,15 @@ struct CanopyMobileApp: App {
         }
     }
 
+    /// Cancels any in-flight connect and starts a fresh one. Shared by the
+    /// scene becoming active and by a Settings edit landing while already
+    /// active — both mean "the configuration this app should be connected
+    /// under just changed, reconnect."
+    private func reconnect() {
+        connectTask?.cancel()
+        connectTask = Task { await connectAll() }
+    }
+
     /// One live socket per machine, held only while the app is foregrounded
     /// (mirrors the single-Mac `RosterSocket` lifetime rule).
     ///
@@ -103,6 +170,14 @@ struct CanopyMobileApp: App {
     /// check passes, nothing else can run on this actor to cancel us out
     /// from under the loop before it finishes.
     private func connectAll() async {
+        guard let baseURL, let directory else {
+            // Not configured: nothing to connect, and nothing should be
+            // left over from a previous configuration either.
+            machineIds = []
+            directoryError = nil
+            disconnectAll()
+            return
+        }
         let ids: [String]
         do {
             ids = try await directory.all()

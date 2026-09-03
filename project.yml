@@ -1,0 +1,17 @@
+name: CanopyMobile
+options:
+  bundleIdPrefix: sh.saqoo
+  deploymentTarget:
+    iOS: "18.0"
+targets:
+  CanopyMobile:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sh.saqoo.canopy-mobile
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES

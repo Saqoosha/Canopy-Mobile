@@ -31,6 +31,12 @@ export default {
       const stub = env.MACHINE.get(env.MACHINE.idFromName(`mac:${machine}`));
       return stub.fetch(new Request("https://do/roster"));
     }
+    if (url.pathname === "/watch") {
+      const machine = url.searchParams.get("machine");
+      if (!machine) return new Response("machine required", { status: 400 });
+      const stub = env.MACHINE.get(env.MACHINE.idFromName(`mac:${machine}`));
+      return stub.fetch(request);
+    }
     return new Response("not found", { status: 404 });
   },
 };

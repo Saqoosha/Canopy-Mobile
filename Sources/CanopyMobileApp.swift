@@ -4,8 +4,12 @@ import SwiftUI
 struct CanopyMobileApp: App {
     @State private var snapshot: MachineSnapshot?
     @State private var lastError: Error?
+    @Environment(\.scenePhase) private var scenePhase
 
     private let client = RosterClient(
+        baseURL: URL(string: ProcessInfo.processInfo.environment["ROSTER_URL"] ?? "https://example.invalid")!,
+        secret: ProcessInfo.processInfo.environment["ROSTER_SECRET"] ?? "")
+    private let socket = RosterSocket(
         baseURL: URL(string: ProcessInfo.processInfo.environment["ROSTER_URL"] ?? "https://example.invalid")!,
         secret: ProcessInfo.processInfo.environment["ROSTER_SECRET"] ?? "")
     private let machine = ProcessInfo.processInfo.environment["ROSTER_MACHINE"] ?? ""
@@ -18,6 +22,14 @@ struct CanopyMobileApp: App {
                 }
                 .refreshable {
                     await refresh()
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    switch phase {
+                    case .active:
+                        socket.connect(machine: machine) { snapshot = $0 }
+                    default:
+                        socket.disconnect()
+                    }
                 }
         }
     }

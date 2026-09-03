@@ -60,4 +60,22 @@ describe("MachineDO", () => {
     const res = await stub.fetch("https://do/roster");
     expect(res.status).toBe(404);
   });
+
+  it("forwards a publisher's snapshot to a watching socket", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:DDDD-4444"));
+    const watcher = await stub.fetch("https://do/watch", {
+      headers: { Upgrade: "websocket" },
+    });
+    const ws = watcher.webSocket!;
+    ws.accept();
+    const received = new Promise<string>((resolve) => {
+      ws.addEventListener("message", (e) => resolve(e.data as string));
+    });
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      instance.applySnapshot({ ...snapshot, machineId: "DDDD-4444" });
+      instance.broadcast();
+    });
+    const body = JSON.parse(await received) as MachineSnapshot;
+    expect(body.machineId).toBe("DDDD-4444");
+  });
 });

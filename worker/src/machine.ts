@@ -57,9 +57,12 @@ export class MachineDO extends DurableObject {
     if (request.headers.get("Upgrade") !== "websocket") {
       return new Response("expected websocket", { status: 426 });
     }
+    const role = url.pathname === "/watch" ? "watcher" : "publisher";
     const pair = new WebSocketPair();
     // Hibernation API. `pair[1].accept()` would bill an idle connection.
     this.ctx.acceptWebSocket(pair[1]);
+    // Attachments survive hibernation; an in-memory Set would not.
+    pair[1].serializeAttachment({ role });
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
 
@@ -67,5 +70,22 @@ export class MachineDO extends DurableObject {
     if (typeof message !== "string") return;
     const parsed = JSON.parse(message) as MachineSnapshot;
     this.applySnapshot(parsed);
+    this.broadcast();
+  }
+
+  /** Send the current snapshot to every watcher. Publishers are skipped. */
+  broadcast(): void {
+    const snapshot = this.currentSnapshot();
+    if (!snapshot) return;
+    const text = JSON.stringify(snapshot);
+    for (const ws of this.ctx.getWebSockets()) {
+      const attachment = ws.deserializeAttachment() as { role?: string } | null;
+      if (attachment?.role !== "watcher") continue;
+      try {
+        ws.send(text);
+      } catch {
+        // A watcher that has gone away is routine; the next publish retries.
+      }
+    }
   }
 }

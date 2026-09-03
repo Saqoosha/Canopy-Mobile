@@ -11,6 +11,12 @@ struct CanopyMobileApp: App {
     @State private var errors: [String: Error] = [:]
     @State private var directoryError: Error?
     @State private var sockets: [String: RosterSocket] = [:]
+    // The in-flight `connectAll()` task. Held so backgrounding can cancel
+    // it — `connectAll()` awaits a network round trip before it creates any
+    // socket, so without this the app could go background while that await
+    // is still outstanding, and the late-arriving response would install
+    // live sockets into a backgrounded app.
+    @State private var connectTask: Task<Void, Never>?
     @Environment(\.scenePhase) private var scenePhase
 
     private let baseURL = URL(string: ProcessInfo.processInfo.environment["ROSTER_URL"] ?? "https://example.invalid")!
@@ -31,8 +37,15 @@ struct CanopyMobileApp: App {
                 .onChange(of: scenePhase, initial: true) { _, phase in
                     switch phase {
                     case .active:
-                        Task { await connectAll() }
+                        connectTask?.cancel()
+                        connectTask = Task { await connectAll() }
                     default:
+                        // Cancel before disconnecting: a `connectAll()` still
+                        // waiting on `directory.all()` must see cancellation
+                        // (checked right after that await, see below) rather
+                        // than resume and install sockets we just tore down.
+                        connectTask?.cancel()
+                        connectTask = nil
                         disconnectAll()
                     }
                 }
@@ -78,15 +91,29 @@ struct CanopyMobileApp: App {
 
     /// One live socket per machine, held only while the app is foregrounded
     /// (mirrors the single-Mac `RosterSocket` lifetime rule).
+    ///
+    /// Runs as an unstructured `Task` started from `.onChange`, so the scene
+    /// can go background while this is still awaiting `directory.all()`.
+    /// The `Task.isCancelled` check immediately after that await is what
+    /// stops a late-arriving directory response from installing live
+    /// sockets into a backgrounded app: the background branch above cancels
+    /// this task before this line can resume. One check is enough — nothing
+    /// below it suspends again, and this whole type is MainActor-isolated
+    /// (implicit from `App`/`View`'s protocol requirements), so once the
+    /// check passes, nothing else can run on this actor to cancel us out
+    /// from under the loop before it finishes.
     private func connectAll() async {
+        let ids: [String]
         do {
-            let ids = try await directory.all()
-            machineIds = ids
-            directoryError = nil
+            ids = try await directory.all()
         } catch {
+            if Task.isCancelled { return }
             directoryError = error
             return
         }
+        if Task.isCancelled { return }
+        machineIds = ids
+        directoryError = nil
         disconnectAll()
         for id in machineIds {
             let socket = RosterSocket(baseURL: baseURL, secret: secret)

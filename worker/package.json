@@ -1,0 +1,21 @@
+{
+  "name": "canopy-mobile-relay",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^4.20260409.1",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.5",
+    "wrangler": "^4"
+  },
+  "overrides": {
+    "miniflare": "5.20260831.0-alpha"
+  }
+}

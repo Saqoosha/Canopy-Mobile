@@ -1,0 +1,15 @@
+name = "canopy-mobile-relay"
+main = "src/index.ts"
+compatibility_date = "2026-09-03"
+
+[observability]
+enabled = true
+head_sampling_rate = 1.0
+
+[[durable_objects.bindings]]
+name = "MACHINE"
+class_name = "MachineDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MachineDO"]

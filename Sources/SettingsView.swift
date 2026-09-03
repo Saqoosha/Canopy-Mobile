@@ -11,6 +11,7 @@ struct SettingsView: View {
 
     @Environment(\.dismiss) private var dismiss
     @FocusState private var secretFieldFocused: Bool
+    @State private var hasStoredSecret = false
 
     var body: some View {
         NavigationStack {
@@ -28,6 +29,12 @@ struct SettingsView: View {
                             // user taps past is silently discarded.
                             if !focused { commitSecret() }
                         }
+                    // Never reads the secret back — the field itself is
+                    // never seeded from the Keychain either — this only
+                    // tells the user something is stored, not what it is.
+                    Text(hasStoredSecret ? "A secret is stored" : "No secret stored")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Settings")
@@ -37,10 +44,20 @@ struct SettingsView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .onAppear { hasStoredSecret = KeychainHelper.has(key: "rosterSecret") }
         }
     }
 
+    /// A blank submit is the ordinary result of tabbing through the form
+    /// with the never-seeded, always-blank-looking `SecureField` untouched
+    /// — it must be a no-op, never a delete, or every visit to Settings
+    /// risks silently wiping a working secret. `KeychainHelper.save` itself
+    /// stays unguarded (Pager relies on its current unconditional
+    /// behaviour); the guard belongs here, at the call site that actually
+    /// means "the user typed a new secret."
     private func commitSecret() {
+        guard !secret.isEmpty else { return }
         KeychainHelper.save(key: "rosterSecret", value: secret)
+        hasStoredSecret = KeychainHelper.has(key: "rosterSecret")
     }
 }

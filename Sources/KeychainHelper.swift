@@ -47,6 +47,22 @@ enum KeychainHelper {
         return String(data: data, encoding: .utf8)
     }
 
+    /// Whether a value is stored under `key` — never reads it back. Exists
+    /// so a caller (the Settings "A secret is stored" indicator) can tell
+    /// the user something is there without revealing it or seeding a field
+    /// with it.
+    static func has(key: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: false,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        let status = SecItemCopyMatching(query as CFDictionary, nil)
+        return status == errSecSuccess
+    }
+
     static func delete(key: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

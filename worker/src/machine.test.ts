@@ -61,21 +61,46 @@ describe("MachineDO", () => {
     expect(res.status).toBe(404);
   });
 
-  it("forwards a publisher's snapshot to a watching socket", async () => {
+  it("forwards a publisher's snapshot to a watcher, but never echoes it back to the publisher", async () => {
     const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:DDDD-4444"));
-    const watcher = await stub.fetch("https://do/watch", {
+
+    const watcherUpgrade = await stub.fetch("https://do/watch", {
       headers: { Upgrade: "websocket" },
     });
-    const ws = watcher.webSocket!;
-    ws.accept();
-    const received = new Promise<string>((resolve) => {
-      ws.addEventListener("message", (e) => resolve(e.data as string));
+    const watcherWs = watcherUpgrade.webSocket!;
+    watcherWs.accept();
+    const watcherReceived = new Promise<string>((resolve) => {
+      watcherWs.addEventListener("message", (e) => resolve(e.data as string));
     });
+
+    // A second socket on the same DO, opened via /publish so it carries the
+    // "publisher" role tag `broadcast()` is supposed to skip. If the role
+    // filter is ever dropped, this socket receives the echo the whole task
+    // exists to prevent — recorded here rather than awaited, since a
+    // publisher that (correctly) receives nothing would otherwise hang the
+    // test on an unresolved promise.
+    const publisherUpgrade = await stub.fetch("https://do/publish", {
+      headers: { Upgrade: "websocket" },
+    });
+    const publisherWs = publisherUpgrade.webSocket!;
+    publisherWs.accept();
+    const publisherMessages: string[] = [];
+    publisherWs.addEventListener("message", (e) => {
+      publisherMessages.push(e.data as string);
+    });
+
     await runInDurableObject<MachineDO, void>(stub, async (instance) => {
       instance.applySnapshot({ ...snapshot, machineId: "DDDD-4444" });
       instance.broadcast();
     });
-    const body = JSON.parse(await received) as MachineSnapshot;
+
+    const body = JSON.parse(await watcherReceived) as MachineSnapshot;
     expect(body.machineId).toBe("DDDD-4444");
+
+    // Give a wrongly-sent publisher echo a chance to arrive before asserting
+    // its absence — the watcher's message and any (incorrect) publisher
+    // message are dispatched from the same synchronous broadcast() loop.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(publisherMessages).toEqual([]);
   });
 });

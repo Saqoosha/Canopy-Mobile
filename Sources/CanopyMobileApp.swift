@@ -23,7 +23,7 @@ struct CanopyMobileApp: App {
                 .refreshable {
                     await refresh()
                 }
-                .onChange(of: scenePhase) { _, phase in
+                .onChange(of: scenePhase, initial: true) { _, phase in
                     switch phase {
                     case .active:
                         socket.connect(machine: machine) { snapshot = $0 }

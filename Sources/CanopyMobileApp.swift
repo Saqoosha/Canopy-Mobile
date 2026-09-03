@@ -3,7 +3,7 @@ import SwiftUI
 @main
 struct CanopyMobileApp: App {
     @State private var snapshot: MachineSnapshot?
-    @State private var now = Date()
+    @State private var lastError: Error?
 
     private let client = RosterClient(
         baseURL: URL(string: ProcessInfo.processInfo.environment["ROSTER_URL"] ?? "https://example.invalid")!,
@@ -12,13 +12,22 @@ struct CanopyMobileApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RosterView(snapshot: snapshot, now: now)
+            RosterView(snapshot: snapshot, error: lastError)
                 .task {
-                    snapshot = try? await client.fetch(machine: machine)
+                    await refresh()
                 }
                 .refreshable {
-                    snapshot = try? await client.fetch(machine: machine)
+                    await refresh()
                 }
+        }
+    }
+
+    private func refresh() async {
+        do {
+            snapshot = try await client.fetch(machine: machine)
+            lastError = nil
+        } catch {
+            lastError = error
         }
     }
 }

@@ -11,6 +11,7 @@ declare global {
   namespace Cloudflare {
     interface Env {
       MACHINE: DurableObjectNamespace<MachineDO>;
+      MACHINES: KVNamespace;
       SHARED_SECRET: string;
     }
   }

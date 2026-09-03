@@ -16,3 +16,10 @@ class_name = "MachineDO"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["MachineDO"]
+
+# The phone cannot enumerate Durable Objects, so this records every machine
+# id that has ever published. Real id NOT created by this change — run
+# `npx wrangler kv namespace create MACHINES` and paste the id it prints.
+[[kv_namespaces]]
+binding = "MACHINES"
+id = "PLACEHOLDER-run-wrangler-kv-namespace-create-MACHINES"

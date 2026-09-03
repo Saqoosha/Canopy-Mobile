@@ -1,8 +1,10 @@
 import SwiftUI
 
 struct RosterView: View {
-    let snapshot: MachineSnapshot?
-    let error: Error?
+    let machineIds: [String]
+    let snapshots: [String: MachineSnapshot]
+    let errors: [String: Error]
+    let directoryError: Error?
 
     var body: some View {
         // Ticks once a second so elapsed-time labels advance, and so `now`
@@ -10,43 +12,93 @@ struct RosterView: View {
         // `stateSince` from a later refresh could land ahead of.
         TimelineView(.periodic(from: .now, by: 1)) { context in
             List {
-                if let snapshot {
+                if let directoryError {
                     Section {
-                        ForEach(snapshot.panes) { pane in
-                            HStack(spacing: 12) {
-                                Circle()
-                                    .fill(color(for: pane.state))
-                                    .frame(width: 10, height: 10)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(pane.title).font(.body)
-                                    Text(pane.project).font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Text(elapsed(since: pane.stateSince, now: context.date))
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
+                        Text(message(for: directoryError))
+                            .foregroundStyle(.secondary)
                     } header: {
-                        Text("\(snapshot.displayName) — 5h \(snapshot.sessionPct)% · wk \(snapshot.weeklyPct)%")
+                        Text("Machine list")
+                    }
+                }
+                if machineIds.isEmpty {
+                    if directoryError == nil {
+                        Text("No machines yet").foregroundStyle(.secondary)
                     }
                 } else {
-                    Text(emptyMessage).foregroundStyle(.secondary)
+                    ForEach(sortedMachineIds, id: \.self) { id in
+                        machineSection(id: id, now: context.date)
+                    }
                 }
             }
         }
     }
 
-    /// "No roster yet" collapsed unauthorized, not-found, transport failure
-    /// and decode mismatch into one message. This names which one it was —
-    /// never the secret itself, even on the unauthorized branch.
-    private var emptyMessage: String {
-        guard let error else { return "No roster yet" }
+    /// Sorted by `displayName` — a Mac at 95% quota and one at 2% are
+    /// different places to start work, and the header is where that shows.
+    /// A machine with no snapshot yet sorts by its raw id instead.
+    private var sortedMachineIds: [String] {
+        machineIds.sorted { lhs, rhs in
+            let lname = snapshots[lhs]?.displayName ?? lhs
+            let rname = snapshots[rhs]?.displayName ?? rhs
+            return lname.localizedStandardCompare(rname) == .orderedAscending
+        }
+    }
+
+    /// A machine's section renders whatever snapshot it last had — even
+    /// stale — AND its latest error, if any, rather than letting a failed
+    /// refresh silently keep showing old rows with nothing to explain them.
+    @ViewBuilder
+    private func machineSection(id: String, now: Date) -> some View {
+        let snapshot = snapshots[id]
+        let error = errors[id]
+        Section {
+            if let snapshot {
+                ForEach(snapshot.panes) { pane in
+                    paneRow(pane, now: now)
+                }
+            } else if error == nil {
+                Text("Loading…").foregroundStyle(.secondary)
+            }
+            if let error {
+                Text(message(for: error))
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        } header: {
+            Text(headerText(id: id, snapshot: snapshot))
+        }
+    }
+
+    private func headerText(id: String, snapshot: MachineSnapshot?) -> String {
+        guard let snapshot else { return id }
+        return "\(snapshot.displayName) — 5h \(snapshot.sessionPct)% · wk \(snapshot.weeklyPct)%"
+    }
+
+    private func paneRow(_ pane: PaneRow, now: Date) -> some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(color(for: pane.state))
+                .frame(width: 10, height: 10)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(pane.title).font(.body)
+                Text(pane.project).font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(elapsed(since: pane.stateSince, now: now))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Never renders the secret itself, even on the unauthorized branch —
+    /// `RosterError.message` already keeps that promise; this only extends
+    /// it to non-`RosterError` failures (transport, decode-of-directory).
+    private func message(for error: Error) -> String {
         if let rosterError = error as? RosterError {
             return rosterError.message
         }
-        return "No roster yet — \(error.localizedDescription)"
+        return error.localizedDescription
     }
 
     private func color(for state: String) -> Color {

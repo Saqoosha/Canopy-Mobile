@@ -46,6 +46,14 @@ export class MachineDO extends DurableObject {
   }
 
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === "/roster") {
+      const snapshot = this.currentSnapshot();
+      if (!snapshot) return new Response("not found", { status: 404 });
+      return new Response(JSON.stringify(snapshot), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     if (request.headers.get("Upgrade") !== "websocket") {
       return new Response("expected websocket", { status: 426 });
     }

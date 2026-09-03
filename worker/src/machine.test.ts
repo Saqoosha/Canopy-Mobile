@@ -42,4 +42,22 @@ describe("MachineDO", () => {
       expect(instance.currentSnapshot()?.machineId).toBe("BBBB-2222");
     });
   });
+
+  it("serves a stored snapshot over HTTP", async () => {
+    const id = env.MACHINE.idFromName("mac:CCCC-3333");
+    const stub = env.MACHINE.get(id);
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      instance.applySnapshot({ ...snapshot, machineId: "CCCC-3333" });
+    });
+    const res = await stub.fetch("https://do/roster");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as MachineSnapshot;
+    expect(body.machineId).toBe("CCCC-3333");
+  });
+
+  it("returns 404 for a Mac that has never published", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:NEVER"));
+    const res = await stub.fetch("https://do/roster");
+    expect(res.status).toBe(404);
+  });
 });

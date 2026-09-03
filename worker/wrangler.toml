@@ -1,6 +1,9 @@
 name = "canopy-mobile-relay"
 main = "src/index.ts"
-compatibility_date = "2026-09-03"
+# Capped by the workerd build @cloudflare/vitest-pool-workers bundles for
+# local tests, not by anything in this code. Check that pin before raising
+# this date.
+compatibility_date = "2026-08-22"
 
 [observability]
 enabled = true

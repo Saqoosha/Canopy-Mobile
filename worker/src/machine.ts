@@ -4,8 +4,8 @@ import type { MachineSnapshot } from "./types";
 export class MachineDO extends DurableObject {
   private cached: MachineSnapshot | null = null;
 
-  constructor(ctx: DurableObjectState, env: unknown) {
-    super(ctx as any, env as any);
+  constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
+    super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       this.ctx.storage.sql.exec(
         `CREATE TABLE IF NOT EXISTS snapshot (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL)`

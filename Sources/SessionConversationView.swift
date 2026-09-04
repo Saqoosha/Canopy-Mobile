@@ -19,7 +19,12 @@ import SwiftUI
 /// do next from a phone.
 struct SessionConversationView: View {
     let machine: String
+    /// The LIVE session's id, minted per Canopy process. Replies and decisions
+    /// are addressed with it, because only it can name a running session.
     let sessionId: String
+    /// The CLI's own session id, which survives a Canopy restart. Grouping
+    /// uses this when both sides have one; `sessionId` is the fallback.
+    let resumeId: String?
     let title: String
     /// Second header line — the machine, or "machine · project" when the
     /// roster knew a project for this pane. Never the body of anything.
@@ -188,7 +193,8 @@ struct SessionConversationView: View {
                     body: text,
                     machine: machine,
                     sessionId: sessionId,
-                    kind: "sent"
+                    kind: "sent",
+                    resumeId: resumeId
                 ))
             } catch {
                 print("HistoryStore.append(sent) failed: \(error.localizedDescription)")
@@ -209,8 +215,21 @@ struct SessionConversationView: View {
             loadError = nil
             let all = try HistoryStore.loadAll()
             totalCount = all.count
+            // Prefer the durable id. `sessionId` is minted per Canopy process,
+            // so after a restart it matches nothing stored earlier and this
+            // screen came up empty on a session that had notified all day —
+            // which reads as "the push never arrived" rather than as an id
+            // mismatch. An item or a target with no resumeId (backfilled a
+            // moment after spawn) still matches on `sessionId`, so nothing
+            // written by an older build becomes unreachable.
             items = all
-                .filter { $0.machine == machine && $0.sessionId == sessionId }
+                .filter { item in
+                    guard item.machine == machine else { return false }
+                    if let resumeId, let itemResume = item.resumeId {
+                        return itemResume == resumeId
+                    }
+                    return item.sessionId == sessionId
+                }
                 .reversed()
         } catch {
             // Surfaced, never swallowed: an unreadable store looks exactly

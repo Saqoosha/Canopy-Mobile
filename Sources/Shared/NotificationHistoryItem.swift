@@ -42,6 +42,11 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
     /// offer "Always" — a button that quietly degraded to a plain Allow would
     /// tell the user they had made a standing decision they had not.
     var allowAlways: Bool?
+    /// The CLI's own session id. `sessionId` is minted per Canopy process, so
+    /// a restart orphans every stored notification from its session — the
+    /// conversation came up empty and read as "the push never arrived"
+    /// (measured 2026-09-05). Grouping prefers this when both sides have one.
+    var resumeId: String?
 
     init(
         id: String,
@@ -56,7 +61,8 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         decision: String? = nil,
         decidedAt: Date? = nil,
         decisionDelivered: Bool? = nil,
-        allowAlways: Bool? = nil
+        allowAlways: Bool? = nil,
+        resumeId: String? = nil
     ) {
         self.id = id
         self.receivedAt = receivedAt
@@ -71,6 +77,7 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         self.decidedAt = decidedAt
         self.decisionDelivered = decisionDelivered
         self.allowAlways = allowAlways
+        self.resumeId = resumeId
     }
 
     /// Jq and some pipelines pass through the four ASCII letters `null` as

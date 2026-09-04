@@ -83,6 +83,7 @@ struct CanopyMobileApp: App {
                             path = [.conversation(ConversationTarget(
                                 machine: machineId,
                                 sessionId: pane.sessionId,
+                                resumeId: pane.resumeId,
                                 title: pane.title,
                                 subtitle: pane.project
                             ))]
@@ -108,6 +109,7 @@ struct CanopyMobileApp: App {
                             path.append(.conversation(ConversationTarget(
                                 machine: item.machine,
                                 sessionId: item.sessionId,
+                                resumeId: item.resumeId,
                                 title: item.title,
                                 subtitle: item.machine
                             )))
@@ -307,6 +309,7 @@ struct CanopyMobileApp: App {
         path = [.conversation(ConversationTarget(
             machine: machine,
             sessionId: sessionId,
+            resumeId: pane?.resumeId ?? item?.resumeId,
             title: title,
             subtitle: pane?.project ?? machine
         ))]
@@ -365,6 +368,7 @@ struct CanopyMobileApp: App {
         SessionConversationView(
             machine: target.machine,
             sessionId: target.sessionId,
+            resumeId: target.resumeId,
             title: target.title,
             subtitle: target.subtitle,
             onDecision: { item, decision in sendDecision(item: item, decision: decision) },
@@ -389,6 +393,8 @@ enum Route: Hashable {
 struct ConversationTarget: Hashable {
     let machine: String
     let sessionId: String
+    /// See `SessionConversationView.resumeId` — the durable half of the pair.
+    var resumeId: String?
     let title: String
     let subtitle: String
 }

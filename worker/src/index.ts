@@ -139,6 +139,10 @@ export default {
         sessionId: body.sessionId,
         kind: body.kind,
         bodyFull: bodyFullCapped,
+        // Groups this notification with the session's others across a Canopy
+        // restart, which mints a new sessionId and would otherwise orphan
+        // everything stored so far.
+        ...(body.resumeId ? { resumeId: body.resumeId } : {}),
         ...(body.requestId ? { requestId: body.requestId } : {}),
         // Only true when the CLI proposed a rule for this ask. The phone
         // offers "Always" on this alone: a button that quietly degraded to a

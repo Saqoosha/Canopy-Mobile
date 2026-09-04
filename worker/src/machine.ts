@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import type { MachineSnapshot, ReplyEnvelope } from "./types";
+import type { DecisionEnvelope, MachineSnapshot, ReplyEnvelope } from "./types";
 
 export class MachineDO extends DurableObject {
   private cached: MachineSnapshot | null = null;
@@ -45,13 +45,16 @@ export class MachineDO extends DurableObject {
     this.cached = null;
   }
 
-  /** Writes a reply down the publisher socket, if one is connected.
+  /** Writes a reply or a decision down the publisher socket, if one is
+   *  connected. One finder for both envelope kinds, since the only thing
+   *  either needs is "reach the publisher" — the shape of what gets sent is
+   *  the caller's concern.
    *
    *  Uses the sockets the Hibernation API hands back rather than any in-memory
    *  set: this DO may have hibernated since the publisher connected, and an
    *  in-memory list would be empty. The role comes from the attachment for the
    *  same reason. */
-  deliverReply(envelope: ReplyEnvelope): boolean {
+  deliverReply(envelope: ReplyEnvelope | DecisionEnvelope): boolean {
     const publishers = this.ctx.getWebSockets().filter((ws) => {
       const attachment = ws.deserializeAttachment() as { role?: string } | null;
       return attachment?.role === "publisher";
@@ -82,6 +85,14 @@ export class MachineDO extends DurableObject {
     }
     if (url.pathname === "/reply" && request.method === "POST") {
       const envelope = (await request.json()) as ReplyEnvelope;
+      const ok = this.deliverReply(envelope);
+      return new Response(JSON.stringify({ ok }), {
+        status: ok ? 200 : 503,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url.pathname === "/decide" && request.method === "POST") {
+      const envelope = (await request.json()) as DecisionEnvelope;
       const ok = this.deliverReply(envelope);
       return new Response(JSON.stringify({ ok }), {
         status: ok ? 200 : 503,

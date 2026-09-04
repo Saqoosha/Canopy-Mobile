@@ -1,9 +1,10 @@
 import { MachineDO } from "./machine";
 import { sendPush, type ApnsEnv } from "./apns";
-import type { NotifyBody, ReplyBody } from "./types";
+import { shortenWithLLM, fallbackBanner, type LlmEnv } from "./llm";
+import type { DecisionBody, NotifyBody, ReplyBody } from "./types";
 export { MachineDO };
 
-interface Env extends ApnsEnv {
+interface Env extends ApnsEnv, LlmEnv {
   MACHINE: DurableObjectNamespace;
   MACHINES: KVNamespace;
   SHARED_SECRET: string;
@@ -81,25 +82,99 @@ export default {
       if (body.kind !== "completed" && body.kind !== "asking") {
         return json({ error: "kind must be completed or asking" }, 400);
       }
+      // A decision needs something to answer, and a completion has nothing to
+      // answer — the phone's Allow/Deny actions are meaningless without an id
+      // to send them back with, and attaching one to a completed push would
+      // let a stale action fire against a session that already moved on.
+      if (body.kind === "asking" && !body.requestId) return json({ error: "asking requires requestId" }, 400);
+      if (body.kind === "completed" && body.requestId) return json({ error: "completed takes no requestId" }, 400);
+      // Validated because the two reads below are `.length` — without this a
+      // caller omitting both fields got an opaque 500 from a TypeError rather
+      // than being told what was missing.
+      if (typeof body.body !== "string" && typeof body.bodyFull !== "string") {
+        return json({ error: "body or bodyFull required" }, 400);
+      }
       const deviceToken = await env.MACHINES.get("device_token");
       if (!deviceToken) return json({ error: "no device registered" }, 503);
+      // `bodyFull` is the new, optional carrier for the untouched text; `body`
+      // stays required so older callers keep working during rollout.
+      const fullText = body.bodyFull ?? body.body;
       // 3000 chars keeps the whole APNs payload under the 4 KB limit, matching
       // Pager's own cap. The routing fields ride in the payload rather than in
       // KV because they are two short ids, not a conversation.
       const MAX = 3000;
-      const text = body.body.length > MAX ? body.body.slice(0, MAX) + "…" : body.body;
+      const bodyFullCapped = fullText.length > MAX ? fullText.slice(0, MAX) + "…" : fullText;
+      // The banner is a display shortcut, not the payload's source of truth —
+      // `bodyFull` above carries the real text. A slow LLM call must never
+      // delay the push, which is why shortenWithLLM has its own timeout.
+      const BANNER_MAX = 100;
+      // Summarise a COMPLETED push only. An asking push's body is the tool's
+      // raw input — a command line, a file path, whatever was pasted into an
+      // edit — and sending that to api.anthropic.com is a data flow the design
+      // doc argues nowhere; it was inherited by the banner path rather than
+      // chosen. Truncation loses nothing here either, since the full text is
+      // in `bodyFull` and a JSON blob summarises badly.
+      const banner =
+        body.kind === "completed" && fullText.length > BANNER_MAX
+          ? await shortenWithLLM(env, fullText, BANNER_MAX)
+          : fallbackBanner(fullText, BANNER_MAX);
       const payload = {
         aps: {
-          alert: { title: body.title, body: text },
+          alert: { title: body.title, body: banner },
           sound: "default",
           "mutable-content": 1,
-          category: "CANOPY_SESSION",
+          // Only an asking push gets Allow/Deny actions; a completed push has
+          // nothing for them to act on.
+          // iOS resolves a notification's actions from its category alone, so
+          // "offer Always only when the CLI proposed a rule" has to be a
+          // second category rather than a flag the app reads at render time.
+          // An unanswerable ask gets the plain category: two lock-screen
+          // buttons that cannot resolve it are worse than none.
+          category:
+            body.kind === "asking" && body.answerable !== false
+              ? body.allowAlways
+                ? "CANOPY_PERMISSION_ALWAYS"
+                : "CANOPY_PERMISSION"
+              : "CANOPY_SESSION",
         },
         machine: body.machine,
         sessionId: body.sessionId,
         kind: body.kind,
+        bodyFull: bodyFullCapped,
+        // Groups this notification with the session's others across a Canopy
+        // restart, which mints a new sessionId and would otherwise orphan
+        // everything stored so far.
+        ...(body.resumeId ? { resumeId: body.resumeId } : {}),
+        ...(body.requestId ? { requestId: body.requestId } : {}),
+        // Only true when the CLI proposed a rule for this ask. The phone
+        // offers "Always" on this alone: a button that quietly degraded to a
+        // plain Allow would tell the user they had made a standing decision
+        // they had not.
+        ...(body.allowAlways ? { allowAlways: true } : {}),
+        ...(body.answerable === false ? { answerable: false } : {}),
       };
-      return sendPush(env, deviceToken, payload);
+      // APNs rejects a payload over 4 KB outright, and this is the only
+      // place the whole thing exists — Canopy caps its own text in bytes, but
+      // it cannot see the title, the ids or the category that ride with it.
+      // Shrink `bodyFull` until the encoded payload fits rather than trusting
+      // an upstream guess; a dropped notification is silent on both ends.
+      const APNS_LIMIT = 4096;
+      let shrunk = payload;
+      while (
+        new TextEncoder().encode(JSON.stringify(shrunk)).length > APNS_LIMIT &&
+        shrunk.bodyFull.length > 0
+      ) {
+        const over =
+          new TextEncoder().encode(JSON.stringify(shrunk)).length - APNS_LIMIT;
+        // Cut at least one character, and roughly the overshoot, so a body of
+        // multibyte text converges in a few passes instead of one per byte.
+        const drop = Math.max(1, Math.ceil(over / 3));
+        shrunk = {
+          ...shrunk,
+          bodyFull: shrunk.bodyFull.slice(0, Math.max(0, shrunk.bodyFull.length - drop)),
+        };
+      }
+      return sendPush(env, deviceToken, shrunk);
     }
     if (url.pathname === "/reply" && request.method === "POST") {
       const body = await request.json<ReplyBody>().catch(() => null);
@@ -113,6 +188,39 @@ export default {
         new Request("https://do/reply", {
           method: "POST",
           body: JSON.stringify({ type: "reply", sessionId: body.sessionId, text }),
+        })
+      );
+    }
+    if (url.pathname === "/decide" && request.method === "POST") {
+      const body = await request.json<DecisionBody>().catch(() => null);
+      // requestId is the only thing tying this decision to the request it
+      // answers, minted per process — never defaulted to whatever is
+      // outstanding, which could approve a tool the user never saw.
+      if (!body?.machine || !body.sessionId || !body.requestId) {
+        return json({ error: "machine, sessionId, and requestId required" }, 400);
+      }
+      // Legal values captured from three real clicks (see
+      // docs/superpowers/specs/2026-09-04-permission-response-capture.md).
+      // An unrecognized value is refused, not normalized — approving a tool
+      // because a value failed to parse is the worst outcome this route can
+      // produce.
+      if (
+        body.decision !== "allow" &&
+        body.decision !== "deny" &&
+        body.decision !== "allowAlways"
+      ) {
+        return json({ error: "decision must be allow, deny, or allowAlways" }, 400);
+      }
+      const stub = env.MACHINE.get(env.MACHINE.idFromName(`mac:${body.machine}`));
+      return stub.fetch(
+        new Request("https://do/decide", {
+          method: "POST",
+          body: JSON.stringify({
+            type: "decision",
+            sessionId: body.sessionId,
+            requestId: body.requestId,
+            decision: body.decision,
+          }),
         })
       );
     }

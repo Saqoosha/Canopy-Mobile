@@ -1,3 +1,11 @@
+packages:
+  # Same package Pager renders its history with. A notification body is the
+  # assistant's own message, so it arrives as Markdown; SwiftUI's built-in
+  # AttributedString(markdown:) handles inline styling only and drops
+  # headings, lists and fenced code, which is most of what these bodies are.
+  MarkdownUI:
+    url: https://github.com/gonzalezreal/swift-markdown-ui
+    from: 2.0.0
 name: CanopyMobile
 options:
   bundleIdPrefix: sh.saqoo
@@ -7,11 +15,16 @@ targets:
   CanopyMobile:
     type: application
     platform: iOS
-    sources: [Sources]
+    sources:
+      - path: Sources
+        excludes:
+          - CanopyMobileNotificationService/**
     entitlements:
       path: Sources/CanopyMobile.entitlements
       properties:
         aps-environment: development
+        com.apple.security.application-groups:
+          - group.sh.saqoo.canopy-app
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: sh.saqoo.canopy-app
@@ -21,3 +34,30 @@ targets:
         SWIFT_VERSION: "6.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    dependencies:
+      - target: CanopyMobileNotificationService
+      - package: MarkdownUI
+
+  # A Notification Service Extension. Apple has no distinct product type for
+  # it — `app-extension` is the same product type Xcode's own NSE template
+  # uses; the NSE identity comes from Info.plist's NSExtensionPointIdentifier
+  # (com.apple.usernotifications.service) below, not from the target type.
+  CanopyMobileNotificationService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Sources/CanopyMobileNotificationService
+      - Sources/Shared
+    entitlements:
+      path: Sources/CanopyMobileNotificationService.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.sh.saqoo.canopy-app
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sh.saqoo.canopy-app.NotificationService
+        DEVELOPMENT_TEAM: VCFY2GFR89
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        INFOPLIST_FILE: Sources/CanopyMobileNotificationService/Info.plist

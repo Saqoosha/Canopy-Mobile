@@ -290,6 +290,14 @@ private struct MessageBlock: View {
                 HStack(spacing: 12) {
                     Button("Allow") { onDecision(item, "allow") }
                         .buttonStyle(.borderedProminent)
+                    // Offered only when the CLI actually proposed a rule.
+                    // Canopy echoes that proposal back rather than composing
+                    // one, so with nothing proposed there is nothing this
+                    // button could write and it must not appear.
+                    if item.allowAlways == true {
+                        Button("Always") { onDecision(item, "allowAlways") }
+                            .buttonStyle(.bordered)
+                    }
                     Button("Deny", role: .destructive) { onDecision(item, "deny") }
                         .buttonStyle(.bordered)
                 }

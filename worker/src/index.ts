@@ -125,13 +125,26 @@ export default {
           "mutable-content": 1,
           // Only an asking push gets Allow/Deny actions; a completed push has
           // nothing for them to act on.
-          category: body.kind === "asking" ? "CANOPY_PERMISSION" : "CANOPY_SESSION",
+          // iOS resolves a notification's actions from its category alone, so
+          // "offer Always only when the CLI proposed a rule" has to be a
+          // second category rather than a flag the app reads at render time.
+          category:
+            body.kind === "asking"
+              ? body.allowAlways
+                ? "CANOPY_PERMISSION_ALWAYS"
+                : "CANOPY_PERMISSION"
+              : "CANOPY_SESSION",
         },
         machine: body.machine,
         sessionId: body.sessionId,
         kind: body.kind,
         bodyFull: bodyFullCapped,
         ...(body.requestId ? { requestId: body.requestId } : {}),
+        // Only true when the CLI proposed a rule for this ask. The phone
+        // offers "Always" on this alone: a button that quietly degraded to a
+        // plain Allow would tell the user they had made a standing decision
+        // they had not.
+        ...(body.allowAlways ? { allowAlways: true } : {}),
       };
       return sendPush(env, deviceToken, payload);
     }
@@ -163,8 +176,12 @@ export default {
       // An unrecognized value is refused, not normalized — approving a tool
       // because a value failed to parse is the worst outcome this route can
       // produce.
-      if (body.decision !== "allow" && body.decision !== "deny") {
-        return json({ error: "decision must be allow or deny" }, 400);
+      if (
+        body.decision !== "allow" &&
+        body.decision !== "deny" &&
+        body.decision !== "allowAlways"
+      ) {
+        return json({ error: "decision must be allow, deny, or allowAlways" }, 400);
       }
       const stub = env.MACHINE.get(env.MACHINE.idFromName(`mac:${body.machine}`));
       return stub.fetch(

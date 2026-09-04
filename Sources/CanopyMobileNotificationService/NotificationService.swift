@@ -87,7 +87,8 @@ final class NotificationService: UNNotificationServiceExtension {
             kind: kind,
             requestId: requestId,
             decision: nil,
-            decidedAt: nil
+            decidedAt: nil,
+            allowAlways: userInfo["allowAlways"] as? Bool
         )
 
         do {

@@ -16,8 +16,14 @@ extension Notification.Name {
 /// relay's contract (which refuses anything but exactly `"allow"`/`"deny"`).
 enum CanopyPermissionAction {
     static let categoryIdentifier = "CANOPY_PERMISSION"
+    /// A second category, identical but for the extra action. iOS resolves a
+    /// notification's actions from its category alone, so "offer Always only
+    /// when the CLI proposed a rule" cannot be a per-notification flag — it
+    /// has to be a different category, chosen by the relay.
+    static let alwaysCategoryIdentifier = "CANOPY_PERMISSION_ALWAYS"
     static let allow = "allow"
     static let deny = "deny"
+    static let allowAlways = "allowAlways"
 }
 
 /// Asks for notification permission, registers with APNs, and hands the
@@ -78,12 +84,22 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
             title: "Deny",
             options: [.destructive]
         )
+        let always = UNNotificationAction(
+            identifier: CanopyPermissionAction.allowAlways,
+            title: "Always",
+            options: []
+        )
         let category = UNNotificationCategory(
             identifier: CanopyPermissionAction.categoryIdentifier,
             actions: [allow, deny],
             intentIdentifiers: []
         )
-        UNUserNotificationCenter.current().setNotificationCategories([category])
+        let alwaysCategory = UNNotificationCategory(
+            identifier: CanopyPermissionAction.alwaysCategoryIdentifier,
+            actions: [allow, always, deny],
+            intentIdentifiers: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([category, alwaysCategory])
     }
 
     /// The user tapped a notification. The push payload carries `machine`
@@ -98,7 +114,8 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         let userInfo = response.notification.request.content.userInfo
 
         if response.actionIdentifier == CanopyPermissionAction.allow ||
-            response.actionIdentifier == CanopyPermissionAction.deny {
+            response.actionIdentifier == CanopyPermissionAction.deny ||
+            response.actionIdentifier == CanopyPermissionAction.allowAlways {
             handlePermissionDecision(actionIdentifier: response.actionIdentifier,
                                       userInfo: userInfo,
                                       completionHandler: completionHandler)
@@ -164,7 +181,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
     private func handlePermissionDecision(actionIdentifier: String,
                                            userInfo: [AnyHashable: Any],
                                            completionHandler: @escaping () -> Void) {
-        let decision = actionIdentifier // already exactly "allow" or "deny"
+        let decision = actionIdentifier // already exactly "allow", "deny" or "allowAlways"
         guard let machine = userInfo["machine"] as? String,
               let sessionId = userInfo["sessionId"] as? String,
               let requestId = userInfo["requestId"] as? String

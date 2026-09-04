@@ -31,6 +31,9 @@ export interface NotifyBody {
   bodyFull?: string;
   /** Present only for `kind: "asking"`. The id the phone answers with. */
   requestId?: string;
+  /** Whether the CLI proposed a rule for this ask, so the phone can offer
+   *  "Always" only when there is something to write. */
+  allowAlways?: boolean;
 }
 
 /** What the phone posts to /reply. */
@@ -53,7 +56,12 @@ export interface ReplyEnvelope {
  *  docs/superpowers/specs/2026-09-04-permission-response-capture.md
  *  (`response.result.behavior`). "Allow Always" is not a third value — it is
  *  `allow` plus a derived `updatedPermissions` rule — and is out of scope. */
-export type PermissionDecision = "allow" | "deny";
+/** "allowAlways" is not a third behavior on the wire — Canopy turns it into
+ *  an `allow` carrying the rules the CLI itself proposed for this request
+ *  (the extension's own button does exactly that). It stays a distinct value
+ *  here so the relay refuses anything it has not seen, rather than
+ *  normalizing an unknown decision into an approval. */
+export type PermissionDecision = "allow" | "deny" | "allowAlways";
 
 /** What the phone posts to /decide. */
 export interface DecisionBody {

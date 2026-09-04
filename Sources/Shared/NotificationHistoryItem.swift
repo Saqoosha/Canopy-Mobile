@@ -38,6 +38,10 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
     /// and the session is still blocked" failure the design doc argues this
     /// whole feature exists to remove. It must be visible, not inferred.
     var decisionDelivered: Bool?
+    /// Whether the CLI proposed a rule for this ask. Only then does the UI
+    /// offer "Always" — a button that quietly degraded to a plain Allow would
+    /// tell the user they had made a standing decision they had not.
+    var allowAlways: Bool?
 
     init(
         id: String,
@@ -51,7 +55,8 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         requestId: String? = nil,
         decision: String? = nil,
         decidedAt: Date? = nil,
-        decisionDelivered: Bool? = nil
+        decisionDelivered: Bool? = nil,
+        allowAlways: Bool? = nil
     ) {
         self.id = id
         self.receivedAt = receivedAt
@@ -65,6 +70,7 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         self.decision = decision
         self.decidedAt = decidedAt
         self.decisionDelivered = decisionDelivered
+        self.allowAlways = allowAlways
     }
 
     /// Jq and some pipelines pass through the four ASCII letters `null` as

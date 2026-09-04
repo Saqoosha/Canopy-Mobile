@@ -9,3 +9,4 @@ Sources/CanopyMobileNotificationService.entitlements
 .dev.vars
 worker/.dev.vars
 build-device/
+build-generic/

@@ -111,7 +111,10 @@ struct CanopyMobileApp: App {
                                 sessionId: item.sessionId,
                                 resumeId: item.resumeId,
                                 title: item.title,
-                                subtitle: item.machine
+                                // The roster's own name for the machine when
+                                // it has one. A raw machine UUID under the
+                                // title is an id the reader cannot use.
+                                subtitle: snapshots[item.machine]?.displayName ?? item.machine
                             )))
                         }
                         .navigationTitle("History")

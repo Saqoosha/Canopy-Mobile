@@ -5,9 +5,8 @@ import SwiftUI
 /// something to show as context instead of just a session title (see
 /// `ReplySheet.context`).
 struct HistoryView: View {
-    /// Wired to a no-op by the caller for now — the route that carries a
-    /// decision back to the Mac doesn't exist yet. Passed through to
-    /// `HistoryDetailView` unchanged.
+    /// Wired by `CanopyMobileApp` to `sendDecision(item:decision:)`. Passed
+    /// through to `HistoryDetailView` unchanged.
     var onDecision: (NotificationHistoryItem, String) -> Void = { _, _ in }
     /// Fires when the user taps Reply in `HistoryDetailView`. Passed through
     /// unchanged so `CanopyMobileApp` can populate its single shared

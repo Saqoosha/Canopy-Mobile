@@ -76,4 +76,30 @@ struct RosterClient {
         default: throw RosterError.unexpectedStatus(status)
         }
     }
+
+    /// Answers a permission ask. `decision` must be exactly `"allow"` or
+    /// `"deny"` — the relay's `/decide` refuses any other value (see
+    /// `worker/src/index.ts`) and `"allow_always"` on purpose. This is the
+    /// ONE method both answer paths call — the lock-screen/Watch action in
+    /// `PushRegistrar` and the Allow/Deny buttons in `HistoryDetailView`
+    /// (via `CanopyMobileApp`) — so the two cannot drift into answering the
+    /// same question two different ways. A 503 means no Mac is connected;
+    /// that surfaces as `.unexpectedStatus(503)` like `sendReply`'s does,
+    /// left for the caller to decide how to log it.
+    func sendDecision(machine: String, sessionId: String, requestId: String, decision: String) async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("decide"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "machine": machine, "sessionId": sessionId, "requestId": requestId, "decision": decision,
+        ])
+        let (_, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        switch status {
+        case 200: return
+        case 401: throw RosterError.unauthorized
+        default: throw RosterError.unexpectedStatus(status)
+        }
+    }
 }

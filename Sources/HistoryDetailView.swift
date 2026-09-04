@@ -6,7 +6,10 @@ import SwiftUI
 /// Allow/Deny.
 struct HistoryDetailView: View {
     let item: NotificationHistoryItem
-    /// See `HistoryView.onDecision` — inert until the decision route exists.
+    /// Wired by `CanopyMobileApp` to `sendDecision(item:decision:)`, which
+    /// calls `RosterClient.sendDecision` — the same method the lock-screen
+    /// and Apple Watch Allow/Deny action calls in `PushRegistrar`, so this
+    /// button and that action can't answer the same ask two different ways.
     var onDecision: (NotificationHistoryItem, String) -> Void = { _, _ in }
     /// See `HistoryView.onReply` — Reply does NOT present its own sheet.
     /// `CanopyMobileApp` owns the single `replyTarget`/`.sheet(item:)` that

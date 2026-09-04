@@ -108,7 +108,9 @@ struct CanopyMobileApp: App {
                 }
 
                 NavigationStack {
-                    HistoryView { item in
+                    HistoryView(onDecision: { item, decision in
+                        sendDecision(item: item, decision: decision)
+                    }) { item in
                         replyTarget = ReplyTarget(
                             machine: item.machine,
                             sessionId: item.sessionId,
@@ -303,6 +305,35 @@ struct CanopyMobileApp: App {
     private func sendReply(machine: String, sessionId: String, text: String) async throws {
         guard let client else { throw RosterError.unexpectedStatus(-1) }
         try await client.sendReply(machine: machine, sessionId: sessionId, text: text)
+    }
+
+    /// `HistoryDetailView`'s Allow/Deny route here, through the SAME
+    /// `RosterClient.sendDecision` method `PushRegistrar`'s lock-screen/Watch
+    /// action handler calls — see that type's `postDecision`. Two callers,
+    /// one client method, so they cannot drift into answering the same ask
+    /// two different ways. A failed POST is logged, not swallowed, but the
+    /// history update still runs — same shape as `PushRegistrar`'s: the
+    /// local record of "the user tapped Allow" must not depend on the relay
+    /// being reachable.
+    private func sendDecision(item: NotificationHistoryItem, decision: String) {
+        guard let requestId = item.requestId else { return }
+        Task {
+            if let client {
+                do {
+                    try await client.sendDecision(machine: item.machine, sessionId: item.sessionId,
+                                                   requestId: requestId, decision: decision)
+                } catch {
+                    print("Permission decision POST failed: \(error.localizedDescription)")
+                }
+            } else {
+                print("Permission decision skipped: relay not configured")
+            }
+            do {
+                try HistoryStore.updateDecision(requestId: requestId, decision: decision, decidedAt: Date())
+            } catch {
+                print("HistoryStore.updateDecision failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     /// The body of the newest history item for this session, if any —

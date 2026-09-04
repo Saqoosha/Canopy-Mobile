@@ -10,6 +10,16 @@ extension Notification.Name {
     static let canopyMobileReplyRequested = Notification.Name("CanopyMobileReplyRequested")
 }
 
+/// Identifiers for the permission-ask notification category. The action
+/// identifiers ARE the decision values `RosterClient.sendDecision` posts to
+/// `/decide` — no separate translation table to keep in sync with the
+/// relay's contract (which refuses anything but exactly `"allow"`/`"deny"`).
+enum CanopyPermissionAction {
+    static let categoryIdentifier = "CANOPY_PERMISSION"
+    static let allow = "allow"
+    static let deny = "deny"
+}
+
 /// Asks for notification permission, registers with APNs, and hands the
 /// token to the relay. Split out of the App so the App stays about the
 /// roster; this file is the only place that knows APNs exists.
@@ -45,11 +55,36 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         // notification tap still reaches `didReceive` below — UNUserNotification-
         // Center holds the response and redelivers it once a delegate exists.
         UNUserNotificationCenter.current().delegate = self
+        registerNotificationCategory()
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
             guard granted else { return }
             DispatchQueue.main.async { application.registerForRemoteNotifications() }
         }
         return true
+    }
+
+    /// Copied from Pager's `AppDelegate.registerNotificationCategory` — keep
+    /// the shape AND the reasoning, not just the identifiers: no
+    /// `.authenticationRequired`, because that option queues the action
+    /// until the iPhone is unlocked, which means an Apple Watch tap on a
+    /// locked iPhone never reaches the delegate.
+    private func registerNotificationCategory() {
+        let allow = UNNotificationAction(
+            identifier: CanopyPermissionAction.allow,
+            title: "Allow",
+            options: []
+        )
+        let deny = UNNotificationAction(
+            identifier: CanopyPermissionAction.deny,
+            title: "Deny",
+            options: [.destructive]
+        )
+        let category = UNNotificationCategory(
+            identifier: CanopyPermissionAction.categoryIdentifier,
+            actions: [allow, deny],
+            intentIdentifiers: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([category])
     }
 
     /// The user tapped a notification. The push payload carries `machine`
@@ -62,6 +97,17 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
                                  didReceive response: UNNotificationResponse,
                                  withCompletionHandler completionHandler: @escaping () -> Void) {
         let userInfo = response.notification.request.content.userInfo
+
+        if response.actionIdentifier == CanopyPermissionAction.allow ||
+            response.actionIdentifier == CanopyPermissionAction.deny {
+            handlePermissionDecision(actionIdentifier: response.actionIdentifier,
+                                      userInfo: userInfo,
+                                      completionHandler: completionHandler)
+            return
+        }
+
+        // A tap (no registered action — `UNNotificationDefaultActionIdentifier`)
+        // keeps opening the detail, same as before this category existed.
         if let machine = userInfo["machine"] as? String,
            let sessionId = userInfo["sessionId"] as? String {
             NotificationCenter.default.post(
@@ -71,6 +117,64 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
             )
         }
         completionHandler()
+    }
+
+    /// Allow/Deny tapped from the lock screen, an Apple Watch, or the
+    /// expanded banner. Posts through `RosterClient.sendDecision` — the same
+    /// method `CanopyMobileApp.sendDecision(item:decision:)` calls for the
+    /// `HistoryDetailView` buttons, so a lock-screen tap and an in-app tap
+    /// cannot diverge into two different ways of answering the same ask.
+    ///
+    /// `completionHandler` is deliberately called only after the POST and
+    /// the history update finish, not before: the system keeps this process
+    /// runnable for exactly as long as the handler is outstanding, which is
+    /// what carries the work through whether the phone was locked,
+    /// backgrounded, or this was a Watch tap.
+    private func handlePermissionDecision(actionIdentifier: String,
+                                           userInfo: [AnyHashable: Any],
+                                           completionHandler: @escaping () -> Void) {
+        let decision = actionIdentifier // already exactly "allow" or "deny"
+        guard let machine = userInfo["machine"] as? String,
+              let sessionId = userInfo["sessionId"] as? String,
+              let requestId = userInfo["requestId"] as? String
+        else {
+            print("Permission decision action fired with missing machine/sessionId/requestId")
+            completionHandler()
+            return
+        }
+        Task {
+            await PushRegistrar.postDecision(machine: machine, sessionId: sessionId,
+                                              requestId: requestId, decision: decision)
+            do {
+                try HistoryStore.updateDecision(requestId: requestId, decision: decision, decidedAt: Date())
+            } catch {
+                print("HistoryStore.updateDecision failed: \(error.localizedDescription)")
+            }
+            completionHandler()
+        }
+    }
+
+    /// Same relay-config read `upload(token:)` uses below, for the same
+    /// reason: this type has no reference to the app's already-built
+    /// `RosterClient`, and shouldn't grow one just to answer one push.
+    /// Errors are logged, never thrown further — a failed POST still lets
+    /// the history update below record what the user did.
+    private static func postDecision(machine: String, sessionId: String,
+                                      requestId: String, decision: String) async {
+        guard let stored = UserDefaults.standard.string(forKey: "rosterUrl"),
+              let base = URL(string: stored),
+              let secret = KeychainHelper.load(key: "rosterSecret"),
+              !secret.isEmpty
+        else {
+            print("Permission decision skipped: relay not configured (relayURL or secret is nil)")
+            return
+        }
+        do {
+            try await RosterClient(baseURL: base, secret: secret)
+                .sendDecision(machine: machine, sessionId: sessionId, requestId: requestId, decision: decision)
+        } catch {
+            print("Permission decision POST failed: \(error.localizedDescription)")
+        }
     }
 
     func application(_: UIApplication,

@@ -16,6 +16,17 @@ export interface PaneRow {
   messageCount: number;
 }
 
+/** What Canopy posts to /notify. */
+export interface NotifyBody {
+  machine: string;
+  /** OpenSession.ID as a UUID string — the same one the roster carries. */
+  sessionId: string;
+  title: string;
+  body: string;
+  /** Which activity raised this. Only these two push. */
+  kind: "completed" | "asking";
+}
+
 export interface MachineSnapshot {
   /** IOPlatformUUID. Never the hostname. */
   machineId: string;

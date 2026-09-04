@@ -25,3 +25,11 @@ new_sqlite_classes = ["MachineDO"]
 [[kv_namespaces]]
 binding = "MACHINES"
 id = "34a34a05b2194af6b9f2c89847a57ea1"
+
+# APNS_AUTH_KEY (the .p8 private key contents) is set separately via
+# `npx wrangler secret put APNS_AUTH_KEY` — never committed here.
+[vars]
+APNS_KEY_ID = "SRH3669YH6"
+APNS_TEAM_ID = "VCFY2GFR89"
+APNS_BUNDLE_ID = "sh.saqoo.canopy-mobile"
+APNS_USE_SANDBOX = "false"

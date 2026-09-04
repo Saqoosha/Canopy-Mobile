@@ -89,7 +89,8 @@ final class NotificationService: UNNotificationServiceExtension {
             decision: nil,
             decidedAt: nil,
             allowAlways: userInfo["allowAlways"] as? Bool,
-            resumeId: userInfo["resumeId"] as? String
+            resumeId: userInfo["resumeId"] as? String,
+            answerable: userInfo["answerable"] as? Bool
         )
 
         do {

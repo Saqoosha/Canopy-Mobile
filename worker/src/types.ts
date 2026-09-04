@@ -34,6 +34,9 @@ export interface NotifyBody {
   /** Whether the CLI proposed a rule for this ask, so the phone can offer
    *  "Always" only when there is something to write. */
   allowAlways?: boolean;
+  /** False for an ask that Allow/Deny cannot resolve (an AskUserQuestion,
+   *  whose answer is text). The phone then shows it without buttons. */
+  answerable?: boolean;
   /** The CLI's own session id, stable across Canopy restarts. */
   resumeId?: string;
 }

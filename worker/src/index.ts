@@ -128,8 +128,10 @@ export default {
           // iOS resolves a notification's actions from its category alone, so
           // "offer Always only when the CLI proposed a rule" has to be a
           // second category rather than a flag the app reads at render time.
+          // An unanswerable ask gets the plain category: two lock-screen
+          // buttons that cannot resolve it are worse than none.
           category:
-            body.kind === "asking"
+            body.kind === "asking" && body.answerable !== false
               ? body.allowAlways
                 ? "CANOPY_PERMISSION_ALWAYS"
                 : "CANOPY_PERMISSION"
@@ -149,8 +151,30 @@ export default {
         // plain Allow would tell the user they had made a standing decision
         // they had not.
         ...(body.allowAlways ? { allowAlways: true } : {}),
+        ...(body.answerable === false ? { answerable: false } : {}),
       };
-      return sendPush(env, deviceToken, payload);
+      // APNs rejects a payload over 4 KB outright, and this is the only
+      // place the whole thing exists — Canopy caps its own text in bytes, but
+      // it cannot see the title, the ids or the category that ride with it.
+      // Shrink `bodyFull` until the encoded payload fits rather than trusting
+      // an upstream guess; a dropped notification is silent on both ends.
+      const APNS_LIMIT = 4096;
+      let shrunk = payload;
+      while (
+        new TextEncoder().encode(JSON.stringify(shrunk)).length > APNS_LIMIT &&
+        shrunk.bodyFull.length > 0
+      ) {
+        const over =
+          new TextEncoder().encode(JSON.stringify(shrunk)).length - APNS_LIMIT;
+        // Cut at least one character, and roughly the overshoot, so a body of
+        // multibyte text converges in a few passes instead of one per byte.
+        const drop = Math.max(1, Math.ceil(over / 3));
+        shrunk = {
+          ...shrunk,
+          bodyFull: shrunk.bodyFull.slice(0, Math.max(0, shrunk.bodyFull.length - drop)),
+        };
+      }
+      return sendPush(env, deviceToken, shrunk);
     }
     if (url.pathname === "/reply" && request.method === "POST") {
       const body = await request.json<ReplyBody>().catch(() => null);

@@ -255,7 +255,10 @@ private struct MessageBlock: View {
     let onDecision: (NotificationHistoryItem, String) -> Void
 
     private var isUnansweredAsk: Bool {
-        item.kind == "asking" && item.decision == nil
+        // `answerable == false` is an AskUserQuestion: its answer is text the
+        // model asked for, so Allow/Deny cannot resolve it and Canopy refuses
+        // one anyway. Show the ask, offer nothing that would not work.
+        item.kind == "asking" && item.decision == nil && item.answerable != false
     }
 
     private var icon: String {

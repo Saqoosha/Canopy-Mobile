@@ -47,6 +47,11 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
     /// conversation came up empty and read as "the push never arrived"
     /// (measured 2026-09-05). Grouping prefers this when both sides have one.
     var resumeId: String?
+    /// False for an ask Allow/Deny cannot resolve — an `AskUserQuestion`,
+    /// whose answer is text the model asked for. Buttons are hidden then:
+    /// answering one would echo the QUESTION back as the tool's input and
+    /// resolve the request without ever supplying an answer.
+    var answerable: Bool?
 
     init(
         id: String,
@@ -62,7 +67,8 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         decidedAt: Date? = nil,
         decisionDelivered: Bool? = nil,
         allowAlways: Bool? = nil,
-        resumeId: String? = nil
+        resumeId: String? = nil,
+        answerable: Bool? = nil
     ) {
         self.id = id
         self.receivedAt = receivedAt
@@ -78,6 +84,7 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         self.decisionDelivered = decisionDelivered
         self.allowAlways = allowAlways
         self.resumeId = resumeId
+        self.answerable = answerable
     }
 
     /// Jq and some pipelines pass through the four ASCII letters `null` as

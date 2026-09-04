@@ -73,6 +73,22 @@ final class RosterSocket {
                 }
             case .failure(let error):
                 Task { @MainActor in
+                    // Our own teardown arrives here too: `disconnect()`
+                    // cancels the task, and the cancellation is delivered to
+                    // this pending `receive` as a failure. Backgrounding and
+                    // `connect()`'s leading `disconnect()` both take that
+                    // path, so reporting it flashed "Live connection dropped:
+                    // cancelled" on every return to the app (seen on device
+                    // 2026-09-04) for a socket that was already being
+                    // replaced.
+                    //
+                    // Keyed on whether this object still HOLDS the task, not
+                    // on the error being `.cancelled`. A remote drop arrives
+                    // while `task` is still ours and is still reported, so
+                    // this cannot re-hide the frozen-snapshot failure that
+                    // `onFailure` exists to surface — matching on the error
+                    // code would, since a server-side close can also cancel.
+                    guard let self, self.task === task else { return }
                     onFailure(RosterSocketError(underlying: error))
                 }
             }

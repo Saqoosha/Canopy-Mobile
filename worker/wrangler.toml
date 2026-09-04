@@ -4,6 +4,8 @@ main = "src/index.ts"
 # local tests, not by anything in this code. Check that pin before raising
 # this date.
 compatibility_date = "2026-08-22"
+# Same account as pager-relay; pinned so a deploy never prompts to pick one.
+account_id = "0f56ad2619afc619cc2975dd0728f8a9"
 
 [observability]
 enabled = true
@@ -18,8 +20,8 @@ tag = "v1"
 new_sqlite_classes = ["MachineDO"]
 
 # The phone cannot enumerate Durable Objects, so this records every machine
-# id that has ever published. Real id NOT created by this change — run
-# `npx wrangler kv namespace create MACHINES` and paste the id it prints.
+# id that has ever published. Created 2026-09-04 on Saqoosha's account; a
+# fork needs its own (`npx wrangler kv namespace create MACHINES`).
 [[kv_namespaces]]
 binding = "MACHINES"
-id = "PLACEHOLDER-run-wrangler-kv-namespace-create-MACHINES"
+id = "34a34a05b2194af6b9f2c89847a57ea1"

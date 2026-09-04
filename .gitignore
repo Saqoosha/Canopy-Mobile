@@ -5,3 +5,4 @@ build/
 CanopyMobile.xcodeproj/
 .dev.vars
 worker/.dev.vars
+build-device/

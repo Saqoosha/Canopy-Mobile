@@ -11,7 +11,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: sh.saqoo.canopy-mobile
+        DEVELOPMENT_TEAM: G5G54TCH8W
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES

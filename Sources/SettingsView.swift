@@ -29,12 +29,24 @@ struct SettingsView: View {
                             // user taps past is silently discarded.
                             if !focused { commitSecret() }
                         }
-                    // Never reads the secret back — the field itself is
-                    // never seeded from the Keychain either — this only
+                    // Never reveals the value — but the field IS seeded from
+                    // the Keychain, so it is not empty on a revisit, and a
+                    // paste into it appends rather than replaces unless the
+                    // user selects the existing content first. This Text only
                     // tells the user something is stored, not what it is.
                     Text(hasStoredSecret ? "A secret is stored" : "No secret stored")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    // Blank submit is a deliberate no-op, and the Keychain
+                    // item survives app uninstall — without this there is
+                    // no path to remove a bad stored secret.
+                    if hasStoredSecret {
+                        Button("Clear stored secret", role: .destructive) {
+                            KeychainHelper.delete(key: "rosterSecret")
+                            secret = ""
+                            hasStoredSecret = KeychainHelper.has(key: "rosterSecret")
+                        }
+                    }
                 }
             }
             .navigationTitle("Settings")

@@ -227,6 +227,25 @@ private struct MessageBlock: View {
                     FontFamilyVariant(.monospaced)
                     FontSize(.em(0.92))
                 }
+                // A shell command is the one body that must not be wrapped OR
+                // clipped: wrapping it makes a pipeline unreadable, and the
+                // default block silently cut a `curl` line mid-flag at phone
+                // width (measured on device 2026-09-04) — you could not see
+                // what you were being asked to approve. Scroll it instead.
+                .markdownBlockStyle(\.codeBlock) { configuration in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        configuration.label
+                            .fixedSize(horizontal: true, vertical: false)
+                            .markdownTextStyle {
+                                FontFamilyVariant(.monospaced)
+                                FontSize(.em(0.88))
+                            }
+                            .padding(12)
+                    }
+                    .background(Color(.secondarySystemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .markdownMargin(top: .em(0.4), bottom: .em(0.4))
+                }
 
             if isUnansweredAsk {
                 HStack(spacing: 12) {

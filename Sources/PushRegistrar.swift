@@ -106,13 +106,20 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         }
 
         // A tap (no registered action — `UNNotificationDefaultActionIdentifier`)
-        // keeps opening the detail, same as before this category existed.
+        // opens the reply composer, EXCEPT on a permission ask nobody has
+        // answered, where `CanopyMobileApp` opens the ask itself. The
+        // `requestId` is the only thing that tells the two apart, so it rides
+        // along whenever the push carried one — without it the tap lands in
+        // the composer, and a reply typed there is refused by the shim after
+        // the sheet has already dismissed as success.
         if let machine = userInfo["machine"] as? String,
            let sessionId = userInfo["sessionId"] as? String {
+            var info: [String: Any] = ["machine": machine, "sessionId": sessionId]
+            if let requestId = userInfo["requestId"] as? String { info["requestId"] = requestId }
             NotificationCenter.default.post(
                 name: .canopyMobileReplyRequested,
                 object: nil,
-                userInfo: ["machine": machine, "sessionId": sessionId]
+                userInfo: info
             )
         }
         completionHandler()

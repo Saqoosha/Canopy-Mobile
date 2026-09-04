@@ -150,7 +150,8 @@ struct CanopyMobileApp: App {
             .onReceive(NotificationCenter.default.publisher(for: .canopyMobileReplyRequested)) { notification in
                 guard let machine = notification.userInfo?["machine"] as? String,
                       let sessionId = notification.userInfo?["sessionId"] as? String else { return }
-                handleReplyRequested(machine: machine, sessionId: sessionId)
+                handleReplyRequested(machine: machine, sessionId: sessionId,
+                                      requestId: notification.userInfo?["requestId"] as? String)
             }
             .onChange(of: scenePhase, initial: true) { _, phase in
                 switch phase {
@@ -298,7 +299,28 @@ struct CanopyMobileApp: App {
     /// nothing to show a title for — decline rather than open a sheet with
     /// blank text, the same way a closed/dormant session already declines
     /// the reply itself server-side.
-    private func handleReplyRequested(machine: String, sessionId: String) {
+    /// A plain tap on a push. **An unanswered permission ask opens the ask,
+    /// never the composer** — the default tap is the gesture most people use,
+    /// Allow/Deny otherwise sit behind a long-press, and a reply typed while a
+    /// request is outstanding is refused by the shim after the sheet has
+    /// already reported success. The history item is what the Notification
+    /// Service Extension wrote when the push was delivered, so it is on disk
+    /// before any tap can reach here; if it is missing (an APNs push the
+    /// extension never saw) this falls through to the composer, which is the
+    /// behaviour that existed before and not a worse one.
+    private func handleReplyRequested(machine: String, sessionId: String, requestId: String?) {
+        if let requestId,
+           let ask = (try? HistoryStore.loadAll())?
+               .first(where: { $0.requestId == requestId && $0.decision == nil }) {
+            replyTarget = ReplyTarget(
+                machine: machine,
+                sessionId: sessionId,
+                title: ask.title,
+                context: nil,
+                pendingAsk: ask
+            )
+            return
+        }
         guard let pane = snapshots[machine]?.panes.first(where: { $0.sessionId == sessionId }) else { return }
         replyTarget = ReplyTarget(
             machine: machine,

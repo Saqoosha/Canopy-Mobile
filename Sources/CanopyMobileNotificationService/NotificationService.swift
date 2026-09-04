@@ -13,12 +13,16 @@ import UserNotifications
 final class NotificationService: UNNotificationServiceExtension {
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var bestAttempt: UNMutableNotificationContent?
+    // Kept only so `serviceExtensionTimeWillExpire` has something to deliver
+    // when `bestAttempt` is nil (mutableCopy failed) — see that method.
+    private var originalContent: UNNotificationContent?
 
     override func didReceive(
         _ request: UNNotificationRequest,
         withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
     ) {
         self.contentHandler = contentHandler
+        self.originalContent = request.content
         let best = request.content.mutableCopy() as? UNMutableNotificationContent
         self.bestAttempt = best
 
@@ -99,12 +103,30 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     override func serviceExtensionTimeWillExpire() {
+        // The completion handler must be called exactly once on every path,
+        // this one included — an uncalled handler doesn't error, it just
+        // makes iOS show the unmodified banner after a timeout, which looks
+        // identical to the extension having worked. `didReceive` is fully
+        // synchronous today, so this method is currently unreachable with
+        // `contentHandler` still set, but that stops being true the moment
+        // any step in `didReceive` (body-shortening moving into the
+        // extension, say) becomes async. Pager's copy of this method drops
+        // the handler on the no-`bestAttempt` branch; this divergence from
+        // it is deliberate, not a missed sync.
         guard let handler = contentHandler else { return }
+        contentHandler = nil
         if let content = bestAttempt {
             handler(content)
+        } else if let content = originalContent {
+            NSLog("CanopyMobileNotificationService: serviceExtensionTimeWillExpire with no bestAttempt — delivering original content")
+            handler(content)
         } else {
-            NSLog("CanopyMobileNotificationService: serviceExtensionTimeWillExpire with no bestAttempt — nothing to deliver")
+            // Unreachable in practice: `originalContent` is set on the same
+            // line as `contentHandler` in `didReceive`, so it is always
+            // present whenever the guard above passes. Deliver something
+            // rather than drop the handler if that ever stops holding.
+            NSLog("CanopyMobileNotificationService: serviceExtensionTimeWillExpire with neither bestAttempt nor originalContent — delivering empty content")
+            handler(UNNotificationContent())
         }
-        contentHandler = nil
     }
 }

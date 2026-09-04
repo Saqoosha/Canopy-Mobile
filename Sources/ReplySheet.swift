@@ -6,6 +6,12 @@ struct ReplySheet: View {
     let machine: String
     let sessionId: String
     let sessionTitle: String
+    /// The notification body being answered, when the sheet was opened from
+    /// one — a completion's or an ask's `body`. Rendered read-only above the
+    /// text field so the composer shows what it's replying to instead of
+    /// making the user hold it in their head. `nil` (the roster-tap path
+    /// with no matching history item) renders nothing extra.
+    var context: String? = nil
     let send: (String) async throws -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -16,6 +22,17 @@ struct ReplySheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                if let context, !context.isEmpty {
+                    Section("Replying to") {
+                        ScrollView {
+                            Text(context)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 160)
+                    }
+                }
                 Section(sessionTitle) {
                     TextField("What should it do next?", text: $text, axis: .vertical)
                         .lineLimit(3...8)

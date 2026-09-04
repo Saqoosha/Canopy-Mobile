@@ -33,10 +33,14 @@ struct CanopyMobileApp: App {
     @State private var secret: String = KeychainHelper.load(key: "rosterSecret") ?? ""
     @State private var showingSettings = false
 
-    // The pane a reply sheet is open for — set by a row tap (with the pane
-    // already in hand) or by a notification tap (looked up from `snapshots`
-    // by session id, see `handleReplyRequested`).
-    @State private var replyTarget: (machine: String, pane: PaneRow)?
+    // The reply sheet's target — set by a roster row tap, a notification
+    // tap (looked up from `snapshots` by session id, see
+    // `handleReplyRequested`), or a Reply button inside `HistoryDetailView`
+    // (which presents its own sheet locally and never touches this state —
+    // see that view). `context` is the most recent history item's body for
+    // that session, when one exists, so the roster path gets the same
+    // "what is this answering" text the history path always has.
+    @State private var replyTarget: ReplyTarget?
 
     private var baseURL: URL? {
         rosterUrl.isEmpty ? nil : URL(string: rosterUrl)
@@ -51,44 +55,67 @@ struct CanopyMobileApp: App {
 
     var body: some Scene {
         WindowGroup {
-            NavigationStack {
-                Group {
-                    if baseURL == nil {
-                        Text("Set the relay URL in Settings")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        RosterView(machineIds: machineIds, snapshots: snapshots, errors: errors, directoryError: directoryError) { machineId, pane in
-                            replyTarget = (machineId, pane)
-                        }
-                        .refreshable {
-                            await refresh()
+            // Two tabs, each with its own `NavigationStack` (standard iOS
+            // shape) so History's list→detail push doesn't fight the
+            // roster's own navigation. The reply sheet is presented from
+            // this outer level, not from either stack, because it can be
+            // driven by a notification tap regardless of which tab is
+            // frontmost.
+            TabView {
+                NavigationStack {
+                    Group {
+                        if baseURL == nil {
+                            Text("Set the relay URL in Settings")
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            RosterView(machineIds: machineIds, snapshots: snapshots, errors: errors, directoryError: directoryError) { machineId, pane in
+                                replyTarget = ReplyTarget(
+                                    machine: machineId,
+                                    sessionId: pane.sessionId,
+                                    title: pane.title,
+                                    context: mostRecentContext(for: pane.sessionId)
+                                )
+                            }
+                            .refreshable {
+                                await refresh()
+                            }
                         }
                     }
-                }
-                .navigationTitle("Canopy")
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            showingSettings = true
-                        } label: {
-                            Image(systemName: "gearshape")
+                    .navigationTitle("Canopy")
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                showingSettings = true
+                            } label: {
+                                Image(systemName: "gearshape")
+                            }
                         }
                     }
-                }
-                .sheet(isPresented: $showingSettings) {
-                    SettingsView(rosterUrl: $rosterUrl, secret: $secret)
-                }
-                .sheet(item: Binding(
-                    get: { replyTarget.map { ReplyTargetBox(machine: $0.machine, pane: $0.pane) } },
-                    set: { if $0 == nil { replyTarget = nil } }
-                )) { box in
-                    ReplySheet(machine: box.machine,
-                               sessionId: box.pane.sessionId,
-                               sessionTitle: box.pane.title) { text in
-                        guard let client else { throw RosterError.unexpectedStatus(-1) }
-                        try await client.sendReply(machine: box.machine, sessionId: box.pane.sessionId, text: text)
+                    .sheet(isPresented: $showingSettings) {
+                        SettingsView(rosterUrl: $rosterUrl, secret: $secret)
                     }
+                }
+                .tabItem {
+                    Label("Sessions", systemImage: "rectangle.stack")
+                }
+
+                NavigationStack {
+                    HistoryView(sendReply: sendReply)
+                        .navigationTitle("History")
+                }
+                .tabItem {
+                    Label("History", systemImage: "clock")
+                }
+            }
+            .sheet(item: $replyTarget) { target in
+                ReplySheet(
+                    machine: target.machine,
+                    sessionId: target.sessionId,
+                    sessionTitle: target.title,
+                    context: target.context
+                ) { text in
+                    try await sendReply(machine: target.machine, sessionId: target.sessionId, text: text)
                 }
             }
             .task {
@@ -247,12 +274,44 @@ struct CanopyMobileApp: App {
     /// the reply itself server-side.
     private func handleReplyRequested(machine: String, sessionId: String) {
         guard let pane = snapshots[machine]?.panes.first(where: { $0.sessionId == sessionId }) else { return }
-        replyTarget = (machine, pane)
+        replyTarget = ReplyTarget(
+            machine: machine,
+            sessionId: sessionId,
+            title: pane.title,
+            context: mostRecentContext(for: sessionId)
+        )
+    }
+
+    /// Curried so both the roster-driven reply sheet and every
+    /// `HistoryDetailView`'s own reply sheet send through one path, without
+    /// either owning a `RosterClient` of its own.
+    private func sendReply(machine: String, sessionId: String, text: String) async throws {
+        guard let client else { throw RosterError.unexpectedStatus(-1) }
+        try await client.sendReply(machine: machine, sessionId: sessionId, text: text)
+    }
+
+    /// The body of the newest history item for this session, if any —
+    /// `HistoryStore.loadAll()` already returns newest-first. Gives the
+    /// roster-tap reply path the same "what is this answering" context the
+    /// history-tap path always has. Best-effort: a read failure here means
+    /// no context, not an error the user needs to see (the History tab is
+    /// where a real read failure gets surfaced).
+    private func mostRecentContext(for sessionId: String) -> String? {
+        guard let items = try? HistoryStore.loadAll(),
+              let item = items.first(where: { $0.sessionId == sessionId }) else { return nil }
+        let body = NotificationHistoryItem.displayableBody(item.body)
+        return body.isEmpty ? nil : body
     }
 }
 
-private struct ReplyTargetBox: Identifiable {
+/// The reply sheet's target, carrying just enough to open it — never a full
+/// `PaneRow` or `NotificationHistoryItem`, since a notification tap can
+/// name a session with no pane in hand and the two originating types don't
+/// share a shape.
+private struct ReplyTarget: Identifiable {
     let machine: String
-    let pane: PaneRow
-    var id: String { machine + "/" + pane.sessionId }
+    let sessionId: String
+    let title: String
+    let context: String?
+    var id: String { machine + "/" + sessionId }
 }

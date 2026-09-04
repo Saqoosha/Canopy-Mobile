@@ -70,6 +70,24 @@ describe("push notifications", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it("notify rejects a requestId on a completed push", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", sessionId: "s1", title: "t", body: "b", kind: "completed", requestId: "r1" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("notify requires a requestId on an asking push", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", sessionId: "s1", title: "t", body: "b", kind: "asking" }),
+    });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("reply", () => {

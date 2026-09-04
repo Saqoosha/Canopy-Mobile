@@ -25,6 +25,12 @@ export interface NotifyBody {
   body: string;
   /** Which activity raised this. Only these two push. */
   kind: "completed" | "asking";
+  /** The full text, before any shortening. Rides in the push payload so the
+   *  Notification Service Extension can store it — the extension has no
+   *  credential to fetch anything with. */
+  bodyFull?: string;
+  /** Present only for `kind: "asking"`. The id the phone answers with. */
+  requestId?: string;
 }
 
 /** What the phone posts to /reply. */

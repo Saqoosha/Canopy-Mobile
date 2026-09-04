@@ -33,6 +33,11 @@ struct CanopyMobileApp: App {
     @State private var secret: String = KeychainHelper.load(key: "rosterSecret") ?? ""
     @State private var showingSettings = false
 
+    // The pane a reply sheet is open for — set by a row tap (with the pane
+    // already in hand) or by a notification tap (looked up from `snapshots`
+    // by session id, see `handleReplyRequested`).
+    @State private var replyTarget: (machine: String, pane: PaneRow)?
+
     private var baseURL: URL? {
         rosterUrl.isEmpty ? nil : URL(string: rosterUrl)
     }
@@ -53,10 +58,12 @@ struct CanopyMobileApp: App {
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
-                        RosterView(machineIds: machineIds, snapshots: snapshots, errors: errors, directoryError: directoryError)
-                            .refreshable {
-                                await refresh()
-                            }
+                        RosterView(machineIds: machineIds, snapshots: snapshots, errors: errors, directoryError: directoryError) { machineId, pane in
+                            replyTarget = (machineId, pane)
+                        }
+                        .refreshable {
+                            await refresh()
+                        }
                     }
                 }
                 .navigationTitle("Canopy")
@@ -72,9 +79,25 @@ struct CanopyMobileApp: App {
                 .sheet(isPresented: $showingSettings) {
                     SettingsView(rosterUrl: $rosterUrl, secret: $secret)
                 }
+                .sheet(item: Binding(
+                    get: { replyTarget.map { ReplyTargetBox(machine: $0.machine, pane: $0.pane) } },
+                    set: { if $0 == nil { replyTarget = nil } }
+                )) { box in
+                    ReplySheet(machine: box.machine,
+                               sessionId: box.pane.sessionId,
+                               sessionTitle: box.pane.title) { text in
+                        guard let client else { throw RosterError.unexpectedStatus(-1) }
+                        try await client.sendReply(machine: box.machine, sessionId: box.pane.sessionId, text: text)
+                    }
+                }
             }
             .task {
                 await refresh()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .canopyMobileReplyRequested)) { notification in
+                guard let machine = notification.userInfo?["machine"] as? String,
+                      let sessionId = notification.userInfo?["sessionId"] as? String else { return }
+                handleReplyRequested(machine: machine, sessionId: sessionId)
             }
             .onChange(of: scenePhase, initial: true) { _, phase in
                 switch phase {
@@ -219,4 +242,23 @@ struct CanopyMobileApp: App {
         for socket in sockets.values { socket.disconnect() }
         sockets.removeAll()
     }
+
+    /// A notification tap carries only `machine` + `sessionId` (see
+    /// `PushRegistrar`) — no title, no project, nothing to render a sheet
+    /// with. The matching `PaneRow` is looked up from whatever snapshot is
+    /// already in memory. If that machine hasn't been fetched yet, or the
+    /// pane closed between the push firing and the tap landing, there is
+    /// nothing to show a title for — decline rather than open a sheet with
+    /// blank text, the same way a closed/dormant session already declines
+    /// the reply itself server-side.
+    private func handleReplyRequested(machine: String, sessionId: String) {
+        guard let pane = snapshots[machine]?.panes.first(where: { $0.sessionId == sessionId }) else { return }
+        replyTarget = (machine, pane)
+    }
+}
+
+private struct ReplyTargetBox: Identifiable {
+    let machine: String
+    let pane: PaneRow
+    var id: String { machine + "/" + pane.sessionId }
 }

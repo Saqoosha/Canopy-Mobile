@@ -1,6 +1,15 @@
 import UIKit
 import UserNotifications
 
+extension Notification.Name {
+    /// Posted when the user taps a push notification, carrying `machine` and
+    /// `sessionId` (both `String`) in `userInfo` — the same two fields the
+    /// relay's `/notify` payload puts at the top level (see `worker/src/index.ts`).
+    /// `CanopyMobileApp` turns this into the same `replyTarget` a row tap sets,
+    /// so a notification tap and a row tap open the identical sheet.
+    static let canopyMobileReplyRequested = Notification.Name("CanopyMobileReplyRequested")
+}
+
 /// Asks for notification permission, registers with APNs, and hands the
 /// token to the relay. Split out of the App so the App stays about the
 /// roster; this file is the only place that knows APNs exists.
@@ -16,17 +25,43 @@ import UserNotifications
 /// line, or this file repeats the exact silent-failure shape it exists to
 /// prevent. Never log the token or the secret — status code and
 /// `localizedDescription` only.
-final class PushRegistrar: NSObject, UIApplicationDelegate {
+@MainActor
+final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNotificationCenterDelegate {
     static var relayURL: URL?
     static var secret: String?
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        // Set before requesting authorization so a cold launch driven by a
+        // notification tap still reaches `didReceive` below — UNUserNotification-
+        // Center holds the response and redelivers it once a delegate exists.
+        UNUserNotificationCenter.current().delegate = self
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
             guard granted else { return }
             DispatchQueue.main.async { application.registerForRemoteNotifications() }
         }
         return true
+    }
+
+    /// The user tapped a notification. The push payload carries `machine`
+    /// and `sessionId` at the top level (not nested under `aps`), matching
+    /// what `/notify` sends — see the payload build in `worker/src/index.ts`.
+    /// Routed through `NotificationCenter` rather than called directly: this
+    /// type has no reference to the app's `replyTarget` state, and shouldn't
+    /// grow one just to open a sheet.
+    func userNotificationCenter(_: UNUserNotificationCenter,
+                                 didReceive response: UNNotificationResponse,
+                                 withCompletionHandler completionHandler: @escaping () -> Void) {
+        let userInfo = response.notification.request.content.userInfo
+        if let machine = userInfo["machine"] as? String,
+           let sessionId = userInfo["sessionId"] as? String {
+            NotificationCenter.default.post(
+                name: .canopyMobileReplyRequested,
+                object: nil,
+                userInfo: ["machine": machine, "sessionId": sessionId]
+            )
+        }
+        completionHandler()
     }
 
     func application(_: UIApplication,

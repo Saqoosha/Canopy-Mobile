@@ -8,6 +8,10 @@ targets:
     type: application
     platform: iOS
     sources: [Sources]
+    entitlements:
+      path: Sources/CanopyMobile.entitlements
+      properties:
+        aps-environment: development
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: sh.saqoo.canopy-mobile

@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 struct CanopyMobileApp: App {
+    @UIApplicationDelegateAdaptor(PushRegistrar.self) private var pushRegistrar
+
     // Keyed by machine id (`MachineSnapshot.machineId`). A machine only
     // leaves `machineIds` if the Worker's directory stops listing it —
     // never because one fetch failed, so a transient error doesn't blank
@@ -77,6 +79,8 @@ struct CanopyMobileApp: App {
             .onChange(of: scenePhase, initial: true) { _, phase in
                 switch phase {
                 case .active:
+                    PushRegistrar.relayURL = baseURL
+                    PushRegistrar.secret = secret
                     reconnect()
                 default:
                     // Cancel before disconnecting: a `connectAll()` still
@@ -96,10 +100,14 @@ struct CanopyMobileApp: App {
             // because Settings can only be open while the scene already is.
             .onChange(of: rosterUrl) { _, _ in
                 guard scenePhase == .active else { return }
+                PushRegistrar.relayURL = baseURL
+                PushRegistrar.secret = secret
                 reconnect()
             }
             .onChange(of: secret) { _, _ in
                 guard scenePhase == .active else { return }
+                PushRegistrar.relayURL = baseURL
+                PushRegistrar.secret = secret
                 reconnect()
             }
         }

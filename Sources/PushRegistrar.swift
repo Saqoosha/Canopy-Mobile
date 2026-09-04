@@ -29,6 +29,18 @@ extension Notification.Name {
 final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        // Started here, before any SwiftUI view exists to subscribe to
+        // `.didUpdate` — the app delegate's `didFinishLaunchingWithOptions`
+        // runs ahead of the `WindowGroup`'s first body evaluation, so
+        // `HistoryView`'s `.onReceive` can never race an as-yet-unstarted
+        // bridge. Without this call the Notification Service Extension's
+        // Darwin post (`HistoryStore.append`/`updateDecision`) has nothing
+        // on this side to re-broadcast as `.didUpdate`, and the history list
+        // would only ever refresh on `.onAppear`. `startBridge()` is
+        // idempotent (a second call installs a second observer callback that
+        // does the same harmless repost), so there's no harm if this ever
+        // ends up called twice.
+        HistoryUpdateBridge.startBridge()
         // Set before requesting authorization so a cold launch driven by a
         // notification tap still reaches `didReceive` below — UNUserNotification-
         // Center holds the response and redelivers it once a delegate exists.

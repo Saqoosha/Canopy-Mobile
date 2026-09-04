@@ -8,9 +8,12 @@ struct HistoryDetailView: View {
     let item: NotificationHistoryItem
     /// See `HistoryView.onDecision` — inert until the decision route exists.
     var onDecision: (NotificationHistoryItem, String) -> Void = { _, _ in }
-    let sendReply: (String, String, String) async throws -> Void
-
-    @State private var showingReply = false
+    /// See `HistoryView.onReply` — Reply does NOT present its own sheet.
+    /// `CanopyMobileApp` owns the single `replyTarget`/`.sheet(item:)` that
+    /// every reply path (roster tap, notification tap, this button) shares,
+    /// so a notification-tap-driven sheet and a history-driven one can
+    /// never become two competing `.sheet` presentations at once.
+    let onReply: (NotificationHistoryItem) -> Void
 
     /// Allow/Deny only make sense for a permission ask nobody has answered
     /// yet. An already-decided one, or an ordinary completion, gets no
@@ -45,20 +48,10 @@ struct HistoryDetailView: View {
                 }
             }
             Section {
-                Button("Reply") { showingReply = true }
+                Button("Reply") { onReply(item) }
             }
         }
         .navigationTitle("Notification")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showingReply) {
-            ReplySheet(
-                machine: item.machine,
-                sessionId: item.sessionId,
-                sessionTitle: item.title,
-                context: NotificationHistoryItem.displayableBody(item.body)
-            ) { text in
-                try await sendReply(item.machine, item.sessionId, text)
-            }
-        }
     }
 }

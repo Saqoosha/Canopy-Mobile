@@ -9,10 +9,13 @@ struct HistoryView: View {
     /// decision back to the Mac doesn't exist yet. Passed through to
     /// `HistoryDetailView` unchanged.
     var onDecision: (NotificationHistoryItem, String) -> Void = { _, _ in }
-    /// Curried `(machine, sessionId, text)` — shared with the roster-driven
-    /// reply flow in `CanopyMobileApp` rather than each view owning its own
-    /// `RosterClient`.
-    let sendReply: (String, String, String) async throws -> Void
+    /// Fires when the user taps Reply in `HistoryDetailView`. Passed through
+    /// unchanged so `CanopyMobileApp` can populate its single shared
+    /// `replyTarget` — routing every reply through one `.sheet(item:)`
+    /// instead of each view presenting its own is what keeps a
+    /// notification-tap-driven reply and a history-driven reply from ever
+    /// racing as two competing sheet presentations.
+    let onReply: (NotificationHistoryItem) -> Void
 
     @State private var items: [NotificationHistoryItem] = []
     @State private var loadError: Error?
@@ -30,7 +33,7 @@ struct HistoryView: View {
             } else {
                 List(items) { item in
                     NavigationLink {
-                        HistoryDetailView(item: item, onDecision: onDecision, sendReply: sendReply)
+                        HistoryDetailView(item: item, onDecision: onDecision, onReply: onReply)
                     } label: {
                         row(item)
                     }

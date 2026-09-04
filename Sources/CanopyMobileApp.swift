@@ -101,8 +101,15 @@ struct CanopyMobileApp: App {
                 }
 
                 NavigationStack {
-                    HistoryView(sendReply: sendReply)
-                        .navigationTitle("History")
+                    HistoryView { item in
+                        replyTarget = ReplyTarget(
+                            machine: item.machine,
+                            sessionId: item.sessionId,
+                            title: item.title,
+                            context: NotificationHistoryItem.displayableBody(item.body)
+                        )
+                    }
+                    .navigationTitle("History")
                 }
                 .tabItem {
                     Label("History", systemImage: "clock")

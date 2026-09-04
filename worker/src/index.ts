@@ -1,7 +1,7 @@
 import { MachineDO } from "./machine";
 import { sendPush, type ApnsEnv } from "./apns";
 import { shortenWithLLM, fallbackBanner, type LlmEnv } from "./llm";
-import type { NotifyBody, ReplyBody } from "./types";
+import type { DecisionBody, NotifyBody, ReplyBody } from "./types";
 export { MachineDO };
 
 interface Env extends ApnsEnv, LlmEnv {
@@ -135,6 +135,35 @@ export default {
         new Request("https://do/reply", {
           method: "POST",
           body: JSON.stringify({ type: "reply", sessionId: body.sessionId, text }),
+        })
+      );
+    }
+    if (url.pathname === "/decide" && request.method === "POST") {
+      const body = await request.json<DecisionBody>().catch(() => null);
+      // requestId is the only thing tying this decision to the request it
+      // answers, minted per process — never defaulted to whatever is
+      // outstanding, which could approve a tool the user never saw.
+      if (!body?.machine || !body.sessionId || !body.requestId) {
+        return json({ error: "machine, sessionId, and requestId required" }, 400);
+      }
+      // Legal values captured from three real clicks (see
+      // docs/superpowers/specs/2026-09-04-permission-response-capture.md).
+      // An unrecognized value is refused, not normalized — approving a tool
+      // because a value failed to parse is the worst outcome this route can
+      // produce.
+      if (body.decision !== "allow" && body.decision !== "deny") {
+        return json({ error: "decision must be allow or deny" }, 400);
+      }
+      const stub = env.MACHINE.get(env.MACHINE.idFromName(`mac:${body.machine}`));
+      return stub.fetch(
+        new Request("https://do/decide", {
+          method: "POST",
+          body: JSON.stringify({
+            type: "decision",
+            sessionId: body.sessionId,
+            requestId: body.requestId,
+            decision: body.decision,
+          }),
         })
       );
     }

@@ -109,3 +109,35 @@ describe("reply", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("decide", () => {
+  it("decide is refused when no publisher is connected", async () => {
+    const res = await SELF.fetch("https://x/decide", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "no-such-mac", sessionId: "s1", requestId: "r1", decision: "allow" }),
+    });
+    expect(res.status).toBe(503);
+  });
+
+  // "allow_always" stands in for Allow Always, which the capture document
+  // pins as `allow` plus a derived `updatedPermissions` rule — not a third
+  // `behavior` value — so it is not a legal `decision` here either.
+  it("decide rejects a decision value outside the captured set", async () => {
+    const res = await SELF.fetch("https://x/decide", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", sessionId: "s1", requestId: "r1", decision: "allow_always" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("decide requires a requestId", async () => {
+    const res = await SELF.fetch("https://x/decide", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", sessionId: "s1", decision: "allow" }),
+    });
+    expect(res.status).toBe(400);
+  });
+});

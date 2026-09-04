@@ -49,6 +49,34 @@ export interface ReplyEnvelope {
   text: string;
 }
 
+/** The only two legal values, captured from three real clicks in
+ *  docs/superpowers/specs/2026-09-04-permission-response-capture.md
+ *  (`response.result.behavior`). "Allow Always" is not a third value — it is
+ *  `allow` plus a derived `updatedPermissions` rule — and is out of scope. */
+export type PermissionDecision = "allow" | "deny";
+
+/** What the phone posts to /decide. */
+export interface DecisionBody {
+  machine: string;
+  sessionId: string;
+  /** Ties this decision to the request it answers. Required and never
+   *  defaulted: applying a decision with no id to "whatever is outstanding"
+   *  could approve a tool the user never saw. */
+  requestId: string;
+  decision: PermissionDecision;
+}
+
+/** What the DO writes down the publisher socket. A decision is not a reply
+ *  — it answers a different Canopy affordance entirely — so it carries its
+ *  own `type` rather than overloading ReplyEnvelope's, and a future third
+ *  kind can't be confused with either. */
+export interface DecisionEnvelope {
+  type: "decision";
+  sessionId: string;
+  requestId: string;
+  decision: PermissionDecision;
+}
+
 export interface MachineSnapshot {
   /** IOPlatformUUID. Never the hostname. */
   machineId: string;

@@ -45,7 +45,20 @@ struct ReplySheet: View {
             try await send(text.trimmingCharacters(in: .whitespacesAndNewlines))
             dismiss()
         } catch let e as RosterError {
-            error = e.message
+            // A 503 here means the reply DO found no publisher socket for
+            // this machine — i.e. no Mac is connected. `RosterError.message`
+            // can't say that generically: the roster-fetch path (RosterView's
+            // `message(for:)`, over `MachineDirectory`/`RosterClient.fetch`)
+            // also throws `.unexpectedStatus(503)`, but there it means the
+            // relay itself is misconfigured (missing `SHARED_SECRET`) — an
+            // unrelated cause that "no Mac is connected" would misdescribe.
+            // So the reply-specific wording lives here, at the one call site
+            // where a 503 is known to mean "the Mac is asleep."
+            if case .unexpectedStatus(503) = e {
+                error = "No Mac is connected — it may be asleep."
+            } else {
+                error = e.message
+            }
         } catch {
             // The implicit `error` bound by this catch-all shadows the
             // `@State` property of the same name, so `self.` disambiguates.

@@ -54,8 +54,12 @@ struct RosterClient {
     }
 
     /// Sends a reply. Throws `RosterError.unexpectedStatus(503)` when no Mac is
-    /// connected — a distinguishable case, because "your Mac is asleep" is a
-    /// different thing for the user to do about than "that failed".
+    /// connected — a distinguishable Swift case, because "your Mac is asleep"
+    /// is a different thing for the user to do about than "that failed". The
+    /// human-readable distinction is NOT made here or in `RosterError.message`
+    /// (shared with the roster-fetch path, where a 503 means something else
+    /// entirely — a misconfigured relay); `ReplySheet`'s catch is what turns
+    /// this specific case into reply-specific wording.
     func sendReply(machine: String, sessionId: String, text: String) async throws {
         var request = URLRequest(url: baseURL.appendingPathComponent("reply"))
         request.httpMethod = "POST"

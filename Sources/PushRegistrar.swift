@@ -5,7 +5,7 @@ extension Notification.Name {
     /// Posted when the user taps a push notification, carrying `machine` and
     /// `sessionId` (both `String`) in `userInfo` — the same two fields the
     /// relay's `/notify` payload puts at the top level (see `worker/src/index.ts`).
-    /// `CanopyMobileApp` turns this into the same `replyTarget` a row tap sets,
+    /// `CanopyMobileApp` turns this into the same conversation push a row tap makes,
     /// so a notification tap and a row tap open the identical sheet.
     static let canopyMobileReplyRequested = Notification.Name("CanopyMobileReplyRequested")
 }
@@ -90,7 +90,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
     /// and `sessionId` at the top level (not nested under `aps`), matching
     /// what `/notify` sends — see the payload build in `worker/src/index.ts`.
     /// Routed through `NotificationCenter` rather than called directly: this
-    /// type has no reference to the app's `replyTarget` state, and shouldn't
+    /// type has no reference to the app's navigation state, and shouldn't
     /// grow one just to open a sheet.
     func userNotificationCenter(_: UNUserNotificationCenter,
                                  didReceive response: UNNotificationResponse,
@@ -150,7 +150,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
     /// Allow/Deny tapped from the lock screen, an Apple Watch, or the
     /// expanded banner. Posts through `RosterClient.sendDecision` — the same
     /// method `CanopyMobileApp.sendDecision(item:decision:)` calls for the
-    /// `HistoryDetailView` buttons, so a lock-screen tap and an in-app tap
+    /// `SessionConversationView` buttons, so a lock-screen tap and an in-app tap
     /// cannot diverge into two different ways of answering the same ask.
     ///
     /// `completionHandler` is called IMMEDIATELY, and the POST runs under a

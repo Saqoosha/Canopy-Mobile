@@ -1,20 +1,14 @@
 import SwiftUI
 
-/// The notification history list — every completion and permission ask this
-/// phone has received, newest first. Exists so the reply sheet has
-/// something to show as context instead of just a session title (see
-/// `ReplySheet.context`).
+/// Every completion and permission ask this phone has received, across all
+/// machines, newest first. The per-session view is the one people live in;
+/// this one answers the other question — "what has happened anywhere" — which
+/// no single session's stream can.
 struct HistoryView: View {
-    /// Wired by `CanopyMobileApp` to `sendDecision(item:decision:)`. Passed
-    /// through to `HistoryDetailView` unchanged.
-    var onDecision: (NotificationHistoryItem, String) -> Void = { _, _ in }
-    /// Fires when the user taps Reply in `HistoryDetailView`. Passed through
-    /// unchanged so `CanopyMobileApp` can populate its single shared
-    /// `replyTarget` — routing every reply through one `.sheet(item:)`
-    /// instead of each view presenting its own is what keeps a
-    /// notification-tap-driven reply and a history-driven reply from ever
-    /// racing as two competing sheet presentations.
-    let onReply: (NotificationHistoryItem) -> Void
+    /// Fires when a row is tapped, with the item whose session to open. The
+    /// row does not push anything itself: `CanopyMobileApp` owns the
+    /// navigation path, so one type of destination is built in one place.
+    let onSelect: (NotificationHistoryItem) -> Void
 
     @State private var items: [NotificationHistoryItem] = []
     @State private var loadError: Error?
@@ -31,11 +25,10 @@ struct HistoryView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(items) { item in
-                    NavigationLink {
-                        HistoryDetailView(item: item, onDecision: onDecision, onReply: onReply)
-                    } label: {
+                    Button { onSelect(item) } label: {
                         row(item)
                     }
+                    .buttonStyle(.plain)
                 }
             }
         }

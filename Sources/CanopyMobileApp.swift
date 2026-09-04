@@ -33,21 +33,22 @@ struct CanopyMobileApp: App {
     @State private var secret: String = KeychainHelper.load(key: "rosterSecret") ?? ""
     @State private var showingSettings = false
 
-    // The single source of truth for the reply composer: there is exactly
-    // ONE `.sheet(item:)` presenting it (below, at the `TabView` level), and
-    // every route that can open a reply — a roster row tap, a notification
-    // tap (looked up from `snapshots` by session id, see
-    // `handleReplyRequested`), and the Reply button inside
-    // `HistoryDetailView` — sets this same property rather than presenting
-    // a sheet of its own. Two `.sheet` presentations that could both be
-    // active at once would be racy (whichever SwiftUI decided to honor),
-    // and two call sites building the same sheet by hand only stay in sync
-    // as long as someone remembers to edit both — this app has already hit
-    // that shape once (round 1 review), so it stays one property, one
-    // presentation site. `context` is the most recent history item's body
-    // for that session, when one exists, so the roster path gets the same
-    // "what is this answering" text the history path always has.
-    @State private var replyTarget: ReplyTarget?
+    // ONE destination for the whole app. A roster row, a History row and a
+    // notification tap all push `SessionConversationView` for the same
+    // session, so there is a single place that shows what a session has said
+    // and a single place to answer it — including an unanswered permission
+    // ask, which renders Allow/Deny inline in that stream. The reply sheet
+    // and the notification detail this replaced were two more screens saying
+    // subsets of the same thing, and keeping them in step was already a
+    // review finding once.
+    //
+    // Each tab owns its own path (the standard iOS shape) so History's push
+    // does not fight the roster's. A notification tap has no tab of its own,
+    // so it selects the Sessions tab and replaces that path — landing the
+    // user on the session that buzzed them regardless of where they were.
+    @State private var selectedTab = 0
+    @State private var sessionsPath: [ConversationTarget] = []
+    @State private var historyPath: [ConversationTarget] = []
 
     private var baseURL: URL? {
         rosterUrl.isEmpty ? nil : URL(string: rosterUrl)
@@ -68,8 +69,8 @@ struct CanopyMobileApp: App {
             // this outer level, not from either stack, because it can be
             // driven by a notification tap regardless of which tab is
             // frontmost.
-            TabView {
-                NavigationStack {
+            TabView(selection: $selectedTab) {
+                NavigationStack(path: $sessionsPath) {
                     Group {
                         if baseURL == nil {
                             Text("Set the relay URL in Settings")
@@ -77,12 +78,12 @@ struct CanopyMobileApp: App {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else {
                             RosterView(machineIds: machineIds, snapshots: snapshots, errors: errors, directoryError: directoryError) { machineId, pane in
-                                replyTarget = ReplyTarget(
+                                sessionsPath = [ConversationTarget(
                                     machine: machineId,
                                     sessionId: pane.sessionId,
                                     title: pane.title,
-                                    context: mostRecentContext(for: pane.sessionId)
-                                )
+                                    subtitle: pane.project
+                                )]
                             }
                             .refreshable {
                                 await refresh()
@@ -103,46 +104,28 @@ struct CanopyMobileApp: App {
                         SettingsView(rosterUrl: $rosterUrl, secret: $secret)
                     }
                 }
+                .navigationDestination(for: ConversationTarget.self) { conversation($0) }
                 .tabItem {
                     Label("Sessions", systemImage: "rectangle.stack")
                 }
+                .tag(0)
 
-                NavigationStack {
-                    HistoryView(onDecision: { item, decision in
-                        sendDecision(item: item, decision: decision)
-                    }) { item in
-                        replyTarget = ReplyTarget(
+                NavigationStack(path: $historyPath) {
+                    HistoryView { item in
+                        historyPath = [ConversationTarget(
                             machine: item.machine,
                             sessionId: item.sessionId,
                             title: item.title,
-                            context: NotificationHistoryItem.displayableBody(item.body)
-                        )
+                            subtitle: item.machine
+                        )]
                     }
                     .navigationTitle("History")
+                    .navigationDestination(for: ConversationTarget.self) { conversation($0) }
                 }
                 .tabItem {
                     Label("History", systemImage: "clock")
                 }
-            }
-            .sheet(item: $replyTarget) { target in
-                if let ask = target.pendingAsk {
-                    NavigationStack {
-                        HistoryDetailView(item: ask, onDecision: { item, decision in
-                            sendDecision(item: item, decision: decision)
-                            replyTarget = nil
-                        }, onReply: { _ in })
-                    }
-                } else {
-                    ReplySheet(
-                        machine: target.machine,
-                        sessionId: target.sessionId,
-                        sessionTitle: target.title,
-                        context: target.context
-                    ) { text in
-                        try await sendReply(machine: target.machine,
-                                            sessionId: target.sessionId, text: text)
-                    }
-                }
+                .tag(1)
             }
             .task {
                 await refresh()
@@ -296,50 +279,41 @@ struct CanopyMobileApp: App {
     /// with. The matching `PaneRow` is looked up from whatever snapshot is
     /// already in memory. If that machine hasn't been fetched yet, or the
     /// pane closed between the push firing and the tap landing, there is
-    /// nothing to show a title for — decline rather than open a sheet with
-    /// blank text, the same way a closed/dormant session already declines
-    /// the reply itself server-side.
-    /// A plain tap on a push. **An unanswered permission ask opens the ask,
-    /// never the composer** — the default tap is the gesture most people use,
-    /// Allow/Deny otherwise sit behind a long-press, and a reply typed while a
-    /// request is outstanding is refused by the shim after the sheet has
-    /// already reported success. The history item is what the Notification
-    /// Service Extension wrote when the push was delivered, so it is on disk
-    /// before any tap can reach here; if it is missing (an APNs push the
-    /// extension never saw) this falls through to the composer, which is the
-    /// behaviour that existed before and not a worse one.
+    /// A tap on a push lands on that session's conversation, whatever the
+    /// push was and whichever tab was frontmost. There is nothing to branch
+    /// on any more: an unanswered permission ask renders its own Allow/Deny
+    /// inline in that stream, so the tap does not have to decide in advance
+    /// whether the user came to answer or to reply.
+    ///
+    /// The title prefers the live roster pane and falls back to the history
+    /// item, because a notification can name a session the roster has not
+    /// listed yet (a pane opened between polls) — and landing on the right
+    /// conversation with a plain title beats declining to open at all, which
+    /// is what the pane-only lookup used to do.
     private func handleReplyRequested(machine: String, sessionId: String, requestId: String?) {
-        if let requestId,
-           let ask = (try? HistoryStore.loadAll())?
-               .first(where: { $0.requestId == requestId && $0.decision == nil }) {
-            replyTarget = ReplyTarget(
-                machine: machine,
-                sessionId: sessionId,
-                title: ask.title,
-                context: nil,
-                pendingAsk: ask
-            )
-            return
+        let pane = snapshots[machine]?.panes.first { $0.sessionId == sessionId }
+        let item = (try? HistoryStore.loadAll())?.first {
+            $0.machine == machine && $0.sessionId == sessionId
         }
-        guard let pane = snapshots[machine]?.panes.first(where: { $0.sessionId == sessionId }) else { return }
-        replyTarget = ReplyTarget(
+        guard let title = pane?.title ?? item?.title else { return }
+        selectedTab = 0
+        sessionsPath = [ConversationTarget(
             machine: machine,
             sessionId: sessionId,
-            title: pane.title,
-            context: mostRecentContext(for: sessionId)
-        )
+            title: title,
+            subtitle: pane?.project ?? machine
+        )]
     }
 
-    /// Called from the single `.sheet(item: $replyTarget)` above — every
-    /// reply, whichever of the three routes set `replyTarget`, sends
-    /// through this one path, so `RosterClient` stays owned here rather
-    /// than by `HistoryView`/`HistoryDetailView`.
+    /// Every reply goes through here, whichever entry point opened the
+    /// conversation, so `RosterClient` stays owned by this scene rather than
+    /// by the view — the view is handed a closure, never the credentials.
     private func sendReply(machine: String, sessionId: String, text: String) async throws {
         guard let client else { throw RosterError.unexpectedStatus(-1) }
         try await client.sendReply(machine: machine, sessionId: sessionId, text: text)
     }
 
-    /// `HistoryDetailView`'s Allow/Deny route here, through the SAME
+    /// `SessionConversationView`'s Allow/Deny route here, through the SAME
     /// `RosterClient.sendDecision` method `PushRegistrar`'s lock-screen/Watch
     /// action handler calls — see that type's `postDecision`. Two callers,
     /// one client method, so they cannot drift into answering the same ask
@@ -376,33 +350,33 @@ struct CanopyMobileApp: App {
         }
     }
 
-    /// The body of the newest history item for this session, if any —
-    /// `HistoryStore.loadAll()` already returns newest-first. Gives the
-    /// roster-tap reply path the same "what is this answering" context the
-    /// history-tap path always has. Best-effort: a read failure here means
-    /// no context, not an error the user needs to see (the History tab is
-    /// where a real read failure gets surfaced).
-    private func mostRecentContext(for sessionId: String) -> String? {
-        guard let items = try? HistoryStore.loadAll(),
-              let item = items.first(where: { $0.sessionId == sessionId }) else { return nil }
-        let body = NotificationHistoryItem.displayableBody(item.body)
-        return body.isEmpty ? nil : body
+    /// Builds the one destination. Kept here rather than in the view because
+    /// `RosterClient` is owned by this scene — the view is handed closures,
+    /// not credentials.
+    @ViewBuilder
+    private func conversation(_ target: ConversationTarget) -> some View {
+        SessionConversationView(
+            machine: target.machine,
+            sessionId: target.sessionId,
+            title: target.title,
+            subtitle: target.subtitle,
+            onDecision: { item, decision in sendDecision(item: item, decision: decision) },
+            onSend: { text in
+                try await sendReply(machine: target.machine,
+                                    sessionId: target.sessionId, text: text)
+            }
+        )
     }
 }
 
-/// The reply sheet's target, carrying just enough to open it — never a full
-/// `PaneRow` or `NotificationHistoryItem`, since a notification tap can
-/// name a session with no pane in hand and the two originating types don't
-/// share a shape.
-private struct ReplyTarget: Identifiable {
+/// What a push onto the navigation stack needs to open one session's
+/// conversation. Deliberately not a `PaneRow` or a `NotificationHistoryItem`:
+/// a notification tap can name a session the roster has not listed, and the
+/// two originating types do not share a shape. `Hashable` because
+/// `navigationDestination(for:)` keys on the value.
+struct ConversationTarget: Hashable {
     let machine: String
     let sessionId: String
     let title: String
-    let context: String?
-    /// Set only when this target was opened by tapping an `asking` push
-    /// nobody has answered yet. The ONE `.sheet(item:)` then renders the
-    /// ask — Allow/Deny — instead of the composer. It is not a second
-    /// presentation path: one sheet, one piece of state, two contents.
-    var pendingAsk: NotificationHistoryItem?
-    var id: String { machine + "/" + sessionId }
+    let subtitle: String
 }

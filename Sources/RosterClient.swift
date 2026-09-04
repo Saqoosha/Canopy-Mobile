@@ -58,7 +58,7 @@ struct RosterClient {
     /// is a different thing for the user to do about than "that failed". The
     /// human-readable distinction is NOT made here or in `RosterError.message`
     /// (shared with the roster-fetch path, where a 503 means something else
-    /// entirely — a misconfigured relay); `ReplySheet`'s catch is what turns
+    /// entirely — a misconfigured relay); `SessionConversationView`'s catch is what turns
     /// this specific case into reply-specific wording.
     func sendReply(machine: String, sessionId: String, text: String) async throws {
         var request = URLRequest(url: baseURL.appendingPathComponent("reply"))
@@ -81,7 +81,7 @@ struct RosterClient {
     /// `"deny"` — the relay's `/decide` refuses any other value (see
     /// `worker/src/index.ts`) and `"allow_always"` on purpose. This is the
     /// ONE method both answer paths call — the lock-screen/Watch action in
-    /// `PushRegistrar` and the Allow/Deny buttons in `HistoryDetailView`
+    /// `PushRegistrar` and the Allow/Deny buttons in `SessionConversationView`
     /// (via `CanopyMobileApp`) — so the two cannot drift into answering the
     /// same question two different ways. A 503 means no Mac is connected;
     /// that surfaces as `.unexpectedStatus(503)` like `sendReply`'s does,

@@ -102,8 +102,6 @@ struct CanopyMobileApp: App {
             .onChange(of: scenePhase, initial: true) { _, phase in
                 switch phase {
                 case .active:
-                    PushRegistrar.relayURL = baseURL
-                    PushRegistrar.secret = secret
                     reconnect()
                 default:
                     // Cancel before disconnecting: a `connectAll()` still
@@ -123,14 +121,10 @@ struct CanopyMobileApp: App {
             // because Settings can only be open while the scene already is.
             .onChange(of: rosterUrl) { _, _ in
                 guard scenePhase == .active else { return }
-                PushRegistrar.relayURL = baseURL
-                PushRegistrar.secret = secret
                 reconnect()
             }
             .onChange(of: secret) { _, _ in
                 guard scenePhase == .active else { return }
-                PushRegistrar.relayURL = baseURL
-                PushRegistrar.secret = secret
                 reconnect()
             }
         }

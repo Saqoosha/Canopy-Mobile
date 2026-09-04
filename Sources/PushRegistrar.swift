@@ -27,9 +27,6 @@ extension Notification.Name {
 /// `localizedDescription` only.
 @MainActor
 final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNotificationCenterDelegate {
-    static var relayURL: URL?
-    static var secret: String?
-
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         // Set before requesting authorization so a cold launch driven by a
@@ -78,7 +75,20 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
     }
 
     private static func upload(token: String) async {
-        guard let base = relayURL, let secret else {
+        // Read the config HERE rather than from statics the App populates.
+        // Measured on device 2026-09-04: the APNs token callback wins the
+        // race against SwiftUI's `.onChange(of: scenePhase, initial: true)`,
+        // so a static set only by that handler is still nil when the token
+        // arrives — every launch skipped the upload, and said so only
+        // because an earlier review refused to let this path stay silent.
+        // Reading the same UserDefaults key `@AppStorage("rosterUrl")`
+        // writes, and the same Keychain item Settings writes, removes the
+        // race instead of trying to win it.
+        guard let stored = UserDefaults.standard.string(forKey: "rosterUrl"),
+              let base = URL(string: stored),
+              let secret = KeychainHelper.load(key: "rosterSecret"),
+              !secret.isEmpty
+        else {
             // Same "surfaced, never swallowed" rule as the APNs callback
             // above: a nil relayURL/secret here means the app is either not
             // configured yet or lost the cold-launch race against Settings

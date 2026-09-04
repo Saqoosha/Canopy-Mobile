@@ -16,6 +16,33 @@ export interface PaneRow {
   messageCount: number;
 }
 
+/** What Canopy posts to /notify. */
+export interface NotifyBody {
+  machine: string;
+  /** OpenSession.ID as a UUID string — the same one the roster carries. */
+  sessionId: string;
+  title: string;
+  body: string;
+  /** Which activity raised this. Only these two push. */
+  kind: "completed" | "asking";
+}
+
+/** What the phone posts to /reply. */
+export interface ReplyBody {
+  machine: string;
+  sessionId: string;
+  text: string;
+}
+
+/** What the DO writes down the publisher socket. The `type` discriminator
+ *  exists because that socket previously carried only snapshots in the other
+ *  direction; Canopy must be able to tell a reply from anything added later. */
+export interface ReplyEnvelope {
+  type: "reply";
+  sessionId: string;
+  text: string;
+}
+
 export interface MachineSnapshot {
   /** IOPlatformUUID. Never the hostname. */
   machineId: string;

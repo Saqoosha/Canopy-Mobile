@@ -8,10 +8,14 @@ targets:
     type: application
     platform: iOS
     sources: [Sources]
+    entitlements:
+      path: Sources/CanopyMobile.entitlements
+      properties:
+        aps-environment: development
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: sh.saqoo.canopy-mobile
-        DEVELOPMENT_TEAM: G5G54TCH8W
+        PRODUCT_BUNDLE_IDENTIFIER: sh.saqoo.canopy-app
+        DEVELOPMENT_TEAM: VCFY2GFR89
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"

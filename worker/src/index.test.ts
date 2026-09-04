@@ -42,3 +42,52 @@ describe("machine directory", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe("push notifications", () => {
+  it("register rejects a non-hex token", async () => {
+    const res = await SELF.fetch("https://x/register", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "NOT-HEX" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("notify is refused when no device has registered", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", sessionId: "s1", title: "t", body: "b", kind: "completed" }),
+    });
+    expect(res.status).toBe(503);
+  });
+
+  it("notify rejects an unknown kind", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", sessionId: "s1", title: "t", body: "b", kind: "gossip" }),
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("reply", () => {
+  it("reply is refused when no publisher is connected", async () => {
+    const res = await SELF.fetch("https://x/reply", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "no-such-mac", sessionId: "s1", text: "hi" }),
+    });
+    expect(res.status).toBe(503);
+  });
+
+  it("reply rejects empty text", async () => {
+    const res = await SELF.fetch("https://x/reply", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", sessionId: "s1", text: "   " }),
+    });
+    expect(res.status).toBe(400);
+  });
+});

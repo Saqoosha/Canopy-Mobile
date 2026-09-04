@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import type { MachineSnapshot } from "./types";
+import type { MachineSnapshot, ReplyEnvelope } from "./types";
 
 export class MachineDO extends DurableObject {
   private cached: MachineSnapshot | null = null;
@@ -45,12 +45,46 @@ export class MachineDO extends DurableObject {
     this.cached = null;
   }
 
+  /** Writes a reply down the publisher socket, if one is connected.
+   *
+   *  Uses the sockets the Hibernation API hands back rather than any in-memory
+   *  set: this DO may have hibernated since the publisher connected, and an
+   *  in-memory list would be empty. The role comes from the attachment for the
+   *  same reason. */
+  deliverReply(envelope: ReplyEnvelope): boolean {
+    const publishers = this.ctx.getWebSockets().filter((ws) => {
+      const attachment = ws.deserializeAttachment() as { role?: string } | null;
+      return attachment?.role === "publisher";
+    });
+    if (publishers.length === 0) return false;
+    const text = JSON.stringify(envelope);
+    let delivered = false;
+    for (const ws of publishers) {
+      try {
+        ws.send(text);
+        delivered = true;
+      } catch {
+        // A socket the runtime has not yet reaped. Try the next one rather
+        // than reporting failure while another publisher may still be live.
+      }
+    }
+    return delivered;
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/roster") {
       const snapshot = this.currentSnapshot();
       if (!snapshot) return new Response("not found", { status: 404 });
       return new Response(JSON.stringify(snapshot), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url.pathname === "/reply" && request.method === "POST") {
+      const envelope = (await request.json()) as ReplyEnvelope;
+      const ok = this.deliverReply(envelope);
+      return new Response(JSON.stringify({ ok }), {
+        status: ok ? 200 : 503,
         headers: { "Content-Type": "application/json" },
       });
     }

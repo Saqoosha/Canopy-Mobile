@@ -5,6 +5,10 @@ struct RosterView: View {
     let snapshots: [String: MachineSnapshot]
     let errors: [String: Error]
     let directoryError: Error?
+    /// Tapping a row asks to reply to it. Threaded in from `CanopyMobileApp`
+    /// rather than owned here — the reply sheet's presentation state lives
+    /// at the app level so a notification tap can drive the same sheet.
+    var onSelectPane: (String, PaneRow) -> Void = { _, _ in }
 
     var body: some View {
         // Ticks once a second so elapsed-time labels advance, and so `now`
@@ -70,7 +74,7 @@ struct RosterView: View {
         Section {
             if let snapshot {
                 ForEach(snapshot.panes) { pane in
-                    paneRow(pane, now: now)
+                    paneRow(pane, machineId: id, now: now)
                 }
             } else if error == nil {
                 Text("Loading…").foregroundStyle(.secondary)
@@ -105,7 +109,7 @@ struct RosterView: View {
         return TimeInterval(now.timeIntervalSince1970 - Double(snapshot.publishedAt)) >= Self.staleThreshold
     }
 
-    private func paneRow(_ pane: PaneRow, now: Date) -> some View {
+    private func paneRow(_ pane: PaneRow, machineId: String, now: Date) -> some View {
         HStack(spacing: 12) {
             Circle()
                 .fill(color(for: pane.state))
@@ -120,6 +124,8 @@ struct RosterView: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
+        .contentShape(Rectangle())
+        .onTapGesture { onSelectPane(machineId, pane) }
     }
 
     /// Never renders the secret itself, even on the unauthorized branch —

@@ -44,7 +44,7 @@ struct SessionConversationView: View {
     var body: some View {
         ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 20) {
+                    LazyVStack(alignment: .leading, spacing: 28) {
                         if let loadError {
                             // Never a bare icon: "the store would not open" and
                             // "this session has said nothing" look identical on
@@ -85,8 +85,16 @@ struct SessionConversationView: View {
                         Color.clear.frame(height: 1).id(bottomAnchor)
                     }
                     .padding(.horizontal, 20)
-                    .padding(.top, 12)
+                    .padding(.top, 16)
+                    .padding(.bottom, 8)
                 }
+                // Drag anywhere to push the keyboard away, and a plain tap on
+                // the transcript does the same. `simultaneousGesture` rather
+                // than `onTapGesture`: a plain tap gesture on the container
+                // swallows the Allow/Deny buttons inside it, which are the one
+                // thing on this screen that must never stop responding.
+                .scrollDismissesKeyboard(.interactively)
+                .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                 .onAppear {
                     load()
                     proxy.scrollTo(bottomAnchor, anchor: .bottom)
@@ -161,8 +169,31 @@ struct SessionConversationView: View {
         guard !text.isEmpty else { return }
         sending = true
         sendError = nil
+        // Down before the request, not after: the reply is gone from the
+        // user's hands either way, and leaving the keyboard up over a stream
+        // that is about to gain their message hides the thing they just sent.
+        composerFocused = false
         do {
             try await onSend(text)
+            // Record it locally. Nothing on the wire brings a reply back —
+            // the relay forwards it to the Mac and the Mac answers in its own
+            // time — so without this the message you just sent vanishes and
+            // the stream reads as though you never spoke. It is the one item
+            // in here the phone itself authored, which is why `kind` says so.
+            do {
+                try HistoryStore.append(NotificationHistoryItem(
+                    id: UUID().uuidString,
+                    receivedAt: Date(),
+                    title: "You",
+                    body: text,
+                    machine: machine,
+                    sessionId: sessionId,
+                    kind: "sent"
+                ))
+            } catch {
+                print("HistoryStore.append(sent) failed: \(error.localizedDescription)")
+            }
+            load()
             // Cleared only on success, so a failed send leaves the text where
             // the user can retry it rather than making them retype it.
             draft = ""
@@ -208,10 +239,18 @@ private struct MessageBlock: View {
         item.kind == "asking" && item.decision == nil
     }
 
+    private var icon: String {
+        switch item.kind {
+        case "asking": "hand.raised.fill"
+        case "sent": "arrow.up.circle.fill"
+        default: "checkmark.circle"
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
-                Image(systemName: item.kind == "asking" ? "hand.raised.fill" : "checkmark.circle")
+                Image(systemName: icon)
                     .font(.caption2)
                 Text(item.title)
                     .font(.caption)

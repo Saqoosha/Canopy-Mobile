@@ -312,16 +312,23 @@ struct CanopyMobileApp: App {
     /// action handler calls — see that type's `postDecision`. Two callers,
     /// one client method, so they cannot drift into answering the same ask
     /// two different ways. A failed POST is logged, not swallowed, but the
-    /// history update still runs — same shape as `PushRegistrar`'s: the
-    /// local record of "the user tapped Allow" must not depend on the relay
-    /// being reachable.
+    /// history update still runs — same shape as `PushRegistrar`'s: the local
+    /// record of "the user tapped Allow" must not depend on the relay being
+    /// reachable. What it DOES depend on is honesty about it: the outcome is
+    /// written to `decisionDelivered` so a decision the Mac never received
+    /// cannot render identically to one it acted on. No background-task
+    /// assertion here, unlike `PushRegistrar`'s path — this button is only
+    /// reachable with the app in the foreground.
     private func sendDecision(item: NotificationHistoryItem, decision: String) {
         guard let requestId = item.requestId else { return }
+        let decidedAt = Date()
         Task {
+            var delivered = false
             if let client {
                 do {
                     try await client.sendDecision(machine: item.machine, sessionId: item.sessionId,
                                                    requestId: requestId, decision: decision)
+                    delivered = true
                 } catch {
                     print("Permission decision POST failed: \(error.localizedDescription)")
                 }
@@ -329,7 +336,8 @@ struct CanopyMobileApp: App {
                 print("Permission decision skipped: relay not configured")
             }
             do {
-                try HistoryStore.updateDecision(requestId: requestId, decision: decision, decidedAt: Date())
+                try HistoryStore.updateDecision(requestId: requestId, decision: decision,
+                                                 decidedAt: decidedAt, delivered: delivered)
             } catch {
                 print("HistoryStore.updateDecision failed: \(error.localizedDescription)")
             }

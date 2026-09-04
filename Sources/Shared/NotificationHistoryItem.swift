@@ -31,6 +31,13 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
     let requestId: String?
     var decision: String?
     var decidedAt: Date?
+    /// Whether the relay accepted the decision. `nil` on an item with no
+    /// decision, and on one written by a build that predates this field.
+    /// **`false` is the state this exists for**: the user tapped Allow and
+    /// the Mac never heard it, which is the exact "you believe you answered
+    /// and the session is still blocked" failure the design doc argues this
+    /// whole feature exists to remove. It must be visible, not inferred.
+    var decisionDelivered: Bool?
 
     init(
         id: String,
@@ -43,7 +50,8 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         kind: String,
         requestId: String? = nil,
         decision: String? = nil,
-        decidedAt: Date? = nil
+        decidedAt: Date? = nil,
+        decisionDelivered: Bool? = nil
     ) {
         self.id = id
         self.receivedAt = receivedAt
@@ -56,6 +64,7 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         self.requestId = requestId
         self.decision = decision
         self.decidedAt = decidedAt
+        self.decisionDelivered = decisionDelivered
     }
 
     /// Jq and some pipelines pass through the four ASCII letters `null` as

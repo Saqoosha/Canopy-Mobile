@@ -37,6 +37,12 @@ struct HistoryDetailView: View {
                 LabeledContent("Session", value: item.sessionId)
                 if let decision = item.decision {
                     LabeledContent("Decision", value: decision)
+                    if item.decisionDelivered == false {
+                        Label("Not delivered — the Mac never received this",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .font(.caption)
+                    }
                 }
             }
             if isUnansweredAsk {

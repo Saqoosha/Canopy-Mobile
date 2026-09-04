@@ -146,7 +146,8 @@ enum HistoryStore {
     /// Updates `decision` / `decidedAt` for the entry with a matching requestId.
     /// Called from the main app after the user acts on Allow/Deny/AllowAlways.
     /// No-op if the entry has already been pruned.
-    static func updateDecision(requestId: String, decision: String, decidedAt: Date) throws {
+    static func updateDecision(requestId: String, decision: String, decidedAt: Date,
+                               delivered: Bool) throws {
         // Look up the file by id rather than recomputing the filename from
         // the loaded item — that would require preserving receivedAt at full
         // precision through JSON and filesystem round-trips.
@@ -162,6 +163,7 @@ enum HistoryStore {
         var item = try decoder().decode(NotificationHistoryItem.self, from: data)
         item.decision = decision
         item.decidedAt = decidedAt
+        item.decisionDelivered = delivered
         let newData = try encoder().encode(item)
         try newData.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         HistoryUpdateBridge.postDarwinUpdate()

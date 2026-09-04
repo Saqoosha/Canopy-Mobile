@@ -125,11 +125,14 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
     /// `HistoryDetailView` buttons, so a lock-screen tap and an in-app tap
     /// cannot diverge into two different ways of answering the same ask.
     ///
-    /// `completionHandler` is deliberately called only after the POST and
-    /// the history update finish, not before: the system keeps this process
-    /// runnable for exactly as long as the handler is outstanding, which is
-    /// what carries the work through whether the phone was locked,
-    /// backgrounded, or this was a Watch tap.
+    /// `completionHandler` is called IMMEDIATELY, and the POST runs under a
+    /// `beginBackgroundTask` assertion — Pager's shape, copied deliberately.
+    /// An outstanding handler does NOT buy background runtime: if the process
+    /// is suspended before the POST lands (cold TLS, a slow network, a locked
+    /// phone), the decision is dropped, the Mac never hears it, and the user
+    /// believes they answered a session that is still blocked. That is this
+    /// feature's worst failure, so it does not rest on an assumption about
+    /// how long iOS tolerates a deferred handler.
     private func handlePermissionDecision(actionIdentifier: String,
                                            userInfo: [AnyHashable: Any],
                                            completionHandler: @escaping () -> Void) {
@@ -142,38 +145,60 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
             completionHandler()
             return
         }
+        // Taken synchronously, before the handler returns: this method is
+        // already `@MainActor`, so unlike Pager's delegate there is no hop to
+        // schedule, and no window where the notification system has been told
+        // "done" while nothing yet holds the process up.
+        let app = UIApplication.shared
+        let bgState = BackgroundDecisionState()
+        bgState.bgTaskId = app.beginBackgroundTask(withName: "CanopySendDecision") {
+            print("CanopySendDecision background task expired before the POST finished")
+            bgState.endIfActive(app: app)
+        }
+        completionHandler()
+
+        let decidedAt = Date()
         Task {
-            await PushRegistrar.postDecision(machine: machine, sessionId: sessionId,
-                                              requestId: requestId, decision: decision)
+            let delivered = await PushRegistrar.postDecision(
+                machine: machine, sessionId: sessionId,
+                requestId: requestId, decision: decision
+            )
             do {
-                try HistoryStore.updateDecision(requestId: requestId, decision: decision, decidedAt: Date())
+                try HistoryStore.updateDecision(requestId: requestId, decision: decision,
+                                                 decidedAt: decidedAt, delivered: delivered)
             } catch {
                 print("HistoryStore.updateDecision failed: \(error.localizedDescription)")
             }
-            completionHandler()
+            await MainActor.run { bgState.endIfActive(app: app) }
         }
     }
 
     /// Same relay-config read `upload(token:)` uses below, for the same
     /// reason: this type has no reference to the app's already-built
     /// `RosterClient`, and shouldn't grow one just to answer one push.
-    /// Errors are logged, never thrown further — a failed POST still lets
-    /// the history update below record what the user did.
+    /// Returns whether the relay accepted the decision. A failure is never
+    /// thrown further — the history still records what the user tapped — but
+    /// it is never reported as success either: the caller writes the result
+    /// onto the item so the list and the detail can say the Mac never heard
+    /// it. A 503 (no Mac connected) is the common shape, and it is silent on
+    /// the wire; the phone is the only place left that can tell the user.
     private static func postDecision(machine: String, sessionId: String,
-                                      requestId: String, decision: String) async {
+                                      requestId: String, decision: String) async -> Bool {
         guard let stored = UserDefaults.standard.string(forKey: "rosterUrl"),
               let base = URL(string: stored),
               let secret = KeychainHelper.load(key: "rosterSecret"),
               !secret.isEmpty
         else {
             print("Permission decision skipped: relay not configured (relayURL or secret is nil)")
-            return
+            return false
         }
         do {
             try await RosterClient(baseURL: base, secret: secret)
                 .sendDecision(machine: machine, sessionId: sessionId, requestId: requestId, decision: decision)
+            return true
         } catch {
             print("Permission decision POST failed: \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -226,5 +251,22 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         } catch {
             print("Push token upload failed: \(error.localizedDescription)")
         }
+    }
+}
+
+/// Holds one `beginBackgroundTask` assertion across the async POST.
+/// Copied from `Pager/Sources/Pager/AppDelegate.swift` — a class rather than a
+/// captured `var` so the expiry handler and the completion path mutate the SAME
+/// identifier, which is what makes `endIfActive` idempotent: whichever fires
+/// first ends the assertion and the other finds `.invalid` and does nothing.
+/// Ending it twice is a hard crash, and never ending it gets the app killed.
+@MainActor
+private final class BackgroundDecisionState {
+    var bgTaskId: UIBackgroundTaskIdentifier = .invalid
+
+    func endIfActive(app: UIApplication) {
+        guard bgTaskId != .invalid else { return }
+        app.endBackgroundTask(bgTaskId)
+        bgTaskId = .invalid
     }
 }

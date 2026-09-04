@@ -59,9 +59,11 @@ struct HistoryView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             if let decision = item.decision {
-                Text("Answered: \(decision)")
+                Text(item.decisionDelivered == false
+                     ? "Answered: \(decision) — not delivered"
+                     : "Answered: \(decision)")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(item.decisionDelivered == false ? .orange : .secondary)
             }
         }
     }

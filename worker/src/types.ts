@@ -27,6 +27,22 @@ export interface NotifyBody {
   kind: "completed" | "asking";
 }
 
+/** What the phone posts to /reply. */
+export interface ReplyBody {
+  machine: string;
+  sessionId: string;
+  text: string;
+}
+
+/** What the DO writes down the publisher socket. The `type` discriminator
+ *  exists because that socket previously carried only snapshots in the other
+ *  direction; Canopy must be able to tell a reply from anything added later. */
+export interface ReplyEnvelope {
+  type: "reply";
+  sessionId: string;
+  text: string;
+}
+
 export interface MachineSnapshot {
   /** IOPlatformUUID. Never the hostname. */
   machineId: string;

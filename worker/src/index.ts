@@ -1,6 +1,6 @@
 import { MachineDO } from "./machine";
 import { sendPush, type ApnsEnv } from "./apns";
-import type { NotifyBody } from "./types";
+import type { NotifyBody, ReplyBody } from "./types";
 export { MachineDO };
 
 interface Env extends ApnsEnv {
@@ -100,6 +100,21 @@ export default {
         kind: body.kind,
       };
       return sendPush(env, deviceToken, payload);
+    }
+    if (url.pathname === "/reply" && request.method === "POST") {
+      const body = await request.json<ReplyBody>().catch(() => null);
+      if (!body?.machine || !body.sessionId) return json({ error: "machine and sessionId required" }, 400);
+      const text = (body.text ?? "").trim();
+      // An empty reply would inject a blank user turn into a real conversation
+      // and permanently into its transcript. Refuse rather than normalize.
+      if (!text) return json({ error: "text required" }, 400);
+      const stub = env.MACHINE.get(env.MACHINE.idFromName(`mac:${body.machine}`));
+      return stub.fetch(
+        new Request("https://do/reply", {
+          method: "POST",
+          body: JSON.stringify({ type: "reply", sessionId: body.sessionId, text }),
+        })
+      );
     }
     return new Response("not found", { status: 404 });
   },

@@ -71,3 +71,23 @@ describe("push notifications", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("reply", () => {
+  it("reply is refused when no publisher is connected", async () => {
+    const res = await SELF.fetch("https://x/reply", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "no-such-mac", sessionId: "s1", text: "hi" }),
+    });
+    expect(res.status).toBe(503);
+  });
+
+  it("reply rejects empty text", async () => {
+    const res = await SELF.fetch("https://x/reply", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", sessionId: "s1", text: "   " }),
+    });
+    expect(res.status).toBe(400);
+  });
+});

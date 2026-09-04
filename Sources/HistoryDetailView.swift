@@ -56,8 +56,17 @@ struct HistoryDetailView: View {
                     }
                 }
             }
-            Section {
-                Button("Reply") { onReply(item) }
+            // Deliberately absent while the ask is unanswered.
+            // `ShimProcess.requestPhoneReply` REFUSES a reply while a
+            // permission request is outstanding, so a Reply button here
+            // would take the user's typed text, report success, and drop
+            // it — the "you believe you answered and the session is still
+            // blocked" failure the design doc says this feature exists to
+            // remove. Answer the ask first; the button comes back.
+            if !isUnansweredAsk {
+                Section {
+                    Button("Reply") { onReply(item) }
+                }
             }
         }
         .navigationTitle("Notification")

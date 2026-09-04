@@ -144,7 +144,10 @@ enum HistoryStore {
     }
 
     /// Updates `decision` / `decidedAt` for the entry with a matching requestId.
-    /// Called from the main app after the user acts on Allow/Deny/AllowAlways.
+    /// Called after the user acts on Allow or Deny — from the app's detail
+    /// view, or from `PushRegistrar` when the action came off the lock screen.
+    /// Those two are the only decisions the relay accepts; Pager's third,
+    /// "Allow Always", is out of scope and no caller can produce it.
     /// No-op if the entry has already been pruned.
     static func updateDecision(requestId: String, decision: String, decidedAt: Date,
                                delivered: Bool) throws {

@@ -88,6 +88,12 @@ export default {
       // let a stale action fire against a session that already moved on.
       if (body.kind === "asking" && !body.requestId) return json({ error: "asking requires requestId" }, 400);
       if (body.kind === "completed" && body.requestId) return json({ error: "completed takes no requestId" }, 400);
+      // Validated because the two reads below are `.length` — without this a
+      // caller omitting both fields got an opaque 500 from a TypeError rather
+      // than being told what was missing.
+      if (typeof body.body !== "string" && typeof body.bodyFull !== "string") {
+        return json({ error: "body or bodyFull required" }, 400);
+      }
       const deviceToken = await env.MACHINES.get("device_token");
       if (!deviceToken) return json({ error: "no device registered" }, 503);
       // `bodyFull` is the new, optional carrier for the untouched text; `body`
@@ -102,8 +108,14 @@ export default {
       // `bodyFull` above carries the real text. A slow LLM call must never
       // delay the push, which is why shortenWithLLM has its own timeout.
       const BANNER_MAX = 100;
+      // Summarise a COMPLETED push only. An asking push's body is the tool's
+      // raw input — a command line, a file path, whatever was pasted into an
+      // edit — and sending that to api.anthropic.com is a data flow the design
+      // doc argues nowhere; it was inherited by the banner path rather than
+      // chosen. Truncation loses nothing here either, since the full text is
+      // in `bodyFull` and a JSON blob summarises badly.
       const banner =
-        fullText.length > BANNER_MAX
+        body.kind === "completed" && fullText.length > BANNER_MAX
           ? await shortenWithLLM(env, fullText, BANNER_MAX)
           : fallbackBanner(fullText, BANNER_MAX);
       const payload = {

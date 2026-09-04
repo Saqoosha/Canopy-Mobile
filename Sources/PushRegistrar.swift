@@ -46,10 +46,9 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         // bridge. Without this call the Notification Service Extension's
         // Darwin post (`HistoryStore.append`/`updateDecision`) has nothing
         // on this side to re-broadcast as `.didUpdate`, and the history list
-        // would only ever refresh on `.onAppear`. `startBridge()` is
-        // idempotent (a second call installs a second observer callback that
-        // does the same harmless repost), so there's no harm if this ever
-        // ends up called twice.
+        // would only ever refresh on `.onAppear`. This is `startBridge()`'s
+        // only caller, which is what its own doc asks for — a second call
+        // would install a second observer and reload the list twice.
         HistoryUpdateBridge.startBridge()
         // Set before requesting authorization so a cold launch driven by a
         // notification tap still reaches `didReceive` below — UNUserNotification-

@@ -28,8 +28,12 @@ enum HistoryUpdateBridge {
 
     /// Subscribes the current process to the Darwin notification and
     /// re-broadcasts it as `didUpdate` on the main `NotificationCenter`.
-    /// Idempotent — calling twice is a no-op because the second observer would
-    /// share the same opaque pointer.
+    /// **Not idempotent.** The observer is registered with a nil observer
+    /// pointer, so CF has nothing to deduplicate on and a second call installs
+    /// a second callback — harmless in effect (both do the same repost) but it
+    /// reloads the list twice. There is exactly one caller today; keep it that
+    /// way rather than adding a flag to make a one-call function safe to call
+    /// twice.
     static func startBridge() {
         let center = CFNotificationCenterGetDarwinNotifyCenter()
         let name = darwinName as CFString

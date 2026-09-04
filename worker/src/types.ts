@@ -7,7 +7,7 @@ export interface PaneRow {
   title: string;
   /** "repo · branch", already composed by Canopy. */
   project: string;
-  /** One of SessionActivity's six cases, lowercased. */
+  /** One of SessionActivity's seven cases, lowercased. */
   state: string;
   /** Unix seconds at which the pane entered `state`. */
   stateSince: number;

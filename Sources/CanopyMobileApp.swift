@@ -125,13 +125,23 @@ struct CanopyMobileApp: App {
                 }
             }
             .sheet(item: $replyTarget) { target in
-                ReplySheet(
-                    machine: target.machine,
-                    sessionId: target.sessionId,
-                    sessionTitle: target.title,
-                    context: target.context
-                ) { text in
-                    try await sendReply(machine: target.machine, sessionId: target.sessionId, text: text)
+                if let ask = target.pendingAsk {
+                    NavigationStack {
+                        HistoryDetailView(item: ask, onDecision: { item, decision in
+                            sendDecision(item: item, decision: decision)
+                            replyTarget = nil
+                        }, onReply: { _ in })
+                    }
+                } else {
+                    ReplySheet(
+                        machine: target.machine,
+                        sessionId: target.sessionId,
+                        sessionTitle: target.title,
+                        context: target.context
+                    ) { text in
+                        try await sendReply(machine: target.machine,
+                                            sessionId: target.sessionId, text: text)
+                    }
                 }
             }
             .task {
@@ -367,5 +377,10 @@ private struct ReplyTarget: Identifiable {
     let sessionId: String
     let title: String
     let context: String?
+    /// Set only when this target was opened by tapping an `asking` push
+    /// nobody has answered yet. The ONE `.sheet(item:)` then renders the
+    /// ask — Allow/Deny — instead of the composer. It is not a second
+    /// presentation path: one sheet, one piece of state, two contents.
+    var pendingAsk: NotificationHistoryItem?
     var id: String { machine + "/" + sessionId }
 }

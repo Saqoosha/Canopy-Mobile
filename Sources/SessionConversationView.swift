@@ -28,6 +28,7 @@ struct SessionConversationView: View {
     let onSend: (String) async throws -> Void
 
     @State private var items: [NotificationHistoryItem] = []
+    @State private var totalCount = 0
     @State private var loadError: Error?
     @State private var draft = ""
     @State private var sending = false
@@ -41,21 +42,39 @@ struct SessionConversationView: View {
     private let bottomAnchor = "bottom"
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollViewReader { proxy in
+        ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 20) {
                         if let loadError {
-                            Label("Could not read the history: \(loadError.localizedDescription)",
-                                  systemImage: "exclamationmark.triangle")
-                                .font(.footnote)
-                                .foregroundStyle(.orange)
+                            // Never a bare icon: "the store would not open" and
+                            // "this session has said nothing" look identical on
+                            // screen unless the reason is written out.
+                            VStack(alignment: .leading, spacing: 6) {
+                                Label("Could not read the history", systemImage: "exclamationmark.triangle.fill")
+                                    .font(.footnote.weight(.medium))
+                                Text(loadError.localizedDescription)
+                                    .font(.caption)
+                            }
+                            .foregroundStyle(.orange)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 40)
                         } else if items.isEmpty {
-                            Text("Nothing from this session yet.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .center)
-                                .padding(.top, 40)
+                            VStack(spacing: 8) {
+                                Text("Nothing from this session yet")
+                                    .font(.footnote)
+                                // The count is the whole diagnosis when this is
+                                // wrong: a full history with nothing matching
+                                // means the ids disagree, not that the phone
+                                // has received nothing.
+                                Text("\(totalCount) notification\(totalCount == 1 ? "" : "s") in history, none from this session")
+                                    .font(.caption2)
+                                Text(sessionId)
+                                    .font(.system(.caption2, design: .monospaced))
+                            }
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.top, 40)
                         }
                         ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                             if shouldShowDaySeparator(at: index) {
@@ -82,9 +101,8 @@ struct SessionConversationView: View {
                 .onChange(of: composerFocused) { _, focused in
                     if focused { withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) } }
                 }
-            }
-            composer
         }
+        .safeAreaInset(edge: .bottom) { composer }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
@@ -158,7 +176,9 @@ struct SessionConversationView: View {
         do {
             // `loadAll()` is newest-first; a conversation reads oldest-first.
             loadError = nil
-            items = try HistoryStore.loadAll()
+            let all = try HistoryStore.loadAll()
+            totalCount = all.count
+            items = all
                 .filter { $0.machine == machine && $0.sessionId == sessionId }
                 .reversed()
         } catch {

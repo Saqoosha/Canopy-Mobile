@@ -42,13 +42,10 @@ struct CanopyMobileApp: App {
     // subsets of the same thing, and keeping them in step was already a
     // review finding once.
     //
-    // Each tab owns its own path (the standard iOS shape) so History's push
-    // does not fight the roster's. A notification tap has no tab of its own,
-    // so it selects the Sessions tab and replaces that path — landing the
-    // user on the session that buzzed them regardless of where they were.
-    @State private var selectedTab = 0
-    @State private var sessionsPath: [ConversationTarget] = []
-    @State private var historyPath: [ConversationTarget] = []
+    // One path, so a notification tap can replace it outright and land the
+    // user on the session that buzzed them from wherever they were — with no
+    // tab to select first and no second stack to leave stale behind it.
+    @State private var path: [Route] = []
 
     private var baseURL: URL? {
         rosterUrl.isEmpty ? nil : URL(string: rosterUrl)
@@ -69,63 +66,74 @@ struct CanopyMobileApp: App {
             // this outer level, not from either stack, because it can be
             // driven by a notification tap regardless of which tab is
             // frontmost.
-            TabView(selection: $selectedTab) {
-                NavigationStack(path: $sessionsPath) {
-                    Group {
-                        if baseURL == nil {
-                            Text("Set the relay URL in Settings")
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else {
-                            RosterView(machineIds: machineIds, snapshots: snapshots, errors: errors, directoryError: directoryError) { machineId, pane in
-                                sessionsPath = [ConversationTarget(
-                                    machine: machineId,
-                                    sessionId: pane.sessionId,
-                                    title: pane.title,
-                                    subtitle: pane.project
-                                )]
-                            }
-                            .refreshable {
-                                await refresh()
-                            }
+            // One NavigationStack, no tab bar. The roster IS the app: every
+            // session is a row here, and a row leads to that session's
+            // conversation. History is the cross-machine question ("what has
+            // happened anywhere"), which is a place you visit, not a mode you
+            // live in — so it sits beside Settings in the toolbar rather than
+            // taking half the bottom chrome forever.
+            NavigationStack(path: $path) {
+                Group {
+                    if baseURL == nil {
+                        Text("Set the relay URL in Settings")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        RosterView(machineIds: machineIds, snapshots: snapshots, errors: errors, directoryError: directoryError) { machineId, pane in
+                            path = [.conversation(ConversationTarget(
+                                machine: machineId,
+                                sessionId: pane.sessionId,
+                                title: pane.title,
+                                subtitle: pane.project
+                            ))]
+                        }
+                        .refreshable {
+                            await refresh()
                         }
                     }
-                    .navigationTitle("Canopy")
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button {
-                                showingSettings = true
-                            } label: {
-                                Image(systemName: "gearshape")
-                            }
+                }
+                .navigationTitle("Canopy")
+                // MUST sit on the stack's CONTENT, never on the
+                // `NavigationStack` itself: a destination declared outside is
+                // not visible from the pushed value, and SwiftUI then renders
+                // a blank screen with a bare warning triangle and no message —
+                // measured on device 2026-09-04, and indistinguishable from
+                // the view failing to load.
+                .navigationDestination(for: Route.self) { route in
+                    switch route {
+                    case .conversation(let target):
+                        conversation(target)
+                    case .history:
+                        HistoryView { item in
+                            path.append(.conversation(ConversationTarget(
+                                machine: item.machine,
+                                sessionId: item.sessionId,
+                                title: item.title,
+                                subtitle: item.machine
+                            )))
+                        }
+                        .navigationTitle("History")
+                    }
+                }
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            path = [.history]
+                        } label: {
+                            Image(systemName: "clock")
                         }
                     }
-                    .sheet(isPresented: $showingSettings) {
-                        SettingsView(rosterUrl: $rosterUrl, secret: $secret)
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            showingSettings = true
+                        } label: {
+                            Image(systemName: "gearshape")
+                        }
                     }
                 }
-                .navigationDestination(for: ConversationTarget.self) { conversation($0) }
-                .tabItem {
-                    Label("Sessions", systemImage: "rectangle.stack")
+                .sheet(isPresented: $showingSettings) {
+                    SettingsView(rosterUrl: $rosterUrl, secret: $secret)
                 }
-                .tag(0)
-
-                NavigationStack(path: $historyPath) {
-                    HistoryView { item in
-                        historyPath = [ConversationTarget(
-                            machine: item.machine,
-                            sessionId: item.sessionId,
-                            title: item.title,
-                            subtitle: item.machine
-                        )]
-                    }
-                    .navigationTitle("History")
-                    .navigationDestination(for: ConversationTarget.self) { conversation($0) }
-                }
-                .tabItem {
-                    Label("History", systemImage: "clock")
-                }
-                .tag(1)
             }
             .task {
                 await refresh()
@@ -296,13 +304,12 @@ struct CanopyMobileApp: App {
             $0.machine == machine && $0.sessionId == sessionId
         }
         guard let title = pane?.title ?? item?.title else { return }
-        selectedTab = 0
-        sessionsPath = [ConversationTarget(
+        path = [.conversation(ConversationTarget(
             machine: machine,
             sessionId: sessionId,
             title: title,
             subtitle: pane?.project ?? machine
-        )]
+        ))]
     }
 
     /// Every reply goes through here, whichever entry point opened the
@@ -374,6 +381,11 @@ struct CanopyMobileApp: App {
 /// a notification tap can name a session the roster has not listed, and the
 /// two originating types do not share a shape. `Hashable` because
 /// `navigationDestination(for:)` keys on the value.
+enum Route: Hashable {
+    case conversation(ConversationTarget)
+    case history
+}
+
 struct ConversationTarget: Hashable {
     let machine: String
     let sessionId: String

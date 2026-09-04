@@ -33,12 +33,19 @@ struct CanopyMobileApp: App {
     @State private var secret: String = KeychainHelper.load(key: "rosterSecret") ?? ""
     @State private var showingSettings = false
 
-    // The reply sheet's target — set by a roster row tap, a notification
+    // The single source of truth for the reply composer: there is exactly
+    // ONE `.sheet(item:)` presenting it (below, at the `TabView` level), and
+    // every route that can open a reply — a roster row tap, a notification
     // tap (looked up from `snapshots` by session id, see
-    // `handleReplyRequested`), or a Reply button inside `HistoryDetailView`
-    // (which presents its own sheet locally and never touches this state —
-    // see that view). `context` is the most recent history item's body for
-    // that session, when one exists, so the roster path gets the same
+    // `handleReplyRequested`), and the Reply button inside
+    // `HistoryDetailView` — sets this same property rather than presenting
+    // a sheet of its own. Two `.sheet` presentations that could both be
+    // active at once would be racy (whichever SwiftUI decided to honor),
+    // and two call sites building the same sheet by hand only stay in sync
+    // as long as someone remembers to edit both — this app has already hit
+    // that shape once (round 1 review), so it stays one property, one
+    // presentation site. `context` is the most recent history item's body
+    // for that session, when one exists, so the roster path gets the same
     // "what is this answering" text the history path always has.
     @State private var replyTarget: ReplyTarget?
 
@@ -289,9 +296,10 @@ struct CanopyMobileApp: App {
         )
     }
 
-    /// Curried so both the roster-driven reply sheet and every
-    /// `HistoryDetailView`'s own reply sheet send through one path, without
-    /// either owning a `RosterClient` of its own.
+    /// Called from the single `.sheet(item: $replyTarget)` above — every
+    /// reply, whichever of the three routes set `replyTarget`, sends
+    /// through this one path, so `RosterClient` stays owned here rather
+    /// than by `HistoryView`/`HistoryDetailView`.
     private func sendReply(machine: String, sessionId: String, text: String) async throws {
         guard let client else { throw RosterError.unexpectedStatus(-1) }
         try await client.sendReply(machine: machine, sessionId: sessionId, text: text)

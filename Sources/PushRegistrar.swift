@@ -125,6 +125,28 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         completionHandler()
     }
 
+    /// Show the banner even while Canopy Mobile is FRONTMOST. Without this
+    /// iOS suppresses a foreground push entirely — no banner, no sound, no
+    /// `didReceive` — and nothing anywhere reports it: the relay returns 200,
+    /// APNs accepts the push, the Notification Service Extension still writes
+    /// the history item, and the screen stays blank.
+    ///
+    /// Measured on device 2026-09-04, and only on device: a permission ask
+    /// raised while the app was open produced no visible notification at all,
+    /// while the same push with the app backgrounded worked. Every review of
+    /// this feature missed it, because there is nothing in the code to see —
+    /// the defect is an absent delegate method.
+    ///
+    /// It matters most for exactly the ask this feature exists for: opening
+    /// the app to check on a session is the most likely thing to be doing
+    /// when that session raises its hand.
+    func userNotificationCenter(_: UNUserNotificationCenter,
+                                 willPresent _: UNNotification,
+                                 withCompletionHandler completionHandler:
+                                     @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound, .badge])
+    }
+
     /// Allow/Deny tapped from the lock screen, an Apple Watch, or the
     /// expanded banner. Posts through `RosterClient.sendDecision` — the same
     /// method `CanopyMobileApp.sendDecision(item:decision:)` calls for the

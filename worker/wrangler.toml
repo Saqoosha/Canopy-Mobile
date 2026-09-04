@@ -31,5 +31,5 @@ id = "34a34a05b2194af6b9f2c89847a57ea1"
 [vars]
 APNS_KEY_ID = "SRH3669YH6"
 APNS_TEAM_ID = "VCFY2GFR89"
-APNS_BUNDLE_ID = "sh.saqoo.canopy-mobile"
+APNS_BUNDLE_ID = "sh.saqoo.canopy-app"
 APNS_USE_SANDBOX = "false"

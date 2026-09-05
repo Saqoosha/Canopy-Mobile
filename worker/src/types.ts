@@ -142,6 +142,48 @@ export interface DecisionEnvelope {
   deliveryId?: string;
 }
 
+/** One thing that happened in a session, as Canopy writes it to the
+ *  publisher socket.
+ *
+ *  **`type` is the only thing separating this from a `MachineSnapshot` on
+ *  that socket** — a snapshot carries no `type` field at all, so
+ *  `webSocketMessage` branches on its presence. */
+export interface SessionEventMessage {
+  type: "event";
+  /** Minted by Canopy, and also carried on the `completed` push so the phone
+   *  can tell a notification and an event are the same turn. Distinct from
+   *  `seq`, which the relay assigns and Canopy cannot know. */
+  eventId: string;
+  sessionId: string;
+  resumeId: string | null;
+  kind: "assistant" | "user" | "tool" | "turnStart" | "turnEnd";
+  text: string;
+  /** Seconds on Swift's reference date (2001), as `JSONEncoder` writes a
+   *  `Date` by default. **Never mix an epoch-milliseconds value in here** —
+   *  the phone decodes it straight back into a `Date`. */
+  at: number;
+}
+
+/** A stored event on its way to a watcher: the message plus the relay's own
+ *  ordering number. */
+export interface StoredSessionEvent extends SessionEventMessage {
+  seq: number;
+}
+
+/** The answer to a watcher's backfill request.
+ *
+ *  **`oldestSeq` is the load-bearing field.** It is the oldest seq the relay
+ *  still holds for that session; when it is greater than what the watcher
+ *  asked for, everything between is gone for good. Returning the events
+ *  without it would let the phone splice a partial range onto what it has as
+ *  if the two were contiguous. */
+export interface EventsResponse {
+  type: "events";
+  sessionId: string;
+  oldestSeq: number;
+  events: StoredSessionEvent[];
+}
+
 export interface MachineSnapshot {
   /** IOPlatformUUID. Never the hostname. */
   machineId: string;

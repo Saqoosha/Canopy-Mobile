@@ -5,141 +5,180 @@ struct RosterView: View {
     let snapshots: [String: MachineSnapshot]
     let errors: [String: Error]
     let directoryError: Error?
-    /// Tapping a row asks to reply to it. Threaded in from `CanopyMobileApp`
-    /// rather than owned here — the reply sheet's presentation state lives
-    /// at the app level so a notification tap can drive the same sheet.
     var onSelectPane: (String, PaneRow) -> Void = { _, _ in }
 
     var body: some View {
-        // Ticks once a second so elapsed-time labels advance, and so `now`
-        // is always the current moment — never a launch-time value a fresh
-        // `stateSince` from a later refresh could land ahead of.
         TimelineView(.periodic(from: .now, by: 1)) { context in
             List {
-                if let directoryError {
+                if !machineIds.isEmpty {
                     Section {
-                        Text(message(for: directoryError))
+                        Text(summary)
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
-                    } header: {
-                        Text("Machine list")
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                    }
+                    let asking = attentionPanes(now: context.date)
+                    if !asking.isEmpty {
+                        Section {
+                            Button {
+                                if let first = asking.first { onSelectPane(first.machine, first.pane) }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "hand.raised.fill")
+                                        .foregroundStyle(.orange)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("Needs your attention")
+                                            .font(.body.weight(.medium))
+                                        Text("\(asking.count) session\(asking.count == 1 ? "" : "s") waiting for you")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 8)
+                                    CanopyDisclosure()
+                                }
+                                .padding(.vertical, 5)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
-                if machineIds.isEmpty {
-                    if directoryError == nil {
-                        Text("No machines yet").foregroundStyle(.secondary)
+                if let directoryError {
+                    Section("Machine list") {
+                        Label(message(for: directoryError), systemImage: "exclamationmark.triangle")
+                            .font(.subheadline)
+                            .foregroundStyle(.orange)
                     }
-                } else {
-                    ForEach(sortedMachineIds, id: \.self) { id in
-                        machineSection(id: id, now: context.date)
-                    }
+                }
+                if machineIds.isEmpty && directoryError == nil {
+                    ContentUnavailableView("No machines yet", systemImage: "desktopcomputer",
+                                           description: Text("Your Macs will appear here when they connect to Canopy."))
+                        .listRowBackground(Color.clear)
+                }
+                ForEach(sortedMachineIds, id: \.self) { id in
+                    machineSection(id: id, now: context.date)
                 }
             }
+            .listStyle(.insetGrouped)
+            .listSectionSpacing(20)
         }
     }
 
-    /// Quota belongs to the Mac that reported it, not to the roster.
-    ///
-    /// This used to be one line at the top of the list, on the argument that
-    /// rate limits are per-ACCOUNT and two Macs would only print the same
-    /// number twice. **That premise is false for more than one account** —
-    /// with an mbp and a Studio signed in as different users, the single line
-    /// showed whichever Mac published most recently, so it flipped between
-    /// two unrelated quotas with nothing on screen saying which one it was.
-    /// Two Macs on one account do print the same figure twice, which is
-    /// merely redundant; the old shape was wrong.
-    private func quotaText(_ snapshot: MachineSnapshot?) -> String? {
-        guard let snapshot else { return nil }
-        return "5h \(snapshot.sessionPct)% · wk \(snapshot.weeklyPct)%"
+    private var summary: String {
+        let count = machineIds.compactMap { snapshots[$0] }.reduce(0) { $0 + $1.panes.count }
+        // Directory membership doesn't guarantee a live connection.
+        return "\(count) session\(count == 1 ? "" : "s") · \(machineIds.count) Mac\(machineIds.count == 1 ? "" : "s")"
     }
 
-    /// Sorted by `displayName` so the list doesn't reorder itself as each
-    /// header's elapsed-time text ticks. A machine with no snapshot yet
-    /// sorts by its raw id instead.
     private var sortedMachineIds: [String] {
-        machineIds.sorted { lhs, rhs in
-            let lname = snapshots[lhs]?.displayName ?? lhs
-            let rname = snapshots[rhs]?.displayName ?? rhs
-            return lname.localizedStandardCompare(rname) == .orderedAscending
+        machineIds.sorted {
+            (snapshots[$0]?.displayName ?? $0).localizedStandardCompare(snapshots[$1]?.displayName ?? $1) == .orderedAscending
         }
     }
 
-    /// A machine's section renders whatever snapshot it last had — even
-    /// stale — AND its latest error, if any, rather than letting a failed
-    /// refresh silently keep showing old rows with nothing to explain them.
-    @ViewBuilder
+    private func attentionPanes(now: Date) -> [(machine: String, pane: PaneRow)] {
+        sortedMachineIds.flatMap { id -> [(machine: String, pane: PaneRow)] in
+            guard let snapshot = snapshots[id], errors[id] == nil,
+                  !isStale(snapshot: snapshot, now: now) else { return [] }
+            return snapshot.panes.filter { $0.state == "asking" }.map { (id, $0) }
+        }
+    }
+
     private func machineSection(id: String, now: Date) -> some View {
         let snapshot = snapshots[id]
-        let error = errors[id]
-        Section {
+        let stale = isStale(snapshot: snapshot, now: now)
+        return Section {
             if let snapshot {
+                if snapshot.panes.isEmpty {
+                    Text("No sessions").font(.subheadline).foregroundStyle(.secondary)
+                }
                 ForEach(snapshot.panes) { pane in
                     paneRow(pane, machineId: id, now: now)
+                        .opacity(stale ? 0.5 : 1)
                 }
-            } else if error == nil {
-                Text("Loading…").foregroundStyle(.secondary)
+                // Quota belongs to the reporting Mac, which may use a different account.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 24) { quotaMeters(snapshot) }
+                    VStack(spacing: 12) { quotaMeters(snapshot) }
+                }
+                .padding(.vertical, 5)
+                .opacity(stale ? 0.5 : 1)
+            } else if errors[id] == nil {
+                ProgressView("Loading…")
             }
-            if let error {
-                Text(message(for: error))
+            if let error = errors[id] {
+                Label(message(for: error), systemImage: "exclamationmark.triangle")
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.orange)
             }
         } header: {
-            Text(headerText(id: id, snapshot: snapshot, now: now))
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text(snapshot?.displayName ?? id)
+                    Spacer(minLength: 8)
+                    updateLabel(snapshot, stale: stale, now: now)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(snapshot?.displayName ?? id)
+                    updateLabel(snapshot, stale: stale, now: now)
+                }
+            }
+            .textCase(nil)
         }
-        // Canopy publishes on every state change, so silence past the
-        // threshold means the Mac went to sleep or is gone — not that
-        // nothing happened. Greyed out so a shut-down Mac can't be
-        // mistaken for one that's merely idle.
-        .opacity(isStale(snapshot: snapshot, now: now) ? 0.35 : 1)
     }
 
-    private func headerText(id: String, snapshot: MachineSnapshot?, now: Date) -> String {
-        guard let snapshot else { return id }
-        let head = "\(snapshot.displayName) — \(SessionActivityStyle.elapsed(since: snapshot.publishedAt, now: now)) ago"
-        guard let quota = quotaText(snapshot) else { return head }
-        return "\(head)  ·  \(quota)"
+    @ViewBuilder private func updateLabel(_ snapshot: MachineSnapshot?, stale: Bool, now: Date) -> some View {
+        if let snapshot {
+            Text("\(stale ? "Offline · " : "Updated ")\(SessionActivityStyle.elapsed(since: snapshot.publishedAt, now: now)) ago")
+                .font(.caption2)
+        }
     }
 
-    /// A Mac is presumed asleep or gone once its last publish is older than
-    /// this. Canopy republishes on every pane state change, so five minutes
-    /// of silence is not a quiet Mac — it is one that stopped publishing.
+    @ViewBuilder private func quotaMeters(_ snapshot: MachineSnapshot) -> some View {
+        CanopyUsageMeter(title: "5h usage", percentage: snapshot.sessionPct)
+        CanopyUsageMeter(title: "Weekly usage", percentage: snapshot.weeklyPct)
+    }
+
     private static let staleThreshold: TimeInterval = 5 * 60
 
     private func isStale(snapshot: MachineSnapshot?, now: Date) -> Bool {
         guard let snapshot else { return false }
-        return TimeInterval(now.timeIntervalSince1970 - Double(snapshot.publishedAt)) >= Self.staleThreshold
+        return now.timeIntervalSince1970 - Double(snapshot.publishedAt) >= Self.staleThreshold
     }
 
     private func paneRow(_ pane: PaneRow, machineId: String, now: Date) -> some View {
-        HStack(spacing: 12) {
-            Circle()
-                .fill(SessionActivityStyle.color(for: pane.state))
-                .frame(width: 10, height: 10)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(pane.title).font(.body)
-                Text(pane.project).font(.caption)
+        Button { onSelectPane(machineId, pane) } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Circle()
+                    .fill(SessionActivityStyle.color(for: pane.state))
+                    .frame(width: 7, height: 7)
+                    .padding(.top, 7)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(pane.title).font(.body.weight(.medium))
+                        .foregroundStyle(.primary)
+                    (Text("\(pane.project) · ").foregroundStyle(.secondary)
+                     + Text(pane.state.capitalized).foregroundStyle(SessionActivityStyle.color(for: pane.state)))
+                        .font(.caption)
+                }
+                Spacer(minLength: 4)
+                Text(SessionActivityStyle.elapsed(since: pane.stateSince, now: now))
+                    .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .fixedSize()
+                    .padding(.top, 3)
+                CanopyDisclosure().padding(.top, 5)
             }
-            Spacer()
-            Text(SessionActivityStyle.elapsed(since: pane.stateSince, now: now))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
         }
-        .contentShape(Rectangle())
-        .onTapGesture { onSelectPane(machineId, pane) }
+        .buttonStyle(.plain)
     }
 
-    /// Never renders the secret itself, even on the unauthorized branch —
-    /// `RosterError.message` already keeps that promise; this only extends
-    /// it to non-`RosterError` failures (transport, decode-of-directory).
     private func message(for error: Error) -> String {
-        if let rosterError = error as? RosterError {
-            return rosterError.message
-        }
-        if let socketError = error as? RosterSocketError {
-            return socketError.message
-        }
+        if let error = error as? RosterError { return error.message }
+        if let error = error as? RosterSocketError { return error.message }
         return error.localizedDescription
     }
-
 }

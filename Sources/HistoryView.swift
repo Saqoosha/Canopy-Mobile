@@ -16,20 +16,26 @@ struct HistoryView: View {
     var body: some View {
         Group {
             if let loadError {
-                Text(message(for: loadError))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ContentUnavailableView("Could not load history", systemImage: "exclamationmark.triangle",
+                                       description: Text(message(for: loadError)))
             } else if items.isEmpty {
-                Text("No notifications yet")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ContentUnavailableView("No notifications yet", systemImage: "clock",
+                                       description: Text("Session updates and permission requests will appear here."))
             } else {
-                List(items) { item in
-                    Button { onSelect(item) } label: {
-                        row(item)
+                List {
+                    ForEach(days, id: \.self) { day in
+                        Section {
+                            ForEach(items.filter { Calendar.current.isDate($0.receivedAt, inSameDayAs: day) }) { item in
+                                Button { onSelect(item) } label: { row(item) }
+                                    .buttonStyle(.plain)
+                            }
+                        } header: {
+                            Text(day, format: .dateTime.month(.abbreviated).day())
+                                .textCase(nil)
+                        }
                     }
-                    .buttonStyle(.plain)
                 }
+                .listStyle(.insetGrouped)
             }
         }
         .onAppear { load() }
@@ -38,27 +44,40 @@ struct HistoryView: View {
         }
     }
 
+    private var days: [Date] {
+        Array(Set(items.map { Calendar.current.startOfDay(for: $0.receivedAt) })).sorted(by: >)
+    }
+
     private func row(_ item: NotificationHistoryItem) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(item.title).font(.body)
-                Spacer()
-                Text(item.receivedAt, style: .relative)
-                    .font(.caption.monospacedDigit())
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: item.kind == "asking" ? "hand.raised" : item.kind == "sent" ? "arrow.up.circle" : "checkmark.circle")
+                .foregroundStyle(item.kind == "asking" ? Color.orange : Color.secondary)
+                .frame(width: 22)
+                .padding(.top, 2)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.title).font(.body.weight(.medium))
+                    .foregroundStyle(.primary)
+                Text(item.listDisplayBody)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Text(item.receivedAt, style: .time)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let decision = item.decision {
+                    Label(item.decisionDelivered == false
+                          ? "Answered: \(decision) — not delivered" : "Answered: \(decision)",
+                          systemImage: item.decisionDelivered == false ? "exclamationmark.triangle" : "checkmark")
+                        .font(.caption)
+                        .foregroundStyle(item.decisionDelivered == false ? .orange : .secondary)
+                }
             }
-            Text(item.listDisplayBody)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            if let decision = item.decision {
-                Text(item.decisionDelivered == false
-                     ? "Answered: \(decision) — not delivered"
-                     : "Answered: \(decision)")
-                    .font(.caption2)
-                    .foregroundStyle(item.decisionDelivered == false ? .orange : .secondary)
-            }
+            Spacer(minLength: 0)
+            CanopyDisclosure().padding(.top, 5)
         }
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
     }
 
     private func load() {

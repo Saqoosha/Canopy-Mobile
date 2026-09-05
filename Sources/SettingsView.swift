@@ -17,10 +17,18 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("Relay") {
-                    TextField("Relay URL", text: $rosterUrl)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    SecureField("Shared Secret", text: $secret)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Relay URL").font(.caption).foregroundStyle(.secondary)
+                        TextField("https://relay.example.com", text: $rosterUrl)
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .accessibilityLabel("Relay URL")
+                    }
+                    .padding(.vertical, 4)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Shared secret").font(.caption).foregroundStyle(.secondary)
+                        SecureField("Shared secret", text: $secret)
                         .focused($secretFieldFocused)
                         .onSubmit { commitSecret() }
                         .onChange(of: secretFieldFocused) { _, focused in
@@ -29,12 +37,14 @@ struct SettingsView: View {
                             // user taps past is silently discarded.
                             if !focused { commitSecret() }
                         }
+                    }
+                    .padding(.vertical, 4)
                     // Never reveals the value — but the field IS seeded from
                     // the Keychain, so it is not empty on a revisit, and a
                     // paste into it appends rather than replaces unless the
                     // user selects the existing content first. This Text only
                     // tells the user something is stored, not what it is.
-                    Text(hasStoredSecret ? "A secret is stored" : "No secret stored")
+                    Label(hasStoredSecret ? "A secret is stored" : "No secret stored", systemImage: "lock.shield")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     // Blank submit is a deliberate no-op, and the Keychain
@@ -48,12 +58,19 @@ struct SettingsView: View {
                         }
                     }
                 }
+                if CanopyDemo.isEnabled {
+                    Section {
+                        Label("Demo mode", systemImage: "iphone")
+                    } footer: {
+                        Text("Sample data only. Settings, replies and permission decisions are not saved or sent to a relay.")
+                    }
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") { commitSecret(); dismiss() }
                 }
             }
             .onAppear { hasStoredSecret = !CanopyDemo.isEnabled && KeychainHelper.has(key: "rosterSecret") }
@@ -67,13 +84,13 @@ struct SettingsView: View {
     /// stays unguarded (Pager relies on its current unconditional
     /// behaviour); the guard belongs here, at the call site that actually
     /// means "the user typed a new secret."
+    ///
+    /// The demo guard is here too, not only on the indicator: the URL field
+    /// is bound to a throwaway `@State` but the secret field keeps the real
+    /// binding, so a keystroke during a demo run overwrote the simulator's
+    /// stored secret and the next real launch could not authenticate.
     private func commitSecret() {
-        guard !secret.isEmpty else { return }
-        // The demo binds the URL field to a throwaway `@State`, but the secret
-        // field is the real binding, so without this a keystroke here during
-        // a demo run overwrote the simulator's stored secret and the next
-        // real launch came up unable to authenticate. Found in review.
-        guard !CanopyDemo.isEnabled else { return }
+        guard !CanopyDemo.isEnabled, !secret.isEmpty else { return }
         KeychainHelper.save(key: "rosterSecret", value: secret)
         hasStoredSecret = KeychainHelper.has(key: "rosterSecret")
     }

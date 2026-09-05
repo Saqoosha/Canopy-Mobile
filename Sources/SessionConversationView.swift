@@ -29,6 +29,12 @@ struct SessionConversationView: View {
     /// Second header line — the machine, or "machine · project" when the
     /// roster knew a project for this pane. Never the body of anything.
     let subtitle: String
+    /// The roster's live row for this session, or nil when it does not list
+    /// one. Not captured at push time: a session opened BECAUSE it raised its
+    /// hand can finish while you read, and a frozen dot would still say
+    /// "asking". A nil pane draws no dot — grey means idle in this palette,
+    /// and "the roster doesn't list it" is not idle.
+    let pane: PaneRow?
     let onDecision: (NotificationHistoryItem, String) -> Void
     let onSend: (String) async throws -> Void
 
@@ -124,17 +130,47 @@ struct SessionConversationView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 1) {
-                    Text(title)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                // Ticks so the elapsed figure advances while you read. Only
+                // the header is inside it — wrapping the transcript would
+                // re-evaluate every rendered Markdown block once a second.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    VStack(spacing: 1) {
+                        HStack(spacing: 5) {
+                            if let pane {
+                                Circle()
+                                    .fill(SessionActivityStyle.color(for: pane.state))
+                                    .frame(width: 7, height: 7)
+                            }
+                            Text(title)
+                                .font(.headline)
+                                .lineLimit(1)
+                        }
+                        Text(statusLine(now: context.date))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
             }
         }
+    }
+
+    /// "asking 2m · Canopy · main" — what the session is doing and for how
+    /// long, then the project the header already carried.
+    ///
+    /// **The state leads because the line truncates from the end.** With the
+    /// project first, a long "host · project" tail-truncated away exactly the
+    /// text this header was added to show, leaving the part that was already
+    /// there — the feature defeating itself on the sessions with the longest
+    /// names. Losing the project to truncation costs nothing: it is on the
+    /// row you tapped to get here.
+    ///
+    /// The state is dropped rather than guessed when the roster does not list
+    /// this session, so the line shortens instead of claiming something.
+    private func statusLine(now: Date) -> String {
+        guard let pane else { return subtitle }
+        let age = SessionActivityStyle.elapsed(since: pane.stateSince, now: now)
+        return "\(pane.state) \(age) · \(subtitle)"
     }
 
     private var composer: some View {

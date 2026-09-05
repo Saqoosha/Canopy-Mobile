@@ -95,7 +95,7 @@ struct RosterView: View {
 
     private func headerText(id: String, snapshot: MachineSnapshot?, now: Date) -> String {
         guard let snapshot else { return id }
-        let head = "\(snapshot.displayName) — \(elapsed(since: snapshot.publishedAt, now: now)) ago"
+        let head = "\(snapshot.displayName) — \(SessionActivityStyle.elapsed(since: snapshot.publishedAt, now: now)) ago"
         guard let quota = quotaText(snapshot) else { return head }
         return "\(head)  ·  \(quota)"
     }
@@ -113,7 +113,7 @@ struct RosterView: View {
     private func paneRow(_ pane: PaneRow, machineId: String, now: Date) -> some View {
         HStack(spacing: 12) {
             Circle()
-                .fill(color(for: pane.state))
+                .fill(SessionActivityStyle.color(for: pane.state))
                 .frame(width: 10, height: 10)
             VStack(alignment: .leading, spacing: 2) {
                 Text(pane.title).font(.body)
@@ -121,7 +121,7 @@ struct RosterView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Text(elapsed(since: pane.stateSince, now: now))
+            Text(SessionActivityStyle.elapsed(since: pane.stateSince, now: now))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
@@ -142,34 +142,4 @@ struct RosterView: View {
         return error.localizedDescription
     }
 
-    /// The exact values `SessionActivity.dotRGB` uses on the Mac, copied
-    /// rather than approximated with SwiftUI's stock `.cyan` / `.purple`.
-    /// A dot means the same thing on both screens, so it has to look the
-    /// same: those constants were tuned against the MacroPad's LEDs (see
-    /// Canopy's "Key Learnings (MacroPad)"), and `.cyan` is far brighter
-    /// than the working teal while `.purple` is magenta-ward of the
-    /// background blue-violet. Same origin, same drift risk as every other
-    /// copied file here — diff against `SessionActivity.swift` when either
-    /// side is retuned.
-    private func color(for state: String) -> Color {
-        switch state {
-        case "working": return Color(red: 0.00, green: 0.62, blue: 0.72)
-        case "background": return Color(red: 0.30, green: 0.24, blue: 0.90)
-        case "asking": return Color(red: 0.98, green: 0.52, blue: 0.11)
-        case "unread": return Color(red: 0.20, green: 0.66, blue: 0.13)
-        case "error": return Color(red: 0.88, green: 0.24, blue: 0.22)
-        default: return Color(red: 0.62, green: 0.62, blue: 0.62)
-        }
-    }
-
-    /// Time in state. "40m asking" and "asking" mean entirely different
-    /// things, which is why the snapshot carries a stamp rather than a flag.
-    /// `max(0, …)` stays for genuine clock skew between a Mac and a phone —
-    /// `now` here is always the current tick, never a stale launch-time value.
-    private func elapsed(since unix: Int, now: Date) -> String {
-        let seconds = max(0, Int(now.timeIntervalSince1970) - unix)
-        if seconds < 60 { return "\(seconds)s" }
-        if seconds < 3600 { return "\(seconds / 60)m" }
-        return "\(seconds / 3600)h"
-    }
 }

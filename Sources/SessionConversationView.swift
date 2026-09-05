@@ -52,6 +52,8 @@ struct SessionConversationView: View {
     /// the last item can be tall enough that `.bottom` anchoring on it still
     /// leaves the composer covering text.
     private let bottomAnchor = "bottom"
+    /// Whether the one-time open-at-the-newest scroll has run.
+    @State private var didInitialScroll = false
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -116,6 +118,36 @@ struct SessionConversationView: View {
                 // during layout instead, so it does not race the load.
                 .defaultScrollAnchor(.bottom)
                 .onAppear { load() }
+                // **The anchor alone is not enough, and the comment above
+                // says why without following it through.** It resolves during
+                // the FIRST layout — which happens before `onAppear` runs
+                // `load()`, so it anchors an empty list. The rows then arrive
+                // into a `LazyVStack`, whose height is estimated for anything
+                // not yet measured, and the anchor lands past the real
+                // content: the screen opens on blank space, and scrolling
+                // down both reveals the transcript and collapses the blank as
+                // the rows get measured for real (reported from the device
+                // 2026-09-05).
+                //
+                // So the scroll is redone once the items are actually in.
+                // `scrollTo` works on an id that is not yet materialised —
+                // that is what it is for — which is why this succeeds where
+                // the `onAppear` attempt recorded above failed: not because
+                // `scrollTo` was wrong, but because it ran a step too early.
+                //
+                // Once, and only on the first load: re-running it would yank
+                // the view back down while the user is reading older
+                // messages, and `onReceive` below already handles the case
+                // where a NEW message should pull them to the bottom.
+                .onChange(of: items.count) { _, count in
+                    guard !didInitialScroll, count > 0 else { return }
+                    didInitialScroll = true
+                    // One hop, so the rows this load produced have been laid
+                    // out before the offset is computed against them.
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                    }
+                }
                 // The Notification Service Extension appends while the app is
                 // open, so a push arriving on this screen has to land in it —
                 // that is the case this whole view exists for.

@@ -16,10 +16,6 @@ struct RosterView: View {
         // `stateSince` from a later refresh could land ahead of.
         TimelineView(.periodic(from: .now, by: 1)) { context in
             List {
-                if let accountQuotaText {
-                    Text(accountQuotaText)
-                        .font(.subheadline.weight(.semibold))
-                }
                 if let directoryError {
                     Section {
                         Text(message(for: directoryError))
@@ -41,16 +37,19 @@ struct RosterView: View {
         }
     }
 
-    /// Rate limits are per-account, not per-Mac (`SharedRateLimitData`'s own
-    /// doc comment on the Canopy side) — two Macs signed into the same
-    /// account report identical figures, so showing it under every
-    /// machine's header only doubled the number and let a stale Mac's
-    /// event make it look like the two disagreed. Shown once here, taken
-    /// from the freshest loaded snapshot (`accountQuotaText`) so a Mac that
-    /// hasn't reported in a while can't supply it.
-    private var accountQuotaText: String? {
-        guard let newest = snapshots.values.max(by: { $0.publishedAt < $1.publishedAt }) else { return nil }
-        return "5h \(newest.sessionPct)% · wk \(newest.weeklyPct)%"
+    /// Quota belongs to the Mac that reported it, not to the roster.
+    ///
+    /// This used to be one line at the top of the list, on the argument that
+    /// rate limits are per-ACCOUNT and two Macs would only print the same
+    /// number twice. **That premise is false for more than one account** —
+    /// with an mbp and a Studio signed in as different users, the single line
+    /// showed whichever Mac published most recently, so it flipped between
+    /// two unrelated quotas with nothing on screen saying which one it was.
+    /// Two Macs on one account do print the same figure twice, which is
+    /// merely redundant; the old shape was wrong.
+    private func quotaText(_ snapshot: MachineSnapshot?) -> String? {
+        guard let snapshot else { return nil }
+        return "5h \(snapshot.sessionPct)% · wk \(snapshot.weeklyPct)%"
     }
 
     /// Sorted by `displayName` so the list doesn't reorder itself as each
@@ -96,7 +95,9 @@ struct RosterView: View {
 
     private func headerText(id: String, snapshot: MachineSnapshot?, now: Date) -> String {
         guard let snapshot else { return id }
-        return "\(snapshot.displayName) — \(elapsed(since: snapshot.publishedAt, now: now)) ago"
+        let head = "\(snapshot.displayName) — \(elapsed(since: snapshot.publishedAt, now: now)) ago"
+        guard let quota = quotaText(snapshot) else { return head }
+        return "\(head)  ·  \(quota)"
     }
 
     /// A Mac is presumed asleep or gone once its last publish is older than
@@ -141,14 +142,23 @@ struct RosterView: View {
         return error.localizedDescription
     }
 
+    /// The exact values `SessionActivity.dotRGB` uses on the Mac, copied
+    /// rather than approximated with SwiftUI's stock `.cyan` / `.purple`.
+    /// A dot means the same thing on both screens, so it has to look the
+    /// same: those constants were tuned against the MacroPad's LEDs (see
+    /// Canopy's "Key Learnings (MacroPad)"), and `.cyan` is far brighter
+    /// than the working teal while `.purple` is magenta-ward of the
+    /// background blue-violet. Same origin, same drift risk as every other
+    /// copied file here — diff against `SessionActivity.swift` when either
+    /// side is retuned.
     private func color(for state: String) -> Color {
         switch state {
-        case "working": return .cyan
-        case "background": return .purple
-        case "asking": return .orange
-        case "unread": return .green
-        case "error": return .red
-        default: return .gray
+        case "working": return Color(red: 0.00, green: 0.62, blue: 0.72)
+        case "background": return Color(red: 0.30, green: 0.24, blue: 0.90)
+        case "asking": return Color(red: 0.98, green: 0.52, blue: 0.11)
+        case "unread": return Color(red: 0.20, green: 0.66, blue: 0.13)
+        case "error": return Color(red: 0.88, green: 0.24, blue: 0.22)
+        default: return Color(red: 0.62, green: 0.62, blue: 0.62)
         }
     }
 

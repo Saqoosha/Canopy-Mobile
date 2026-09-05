@@ -159,8 +159,12 @@ describe("safeSlice", () => {
   });
 
   it("counts code points, not code units", () => {
-    // Both assertions differ from a plain `.slice`: it would return one
-    // emoji plus half of the second, and "あ" plus half of the emoji.
+    // Both differ from a plain `.slice`; what differs is HOW it is wrong.
+    // Measured: `"🍎🍎🍎".slice(0,2)` is "🍎" — valid text, but one emoji
+    // short, because two UTF-16 units are one pair. `"あ🍎b".slice(0,2)` is
+    // "あ" plus a lone surrogate — broken text. The first is the counting
+    // contract, the second the corruption; a helper that only fixed the
+    // second would still return the wrong number of characters.
     expect(safeSlice("🍎🍎🍎", 2)).toBe("🍎🍎");
     expect(safeSlice("あ🍎b", 2)).toBe("あ🍎");
   });

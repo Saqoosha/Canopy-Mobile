@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  worker:
+    name: worker tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci
+      # Typecheck separately from the tests: vitest transpiles without
+      # checking, so a type error that only shows up at a call site the
+      # tests do not reach would otherwise ship green.
+      - run: npx tsc --noEmit
+      # `tee` because the floor below reads the count, and a pipeline's exit
+      # status is the LAST command's — pipefail is not on by default in
+      # GitHub's `bash -e {0}`.
+      - name: Run tests
+        run: |
+          set -o pipefail
+          npx vitest run --reporter=default 2>&1 | tee "$RUNNER_TEMP/vitest.log"
+      # Exit 0 does not mean the suite ran: vitest exits 0 over a file with
+      # zero tests, so an accidentally-emptied or unimported test file is
+      # silently green. Assert a floor instead. Raise it when tests are
+      # added; removing tests is meant to cost an edit to this file.
+      - name: Assert the test count did not fall
+        env:
+          EXPECTED_TESTS: "22"
+        run: |
+          set -o pipefail
+          # LAST match, never the first: captured test stdout is echoed back
+          # ahead of the summary, so a test printing "Tests 999 passed" could
+          # otherwise forge the count.
+          #
+          # **Strip ANSI first.** Captured from run 33939496067's own log, the
+          # summary line is:
+          #     ESC[2m      Tests ESC[22m ESC[1mESC[32m22 passed ...
+          # so escape sequences sit between "Tests" and the digits and a plain
+          # regex matches nothing. This strip was removed once on a reviewer's
+          # measurement that vitest emits no colour under CI — that
+          # measurement did not hold for what GitHub actually captures, and
+          # the very next run failed. Do not remove it again without reading a
+          # real run's log.
+          sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$RUNNER_TEMP/vitest.log" > "$RUNNER_TEMP/vitest.plain"
+          # `|| true` plus the empty check below is what turned that failure
+          # from silent into legible: the first run died on this assignment
+          # under `pipefail` and printed nothing at all, not even the echo.
+          # `tr` rather than a second `grep | head` — it consumes all of its
+          # input, so nothing upstream can be handed a closed pipe.
+          n=$(grep -oE 'Tests[[:space:]]+[0-9]+ passed' "$RUNNER_TEMP/vitest.plain" \
+              | tail -1 | tr -dc '0-9') || true
+          if [ -z "$n" ]; then
+            echo "::error::could not read a test count from vitest's output"
+            tail -30 "$RUNNER_TEMP/vitest.plain"
+            exit 1
+          fi
+          echo "measured=$n floor=$EXPECTED_TESTS"
+          # A non-integer operand makes `[ ]` exit 2, which `if` reads as
+          # false — so the comparison is written to fail loudly instead.
+          if [ "$n" -lt "$EXPECTED_TESTS" ]; then
+            echo "::error::vitest reported $n passing tests, below the floor of $EXPECTED_TESTS"
+            exit 1
+          fi
+          if [ "$n" -gt "$EXPECTED_TESTS" ]; then
+            echo "::warning::$n tests now pass; raise EXPECTED_TESTS to $n so the floor keeps gating"
+          fi
+
+  app:
+    name: iOS build
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      # Ad-hoc signed: the runner has no keychain holding the Developer ID
+      # identity project.yml pins, and this job only needs the code to
+      # compile — it never installs or launches the app.
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project CanopyMobile.xcodeproj \
+            -scheme CanopyMobile \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            build

@@ -100,10 +100,15 @@ struct SessionConversationView: View {
                 // thing on this screen that must never stop responding.
                 .scrollDismissesKeyboard(.interactively)
                 .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
-                .onAppear {
-                    load()
-                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
-                }
+                // Start at the newest message. `scrollTo` in `onAppear` did
+                // not do this: it ran in the same pass as `load()`, before
+                // SwiftUI had laid out a single row, so it scrolled an empty
+                // list and the screen opened at the TOP — on a long session
+                // that is the oldest thing it knows, which is the opposite of
+                // what you opened it for. `defaultScrollAnchor` is resolved
+                // during layout instead, so it does not race the load.
+                .defaultScrollAnchor(.bottom)
+                .onAppear { load() }
                 // The Notification Service Extension appends while the app is
                 // open, so a push arriving on this screen has to land in it —
                 // that is the case this whole view exists for.

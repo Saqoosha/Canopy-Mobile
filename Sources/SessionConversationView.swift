@@ -177,15 +177,21 @@ struct SessionConversationView: View {
                     // The event fires for EVERY session, and it cannot say
                     // which one: it is re-posted from a Darwin notification,
                     // and Darwin notifications carry no userInfo at all. So
-                    // the only honest test of "was this screen's session the
-                    // one that got a push" is whether OUR filtered list grew
-                    // — `load()` filters by machine + session, so a push to
-                    // another session leaves the count untouched. Scrolling
-                    // on the bare event yanked the reader to the bottom on
-                    // somebody else's notification.
-                    let before = items.count
+                    // the only handle this screen has is its own filtered
+                    // list, which `load()` narrows to machine + session.
+                    // Scrolling on the bare event yanked the reader to the
+                    // bottom on somebody else's notification.
+                    //
+                    // Compare the NEWEST item's id, not the count: the store
+                    // prunes to `HistoryStore.maxItems`, so an append that
+                    // evicts an older item of this same session leaves the
+                    // count unchanged, and a count test would swallow the
+                    // one scroll this view exists to perform. `loadAll`
+                    // sorts newest-first and the filter reverses it, so
+                    // `items.last` is the newest.
+                    let newestBefore = items.last?.id
                     load()
-                    guard items.count > before else { return }
+                    guard items.last?.id != newestBefore else { return }
                     withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
                 }
                 .onChange(of: composerFocused) { _, focused in

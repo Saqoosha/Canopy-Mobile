@@ -311,6 +311,14 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
     /// the worker-generated short summary if it exists, else the full body.
     /// Already `null`-cleaned so the row can render it directly.
     var listDisplayBody: String {
-        Self.displayableBody(bodyShort ?? body)
+        // An ask that carries its form previews as its QUESTIONS, not as its
+        // body. The body of an AskUserQuestion is the tool's input rendered
+        // as a fenced JSON block, so the two-line preview read "```json" and
+        // "{…" — the same duplicate the conversation stopped showing under
+        // the form (`showsBody`), leaking into the list. Found on device.
+        if let choices, !choices.isEmpty {
+            return choices.map(\.question).joined(separator: " · ")
+        }
+        return Self.displayableBody(bodyShort ?? body)
     }
 }

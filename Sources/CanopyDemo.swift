@@ -44,7 +44,9 @@ enum CanopyDemo {
 
     static var history: [NotificationHistoryItem] = [
         NotificationHistoryItem(id: "question-form", receivedAt: .now.addingTimeInterval(-60), title: "A few choices before I start",
-                                body: "Which database should the worker use?",
+                                // What a real push carries: the tool input as a fenced block.
+                                // A friendly sentence here hid the "```json" preview bug.
+                                body: "```json\n{\n  \"questions\" : [\n    {\n      \"header\" : \"Database\",\n      \"question\" : \"Which database?\"\n    }\n  ]\n}\n```",
                                 machine: "studio", sessionId: "questions", kind: "asking", requestId: "demo-questions",
                                 resumeId: "questions", answerable: false, choices: [
                                     // Descriptions on purpose: on a real ask they carry the

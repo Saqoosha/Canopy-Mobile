@@ -56,7 +56,7 @@ struct SettingsView: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .onAppear { hasStoredSecret = KeychainHelper.has(key: "rosterSecret") }
+            .onAppear { hasStoredSecret = !CanopyDemo.isEnabled && KeychainHelper.has(key: "rosterSecret") }
         }
     }
 

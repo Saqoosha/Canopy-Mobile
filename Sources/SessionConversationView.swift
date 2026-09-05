@@ -281,19 +281,26 @@ struct SessionConversationView: View {
             // time — so without this the message you just sent vanishes and
             // the stream reads as though you never spoke. It is the one item
             // in here the phone itself authored, which is why `kind` says so.
-            do {
-                try HistoryStore.append(NotificationHistoryItem(
-                    id: UUID().uuidString,
-                    receivedAt: Date(),
-                    title: "You",
-                    body: text,
-                    machine: machine,
-                    sessionId: sessionId,
-                    kind: "sent",
-                    resumeId: resumeId
-                ))
-            } catch {
-                print("HistoryStore.append(sent) failed: \(error.localizedDescription)")
+            let sentItem = NotificationHistoryItem(
+                id: UUID().uuidString,
+                receivedAt: Date(),
+                title: "You",
+                body: text,
+                machine: machine,
+                sessionId: sessionId,
+                kind: "sent",
+                resumeId: resumeId
+            )
+            if CanopyDemo.isEnabled {
+                // Into the fixtures, never the App Group: a demo run must not
+                // leave anything in the store the real app reads.
+                CanopyDemo.append(sentItem)
+            } else {
+                do {
+                    try HistoryStore.append(sentItem)
+                } catch {
+                    print("HistoryStore.append(sent) failed: \(error.localizedDescription)")
+                }
             }
             load()
             // Cleared only on success, so a failed send leaves the text where
@@ -315,7 +322,7 @@ struct SessionConversationView: View {
         do {
             // `loadAll()` is newest-first; a conversation reads oldest-first.
             loadError = nil
-            let all = try HistoryStore.loadAll()
+            let all = try CanopyDemo.isEnabled ? CanopyDemo.history : HistoryStore.loadAll()
             totalCount = all.count
             // Prefer the durable id. `sessionId` is minted per Canopy process,
             // so after a restart it matches nothing stored earlier and this

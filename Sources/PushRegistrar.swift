@@ -59,6 +59,10 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         // Set before requesting authorization so a cold launch driven by a
         // notification tap still reaches `didReceive` below — UNUserNotification-
         // Center holds the response and redelivers it once a delegate exists.
+        // No APNs registration in demo mode: the simulator has no token to
+        // get, and asking for one raises a permission prompt over the design
+        // being reviewed.
+        if CanopyDemo.isEnabled { return true }
         UNUserNotificationCenter.current().delegate = self
         registerNotificationCategory()
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in

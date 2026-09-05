@@ -30,7 +30,10 @@ struct CanopyMobileApp: App {
     // `SettingsView` by `Binding`, so a save there is visible here on the
     // next `directory`/`client` read — never cached into a `let`.
     @AppStorage("rosterUrl") private var rosterUrl = ""
-    @State private var secret: String = KeychainHelper.load(key: "rosterSecret") ?? ""
+    @State private var secret: String = CanopyDemo.isEnabled ? "" : (KeychainHelper.load(key: "rosterSecret") ?? "")
+    /// Demo mode binds Settings to this instead of `rosterUrl`, so poking at
+    /// the field on a demo run cannot rewrite the real stored URL.
+    @State private var demoURL = "https://demo.invalid"
     @State private var showingSettings = false
 
     // ONE destination for the whole app. A roster row, a History row and a
@@ -48,7 +51,10 @@ struct CanopyMobileApp: App {
     @State private var path: [Route] = []
 
     private var baseURL: URL? {
-        rosterUrl.isEmpty ? nil : URL(string: rosterUrl)
+        // Nil in demo mode on purpose: every network path is behind a
+        // `client` that this makes unavailable, so the fixtures cannot be
+        // mistaken for a live relay and no request can leave the simulator.
+        CanopyDemo.isEnabled || rosterUrl.isEmpty ? nil : URL(string: rosterUrl)
     }
 
     private var directory: MachineDirectory? {
@@ -74,7 +80,7 @@ struct CanopyMobileApp: App {
             // taking half the bottom chrome forever.
             NavigationStack(path: $path) {
                 Group {
-                    if baseURL == nil {
+                    if baseURL == nil && !CanopyDemo.isEnabled {
                         Text("Set the relay URL in Settings")
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -137,11 +143,20 @@ struct CanopyMobileApp: App {
                     }
                 }
                 .sheet(isPresented: $showingSettings) {
-                    SettingsView(rosterUrl: $rosterUrl, secret: $secret)
+                    SettingsView(rosterUrl: CanopyDemo.isEnabled ? $demoURL : $rosterUrl, secret: $secret)
                 }
             }
             .task {
                 await refresh()
+                // The live app is fed by the roster socket, so it never polls.
+                // The fixtures have no socket; re-publishing every 30 s is
+                // what keeps "Updated Ns ago" ticking the way a real Mac does.
+                if CanopyDemo.isEnabled {
+                    while !Task.isCancelled {
+                        do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                        await refresh()
+                    }
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .canopyMobileReplyRequested)) { notification in
                 guard let machine = notification.userInfo?["machine"] as? String,
@@ -186,6 +201,14 @@ struct CanopyMobileApp: App {
     /// view can say so — see `RosterView`. A no-op, deliberately, when the
     /// relay isn't configured (`directory`/`client` are `nil`).
     private func refresh() async {
+        // The fixtures re-publish with a current timestamp each pass, so the
+        // "Updated Ns ago" line ticks the way it does against a real Mac.
+        if CanopyDemo.isEnabled {
+            snapshots = CanopyDemo.liveSnapshots()
+            machineIds = ["studio", "macbook"]
+            directoryError = nil
+            return
+        }
         guard let directory, let client else {
             directoryError = nil
             return
@@ -227,6 +250,13 @@ struct CanopyMobileApp: App {
     /// active — both mean "the configuration this app should be connected
     /// under just changed, reconnect."
     private func reconnect() {
+        // No socket in demo mode — and not merely to avoid the network.
+        // `connectAll()` starts by clearing `machineIds`, so a scene
+        // activation landing after `refresh()` populated the fixtures wiped
+        // them again and the roster read "No machines yet" with the state
+        // demonstrably set (measured: the values printed, the list stayed
+        // empty). This guard is the whole reason the demo renders.
+        guard !CanopyDemo.isEnabled else { return }
         connectTask?.cancel()
         connectTask = Task { await connectAll() }
     }
@@ -322,6 +352,7 @@ struct CanopyMobileApp: App {
     /// conversation, so `RosterClient` stays owned by this scene rather than
     /// by the view — the view is handed a closure, never the credentials.
     private func sendReply(machine: String, sessionId: String, text: String) async throws {
+        if CanopyDemo.isEnabled { return }
         guard let client else { throw RosterError.unexpectedStatus(-1) }
         try await client.sendReply(machine: machine, sessionId: sessionId, text: text)
     }
@@ -348,6 +379,13 @@ struct CanopyMobileApp: App {
                               answers: [String: String]? = nil,
                               recordAs: String? = nil) {
         guard let requestId = item.requestId else { return }
+        // Answering in demo mode moves the fixture rather than the relay, so
+        // the roster row flips to "working" the way it would after a real one.
+        if CanopyDemo.isEnabled {
+            CanopyDemo.decide(item, decision: recordAs ?? decision)
+            snapshots = CanopyDemo.liveSnapshots()
+            return
+        }
         let decidedAt = Date()
         Task {
             var delivered = false

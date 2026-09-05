@@ -181,6 +181,7 @@ struct SessionConversationView: View {
                     if focused { withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) } }
                 }
         }
+        .background(Color(.systemGroupedBackground))
         .safeAreaInset(edge: .bottom) { composer }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -448,6 +449,8 @@ private struct MessageBlock: View {
                 HStack(spacing: 12) {
                     Button("Allow") { onDecision(item, "allow") }
                         .buttonStyle(.borderedProminent)
+                        .buttonBorderShape(.capsule)
+                        .controlSize(.large)
                     // Offered only when the CLI actually proposed a rule.
                     // Canopy echoes that proposal back rather than composing
                     // one, so with nothing proposed there is nothing this
@@ -455,9 +458,13 @@ private struct MessageBlock: View {
                     if item.allowAlways == true {
                         Button("Always") { onDecision(item, "allowAlways") }
                             .buttonStyle(.bordered)
+                            .buttonBorderShape(.capsule)
+                            .controlSize(.large)
                     }
                     Button("Deny", role: .destructive) { onDecision(item, "deny") }
                         .buttonStyle(.bordered)
+                        .buttonBorderShape(.capsule)
+                        .controlSize(.large)
                 }
             } else if let form = unansweredForm {
                 AskFormView(form: form) { answers in onAnswer(item, answers) }
@@ -478,6 +485,9 @@ private struct MessageBlock: View {
                     .foregroundStyle(item.decisionDelivered == false ? .orange : .secondary)
             }
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
     }
 }
 
@@ -499,19 +509,34 @@ private struct MessageBlock: View {
 /// because the header is a label the model chose for a column and the
 /// question is what the answer is keyed by — see `AskChoice`.
 private struct AskQuestionHeading: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let choice: AskChoice
+    /// Show "Select one" / "Select one or more" beside the header. On for the
+    /// live form, where it is the only thing telling the user a multi-select
+    /// question takes several answers; off on the answered card, where the
+    /// instruction would be stale.
+    var showsSelectHint = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(choice.header ?? choice.question)
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundStyle(.secondary)
-            if choice.header != nil {
-                Text(choice.question)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 3) {
+            // At accessibility sizes the hint wraps under the header rather
+            // than fighting it for one line.
+            let headingLayout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 3))
+                : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
+            headingLayout {
+                if let header = choice.header {
+                    Text(header).font(.subheadline.weight(.semibold))
+                }
+                if showsSelectHint {
+                    Text(choice.multiSelect ? "Select one or more" : "Select one")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
+            Text(choice.question)
+                .font(.subheadline)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -527,48 +552,71 @@ private struct AskFormView: View {
     private var answers: [String: String] { AskChoice.answers(for: form, picked: picked) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 14) {
             ForEach(form, id: \.question) { choice in
                 VStack(alignment: .leading, spacing: 6) {
-                    AskQuestionHeading(choice: choice)
-                    ForEach(choice.options, id: \.label) { option in
-                        Button {
-                            toggle(option.label, in: choice)
-                        } label: {
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                Image(systemName: symbol(for: option.label, in: choice))
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(option.label)
-                                        .multilineTextAlignment(.leading)
-                                    // The description is why one option is
-                                    // not the other. Its only other copy was
-                                    // the raw tool input, which this card
-                                    // replaced.
-                                    if let description = option.description {
-                                        Text(description)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
+                    AskQuestionHeading(choice: choice, showsSelectHint: true)
+                    // One inset group per question, control on the trailing
+                    // edge — the shape iOS uses for a choice list, so the
+                    // radio / checkbox glyphs read as what they are without
+                    // a legend.
+                    VStack(spacing: 0) {
+                        ForEach(Array(choice.options.enumerated()), id: \.offset) { index, option in
+                            if index > 0 { Divider().padding(.horizontal, 12) }
+                            let on = picked[choice.question]?.contains(option.label) == true
+                            Button {
+                                toggle(option.label, in: choice)
+                            } label: {
+                                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(option.label)
+                                            .foregroundStyle(.primary)
                                             .multilineTextAlignment(.leading)
+                                        // The description is why one option
+                                        // is not the other; the raw tool
+                                        // input that used to carry it is no
+                                        // longer shown.
+                                        if let description = option.description {
+                                            Text(description)
+                                                .font(.footnote)
+                                                .foregroundStyle(.secondary)
+                                                .multilineTextAlignment(.leading)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
                                     }
+                                    Spacer(minLength: 8)
+                                    Image(systemName: symbol(for: option.label, in: choice))
+                                        .foregroundStyle(on ? Color.accentColor : Color.secondary)
+                                        .accessibilityHidden(true)
                                 }
-                                Spacer(minLength: 0)
+                                .font(.body)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .frame(minHeight: 44)
+                                .contentShape(Rectangle())
                             }
-                            .font(.caption)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .buttonStyle(.plain)
+                            .accessibilityValue(on ? "Selected" : "Not selected")
+                            .accessibilityAddTraits(on ? .isSelected : [])
+                            .disabled(sent)
                         }
-                        .buttonStyle(.bordered)
-                        .disabled(sent)
                     }
+                    .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
                 }
             }
-            Button(sent ? "Sending…" : "Send answer") {
+            Button {
                 sent = true
                 onSend(answers)
+            } label: {
+                Text(sent ? "Sending…" : "Send answer")
+                    .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .font(.caption)
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
             .disabled(!complete || sent)
         }
+        .padding(.top, 2)
     }
 
     private func symbol(for option: String, in choice: AskChoice) -> String {

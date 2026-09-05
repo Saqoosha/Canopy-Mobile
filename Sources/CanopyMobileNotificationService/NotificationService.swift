@@ -93,12 +93,16 @@ final class NotificationService: UNNotificationServiceExtension {
             answerable: userInfo["answerable"] as? Bool,
             // `[[String: Any]]` out of an APNs payload, never Data, so this
             // goes through AskChoice's userInfo initializer rather than
-            // JSONDecoder. A malformed entry drops itself; an all-malformed
-            // form becomes nil, which the UI reads as "no buttons" — the same
-            // fallback an older Canopy produces.
-            choices: (userInfo["choices"] as? [[String: Any]])
-                .map { $0.compactMap(AskChoice.init(userInfo:)) }
-                .flatMap { $0.isEmpty ? nil : $0 }
+            // JSONDecoder.
+            //
+            // **All or nothing.** Keeping the entries that parsed would draw
+            // a form missing a question — and the phone only checks the form
+            // it HAS, so it would report itself complete and send an answer
+            // the Mac then refuses for omitting a question it did ask. The
+            // user sees "not delivered" with no way to do better. A partial
+            // form is worse than none: none falls back to answering at the
+            // Mac, which still works.
+            choices: AskChoice.form(userInfo: userInfo["choices"])
         )
 
         do {

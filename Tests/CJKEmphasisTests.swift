@@ -313,3 +313,48 @@ struct AnswerableFormTests {
         #expect(item(choices: []).answerableForm == nil)
     }
 }
+
+/// Whether a push's form is usable at all. Every case here ends in the same
+/// fallback — draw no buttons, answer at the Mac — because a form that is
+/// wrong in these ways produces an answer the Mac refuses, which reaches the
+/// user as "not delivered" with no better move available.
+struct AskFormParsingTests {
+    @Test("A well-formed push becomes a form")
+    func parsesAWholeForm() {
+        let form = AskChoice.form(userInfo: [
+            ["question": "Q1", "options": ["a"]],
+            ["question": "Q2", "options": ["b"], "multiSelect": true],
+        ])
+        #expect(form?.count == 2)
+        #expect(form?[1].multiSelect == true)
+    }
+
+    // Keeping the entries that parsed would draw a form missing a question,
+    // and the phone only checks the form it has — so it would call itself
+    // complete and send an answer the Mac refuses.
+    @Test("One malformed entry discards the whole form, not just that entry")
+    func partialFormIsRefused() {
+        #expect(AskChoice.form(userInfo: [
+            ["question": "Q1", "options": ["a"]],
+            ["question": "Q2"],
+        ]) == nil)
+    }
+
+    // The answer map is keyed by the question's text, so one selection would
+    // answer both — while `isComplete` sees a single satisfied key and says
+    // the form is done.
+    @Test("Two questions sharing one text discard the form")
+    func duplicateQuestionIsRefused() {
+        #expect(AskChoice.form(userInfo: [
+            ["question": "Same", "options": ["a"]],
+            ["question": "Same", "options": ["b"]],
+        ]) == nil)
+    }
+
+    @Test("An absent or empty form is nil, not an empty list")
+    func absentFormIsNil() {
+        #expect(AskChoice.form(userInfo: nil) == nil)
+        #expect(AskChoice.form(userInfo: [[String: Any]]()) == nil)
+        #expect(AskChoice.form(userInfo: "not a form") == nil)
+    }
+}

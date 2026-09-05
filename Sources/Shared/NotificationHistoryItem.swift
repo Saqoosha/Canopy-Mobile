@@ -41,6 +41,25 @@ struct AskChoice: Codable, Hashable, Sendable {
         self.multiSelect = userInfo["multiSelect"] as? Bool ?? false
     }
 
+    /// The whole form from a push, or nil if any part of it is unusable.
+    ///
+    /// **All or nothing, and duplicates are unusable.** Dropping a
+    /// malformed entry would draw a form missing a question; the phone only
+    /// checks the form it has, so it would call itself complete and send an
+    /// answer the Mac refuses for omitting a question it did ask, leaving the
+    /// user with "not delivered" and no better move. And two questions
+    /// sharing one text cannot be represented at all — the answer map is
+    /// keyed by that text (the extension's own form state is too), so one
+    /// selection would answer both. Both cases fall back to the no-buttons
+    /// rendering, which still works: the ask is answered at the Mac.
+    static func form(userInfo: Any?) -> [AskChoice]? {
+        guard let entries = userInfo as? [[String: Any]], !entries.isEmpty else { return nil }
+        let parsed = entries.compactMap(AskChoice.init(userInfo:))
+        guard parsed.count == entries.count else { return nil }
+        guard Set(parsed.map(\.question)).count == parsed.count else { return nil }
+        return parsed
+    }
+
     /// The answer map for a filled-in form, in the extension's own format:
     /// keyed by each question's TEXT, valued by the chosen labels joined with
     /// `", "`.

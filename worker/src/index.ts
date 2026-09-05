@@ -57,6 +57,20 @@ export function fitPushPayload<T extends { bodyFull: string; choices?: unknown }
     const { choices: _dropped, ...withoutChoices } = shrunk;
     shrunk = withoutChoices as T;
   }
+  // **Neither stage can shrink anything else, so this can still be over.**
+  // The remaining fields — title, kind, the ids — are the notification's
+  // identity; truncating one to make room would send a push naming the wrong
+  // thing, which is worse than not sending it. So the honest outcome is that
+  // APNs rejects it, and the only fix available here is to stop that being
+  // SILENT. Unreachable from Canopy's own payloads (its title is
+  // "Canopy — <toolName>" and every id is bounded), reachable by any other
+  // client posting to /notify.
+  const final = encodedLength(shrunk);
+  if (final > limit) {
+    console.error(
+      `notify: payload is ${final} bytes after shrinking, over the ${limit} limit; APNs will reject it`,
+    );
+  }
   return shrunk;
 }
 

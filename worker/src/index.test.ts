@@ -287,6 +287,24 @@ describe("AskUserQuestion form", () => {
     expect(fitted.bodyFull).toBe("");
   });
 
+  // A limitation, recorded rather than fixed. The fields left after both
+  // stages are the notification's identity, and truncating one would send a
+  // push naming the wrong thing — worse than not sending it. What the code
+  // does guarantee is that this stops being silent, which is asserted here by
+  // the console.error rather than by the (deliberately unchanged) size.
+  it("reports rather than hides a payload it cannot shrink far enough", () => {
+    const errors: unknown[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args[0]); };
+    try {
+      const fitted = fitPushPayload({ title: "t".repeat(500), body: "b", bodyFull: "x" }, 100);
+      expect(new TextEncoder().encode(JSON.stringify(fitted)).length).toBeGreaterThan(100);
+      expect(errors.some((e) => String(e).includes("APNs will reject it"))).toBe(true);
+    } finally {
+      console.error = original;
+    }
+  });
+
   it("leaves a payload that already fits completely alone", () => {
     const payload = { title: "t", body: "b", bodyFull: "short", choices: form };
     expect(fitPushPayload(payload, 4096)).toEqual(payload);

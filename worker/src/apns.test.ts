@@ -15,12 +15,16 @@ const TOKEN = "a".repeat(64);
 /// accepts. Generated per run: this must sign, but it never authenticates
 /// anything, since no request leaves the test.
 async function syntheticEnv(): Promise<ApnsEnv> {
-  const pair = await crypto.subtle.generateKey(
+  // Both casts are the Workers typings being wider than this call: an ECDSA
+  // `generateKey` is declared `CryptoKey | CryptoKeyPair`, and `exportKey`
+  // `ArrayBuffer | JsonWebKey`, because each covers every algorithm and
+  // format. Only the pkcs8/keypair arms are reachable here.
+  const pair = (await crypto.subtle.generateKey(
     { name: "ECDSA", namedCurve: "P-256" },
     true,
     ["sign", "verify"],
-  );
-  const pkcs8 = await crypto.subtle.exportKey("pkcs8", pair.privateKey);
+  )) as CryptoKeyPair;
+  const pkcs8 = (await crypto.subtle.exportKey("pkcs8", pair.privateKey)) as ArrayBuffer;
   const bytes = new Uint8Array(pkcs8);
   let binary = "";
   for (const b of bytes) binary += String.fromCharCode(b);

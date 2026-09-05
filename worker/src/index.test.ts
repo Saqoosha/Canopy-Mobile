@@ -1,6 +1,7 @@
 // worker/src/index.test.ts
 import { SELF } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
+import { safeSlice } from "./llm";
 
 // Must match the SHARED_SECRET binding in vitest.config.ts. Spelled as a
 // literal rather than read back out of `env` — an expectation derived from
@@ -139,5 +140,34 @@ describe("decide", () => {
       body: JSON.stringify({ machine: "m1", sessionId: "s1", decision: "allow" }),
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("safeSlice", () => {
+  const loneSurrogate = (s: string) =>
+    [...s].some((c) => {
+      const p = c.codePointAt(0)!;
+      return p >= 0xd800 && p <= 0xdfff;
+    });
+
+  it("never leaves half of a surrogate pair", () => {
+    // The exact shape that failed: one ASCII char, so every even cut lands
+    // between an emoji's two UTF-16 code units.
+    const body = "x" + "🍎".repeat(2000);
+    expect(loneSurrogate(body.slice(0, 3000))).toBe(true); // what .slice does
+    expect(loneSurrogate(safeSlice(body, 3000))).toBe(false); // what we do
+  });
+
+  it("counts code points, not code units", () => {
+    // Both assertions differ from a plain `.slice`: it would return one
+    // emoji plus half of the second, and "あ" plus half of the emoji.
+    expect(safeSlice("🍎🍎🍎", 2)).toBe("🍎🍎");
+    expect(safeSlice("あ🍎b", 2)).toBe("あ🍎");
+  });
+
+  it("keeps a pair whole at the exact boundary", () => {
+    // n = 1 over a pure-emoji string is the smallest cut that can split one.
+    expect(safeSlice("🍎🍎", 1)).toBe("🍎");
+    expect("🍎🍎".slice(0, 1)).not.toBe("🍎"); // what we protect against
   });
 });

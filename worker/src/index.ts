@@ -1,6 +1,6 @@
 import { MachineDO } from "./machine";
 import { sendPush, type ApnsEnv } from "./apns";
-import { shortenWithLLM, fallbackBanner, type LlmEnv } from "./llm";
+import { shortenWithLLM, fallbackBanner, safeSlice, type LlmEnv } from "./llm";
 import type { DecisionBody, NotifyBody, ReplyBody } from "./types";
 export { MachineDO };
 
@@ -99,11 +99,16 @@ export default {
       // `bodyFull` is the new, optional carrier for the untouched text; `body`
       // stays required so older callers keep working during rollout.
       const fullText = body.bodyFull ?? body.body;
-      // 3000 chars keeps the whole APNs payload under the 4 KB limit, matching
-      // Pager's own cap. The routing fields ride in the payload rather than in
-      // KV because they are two short ids, not a conversation.
+      // A coarse pre-cap, measured in CODE POINTS. It does not by itself keep
+      // the payload under APNs's 4 KB — 3000 emoji are 12 KB — and it never
+      // did; what guarantees the limit is the byte-accurate shrink below,
+      // which measures the encoded payload whole. This exists so the common
+      // case never reaches that loop, and so `bodyFull` cannot be unbounded.
       const MAX = 3000;
-      const bodyFullCapped = fullText.length > MAX ? fullText.slice(0, MAX) + "…" : fullText;
+      // `safeSlice`, never `.slice`: cutting between a surrogate pair's
+      // halves leaves a replacement glyph at the end of the body.
+      const bodyFullCapped =
+        Array.from(fullText).length > MAX ? safeSlice(fullText, MAX) + "…" : fullText;
       // The banner is a display shortcut, not the payload's source of truth —
       // `bodyFull` above carries the real text. A slow LLM call must never
       // delay the push, which is why shortenWithLLM has its own timeout.
@@ -169,9 +174,11 @@ export default {
         // Cut at least one character, and roughly the overshoot, so a body of
         // multibyte text converges in a few passes instead of one per byte.
         const drop = Math.max(1, Math.ceil(over / 3));
+        // Code points, so the shrink cannot end mid-pair either.
+        const points = Array.from(shrunk.bodyFull);
         shrunk = {
           ...shrunk,
-          bodyFull: shrunk.bodyFull.slice(0, Math.max(0, shrunk.bodyFull.length - drop)),
+          bodyFull: safeSlice(shrunk.bodyFull, Math.max(0, points.length - drop)),
         };
       }
       return sendPush(env, deviceToken, shrunk);

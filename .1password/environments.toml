@@ -1,0 +1,6 @@
+# 1Password Environment "Canopy-Mobile", mounted on this machine at
+# ~/.claude/1p-mounts/canopy-mobile.env and linked in as worker/.dev.vars so
+# `wrangler dev` reads it. The worker's Cloudflare secrets are fed from the
+# same mount: scripts/worker-secrets.sh pipes each value into
+# `wrangler secret put` without printing it.
+mount_paths = ["worker/.dev.vars"]

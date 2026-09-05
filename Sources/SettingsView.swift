@@ -8,6 +8,12 @@ import SwiftUI
 struct SettingsView: View {
     @Binding var rosterUrl: String
     @Binding var secret: String
+    /// Whether the secure field has been typed into since this sheet opened.
+    /// `secret` is seeded from the Keychain, so every commit path — Return,
+    /// tabbing away, Done — otherwise re-saves a value that is already there,
+    /// and `KeychainHelper.save` is delete-then-add: an add that fails during
+    /// that pointless rewrite removes the credential that was working.
+    @State private var secretEdited = false
 
     @Environment(\.dismiss) private var dismiss
     @FocusState private var secretFieldFocused: Bool
@@ -30,6 +36,7 @@ struct SettingsView: View {
                         Text("Shared secret").font(.caption).foregroundStyle(.secondary)
                         SecureField("Shared secret", text: $secret)
                         .focused($secretFieldFocused)
+                        .onChange(of: secret) { _, _ in secretEdited = true }
                         .onSubmit { commitSecret() }
                         .onChange(of: secretFieldFocused) { _, focused in
                             // Clicking away must commit too, not just
@@ -90,8 +97,9 @@ struct SettingsView: View {
     /// binding, so a keystroke during a demo run overwrote the simulator's
     /// stored secret and the next real launch could not authenticate.
     private func commitSecret() {
-        guard !CanopyDemo.isEnabled, !secret.isEmpty else { return }
+        guard secretEdited, !CanopyDemo.isEnabled, !secret.isEmpty else { return }
         KeychainHelper.save(key: "rosterSecret", value: secret)
         hasStoredSecret = KeychainHelper.has(key: "rosterSecret")
+        secretEdited = false
     }
 }

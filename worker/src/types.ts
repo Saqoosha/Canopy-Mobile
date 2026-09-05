@@ -93,14 +93,22 @@ export interface DeliveryAck {
 export type PermissionDecision = "allow" | "deny" | "allowAlways";
 
 /** What the phone posts to /decide. */
-/** One question of an AskUserQuestion, reduced to what a phone can render.
- *  Option descriptions are deliberately dropped: they are prose the Mac shows
- *  beside each choice, and they are the largest thing in the form — carrying
- *  them would spend the 4 KB push budget on text nobody taps. */
+/** One question of an AskUserQuestion, as the phone renders it. */
+export interface AskOption {
+  label: string;
+  /** The model's own explanation of this option. Carried, not dropped: on a
+   *  question with terse labels it is the entire difference between them, and
+   *  the phone no longer prints the tool's raw input above the form, so this
+   *  is the only copy that reaches the user. When the form makes the push too
+   *  large, `fitPushPayload` drops `choices` wholesale and the body — which
+   *  still has the descriptions — is shown instead. */
+  description?: string;
+}
+
 export interface AskChoice {
   question: string;
   header?: string;
-  options: string[];
+  options: AskOption[];
   multiSelect: boolean;
 }
 

@@ -248,7 +248,7 @@ struct AskChoiceTests {
             "question": "Which database?", "header": "DB", "options": ["Postgres", "SQLite"],
         ])
         #expect(choice?.question == "Which database?")
-        #expect(choice?.options == ["Postgres", "SQLite"])
+        #expect(choice?.options.map(\.label) == ["Postgres", "SQLite"])
         #expect(choice?.multiSelect == false)
     }
 
@@ -356,5 +356,123 @@ struct AskFormParsingTests {
         #expect(AskChoice.form(userInfo: nil) == nil)
         #expect(AskChoice.form(userInfo: [[String: Any]]()) == nil)
         #expect(AskChoice.form(userInfo: "not a form") == nil)
+    }
+}
+
+/// Whether the raw `body` is worth rendering under a form. The failure it
+/// prevents is not a crash — it is the tool's input JSON printed above the
+/// buttons that say the same thing, pushing them most of a screen down.
+struct ShowsBodyTests {
+    private func item(choices: [AskChoice]?, decision: String? = nil) -> NotificationHistoryItem {
+        NotificationHistoryItem(
+            id: "1", receivedAt: Date(), title: "t", body: "{\"questions\":[…]}",
+            machine: "m", sessionId: "s", kind: "asking", requestId: "r",
+            decision: decision, answerable: choices == nil ? nil : false, choices: choices)
+    }
+
+    @Test("A notification with no form shows its body")
+    func plainNotificationShowsBody() {
+        #expect(item(choices: nil).showsBody)
+        #expect(item(choices: []).showsBody)
+    }
+
+    @Test("A form replaces the body rather than sitting under it")
+    func formHidesBody() {
+        #expect(!item(choices: [AskChoice(question: "Q", options: ["a"])]).showsBody)
+    }
+
+    // Keyed on the form, not on answerability: reverting to raw JSON at the
+    // moment the ask is answered is the same duplication with worse timing.
+    @Test("An answered form still hides the body")
+    func answeredFormHidesBody() {
+        #expect(!item(choices: [AskChoice(question: "Q", options: ["a"])], decision: "a").showsBody)
+    }
+}
+
+/// Option descriptions and the old bare-label shape. The first version of the
+/// push dropped descriptions on the argument that nobody taps them — true and
+/// irrelevant, since they are read, not tapped, and once the tool's raw input
+/// stopped being shown above the form the phone held no copy of them at all.
+struct AskOptionTests {
+    @Test("An option carries its description")
+    func carriesDescription() {
+        let choice = AskChoice(userInfo: [
+            "question": "Q",
+            "options": [["label": "a", "description": "the first"], ["label": "b"]],
+        ])
+        #expect(choice?.options.map(\.label) == ["a", "b"])
+        #expect(choice?.options.first?.description == "the first")
+        #expect(choice?.options.last?.description == nil)
+    }
+
+    @Test("An empty description is dropped rather than rendered as a blank line")
+    func emptyDescriptionIsNil() {
+        let choice = AskChoice(userInfo: ["question": "Q", "options": [["label": "a", "description": ""]]])
+        #expect(choice?.options.first?.description == nil)
+    }
+
+    // An option that silently vanished is a choice the user cannot make and
+    // cannot see they could have made.
+    @Test("One unusable option discards the whole question")
+    func partialOptionsRefused() {
+        #expect(AskChoice(userInfo: ["question": "Q", "options": [["label": "a"], ["nope": 1]]]) == nil)
+    }
+
+    // Stored notifications from the build that had no descriptions are still
+    // in the App Group container, and HistoryStore decodes the whole file at
+    // once — refusing the old shape would make the entire history unreadable,
+    // not lose one card.
+    @Test("A bare string still decodes, so old stored history keeps loading")
+    func bareLabelDecodes() throws {
+        let json = Data("""
+        {"question":"Q","header":null,"options":["a","b"],"multiSelect":false}
+        """.utf8)
+        let choice = try JSONDecoder().decode(AskChoice.self, from: json)
+        #expect(choice.options.map(\.label) == ["a", "b"])
+        #expect(choice.options.allSatisfy { $0.description == nil })
+    }
+
+    @Test("A bare string in the push shape decodes too")
+    func bareLabelFromUserInfo() {
+        #expect(AskChoice(userInfo: ["question": "Q", "options": ["a"]])?.options.first?.label == "a")
+    }
+}
+
+/// The body must reappear whenever the card will NOT draw the questions
+/// itself. `showsBody` was keyed on "has choices", which is a weaker
+/// condition than "draws a form" — an item holding choices but missing the
+/// `requestId` needed to answer drew neither, leaving an empty card.
+struct RendersQuestionsTests {
+    private func item(requestId: String?, answerable: Bool?, decision: String?) -> NotificationHistoryItem {
+        NotificationHistoryItem(
+            id: "1", receivedAt: Date(), title: "t", body: "raw json",
+            machine: "m", sessionId: "s", kind: "asking", requestId: requestId,
+            decision: decision, answerable: answerable,
+            choices: [AskChoice(question: "Q", options: ["a"])])
+    }
+
+    @Test("An answerable form draws the questions and hides the body")
+    func formDrawsQuestions() {
+        let it = item(requestId: "r", answerable: false, decision: nil)
+        #expect(it.rendersQuestions)
+        #expect(!it.showsBody)
+    }
+
+    @Test("An answered form still draws them")
+    func answeredDrawsQuestions() {
+        #expect(item(requestId: "r", answerable: false, decision: "a").rendersQuestions)
+    }
+
+    // The regression: choices present, form unrenderable, nothing answered.
+    @Test("Choices with no request id fall back to the body, not to nothing")
+    func unrenderableFormShowsBody() {
+        let it = item(requestId: nil, answerable: false, decision: nil)
+        #expect(!it.rendersQuestions)
+        #expect(it.showsBody)
+    }
+
+    @Test("Inconsistent answerable metadata also falls back to the body")
+    func inconsistentAnswerableShowsBody() {
+        #expect(item(requestId: "r", answerable: true, decision: nil).showsBody)
     }
 }

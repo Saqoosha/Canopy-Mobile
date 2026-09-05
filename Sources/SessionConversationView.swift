@@ -342,6 +342,7 @@ private struct MessageBlock: View {
             // Normalised on the way in: Japanese bold whose closing `**`
             // sits between punctuation and a letter is not emphasis to
             // CommonMark, and rendered as literal asterisks.
+            if item.showsBody {
             Markdown(CJKEmphasis.normalized(NotificationHistoryItem.displayableBody(item.body)))
                 // Matches Canopy's own inline-code rule
                 // (Resources/canopy-overrides.css): the same dark red on the
@@ -375,6 +376,7 @@ private struct MessageBlock: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .markdownMargin(top: .em(0.4), bottom: .em(0.4))
                 }
+            }
 
             if isUnansweredAsk {
                 HStack(spacing: 12) {
@@ -394,6 +396,12 @@ private struct MessageBlock: View {
             } else if let form = unansweredForm {
                 AskFormView(form: form) { answers in onAnswer(item, answers) }
             } else if let decision = item.decision {
+                // An answered form keeps its questions on screen: the record
+                // below is a bare list of labels, and without the questions
+                // there is nothing on screen saying what they answered.
+                if let asked = item.choices, !asked.isEmpty {
+                    ForEach(asked, id: \.question) { AskQuestionHeading(choice: $0) }
+                }
                 Label(item.decisionDelivered == false
                       ? "\(decision) — not delivered"
                       : "Answered: \(decision)",
@@ -418,6 +426,30 @@ private struct MessageBlock: View {
 /// Nothing is sent until every question has a selection: the Mac refuses a
 /// partial answer anyway (see `AskUserQuestionForm.merged`), so letting the
 /// button be pressed would only produce a refusal the user cannot act on.
+/// A question's header and text. One definition, so the answered card and
+/// the answerable one cannot describe the same question differently.
+///
+/// The question text is shown even when a header stands in for it above,
+/// because the header is a label the model chose for a column and the
+/// question is what the answer is keyed by — see `AskChoice`.
+private struct AskQuestionHeading: View {
+    let choice: AskChoice
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(choice.header ?? choice.question)
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundStyle(.secondary)
+            if choice.header != nil {
+                Text(choice.question)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
 private struct AskFormView: View {
     let form: [AskChoice]
     let onSend: ([String: String]) -> Void
@@ -432,26 +464,27 @@ private struct AskFormView: View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(form, id: \.question) { choice in
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(choice.header ?? choice.question)
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.secondary)
-                    // The question itself is shown when a header stood in for
-                    // it above, so the text the answer is keyed by is always
-                    // on screen somewhere.
-                    if choice.header != nil {
-                        Text(choice.question)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(choice.options, id: \.self) { option in
+                    AskQuestionHeading(choice: choice)
+                    ForEach(choice.options, id: \.label) { option in
                         Button {
-                            toggle(option, in: choice)
+                            toggle(option.label, in: choice)
                         } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: symbol(for: option, in: choice))
-                                Text(option)
-                                    .multilineTextAlignment(.leading)
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Image(systemName: symbol(for: option.label, in: choice))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(option.label)
+                                        .multilineTextAlignment(.leading)
+                                    // The description is why one option is
+                                    // not the other. Its only other copy was
+                                    // the raw tool input, which this card
+                                    // replaced.
+                                    if let description = option.description {
+                                        Text(description)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .multilineTextAlignment(.leading)
+                                    }
+                                }
                                 Spacer(minLength: 0)
                             }
                             .font(.caption)

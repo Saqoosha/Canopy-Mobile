@@ -15,29 +15,89 @@ import Foundation
 /// `webview/index.js`, measured against 2.1.260 and unchanged in 2.1.90.
 /// `question` is therefore an identifier, not just a caption; shortening it
 /// for display would break the answer.
+struct AskOption: Codable, Hashable, Sendable {
+    let label: String
+    /// The model's own explanation of this option.
+    ///
+    /// **Not decoration.** On a question with terse labels the description
+    /// carries the entire difference between the options, and the phone is
+    /// now the only place it can appear — the tool's raw input used to be
+    /// printed above the form and no longer is.
+    let description: String?
+
+    init(label: String, description: String? = nil) {
+        self.label = label
+        self.description = description
+    }
+
+    /// Accepts a bare string as well as `{label, description}`.
+    ///
+    /// The bare form is what an option looked like before descriptions were
+    /// carried. Stored notifications from that build are still in the App
+    /// Group container, and `HistoryStore` decodes the whole file at once —
+    /// so refusing the old shape would not lose one card, it would make the
+    /// entire history unreadable.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let label = try? container.decode(String.self) {
+            self.label = label
+            self.description = nil
+            return
+        }
+        let keyed = try decoder.container(keyedBy: CodingKeys.self)
+        self.label = try keyed.decode(String.self, forKey: .label)
+        self.description = try keyed.decodeIfPresent(String.self, forKey: .description)
+    }
+
+    init?(userInfo: Any) {
+        if let label = userInfo as? String, !label.isEmpty {
+            self.label = label
+            self.description = nil
+            return
+        }
+        guard let dict = userInfo as? [String: Any],
+              let label = dict["label"] as? String, !label.isEmpty
+        else { return nil }
+        self.label = label
+        let described = dict["description"] as? String
+        self.description = (described?.isEmpty == false) ? described : nil
+    }
+}
+
 struct AskChoice: Codable, Hashable, Sendable {
     let question: String
     let header: String?
-    let options: [String]
+    let options: [AskOption]
     let multiSelect: Bool
 
     /// Decoded from the push, where a missing `multiSelect` means single.
-    init(question: String, header: String? = nil, options: [String], multiSelect: Bool = false) {
+    init(question: String, header: String? = nil, options: [AskOption], multiSelect: Bool = false) {
         self.question = question
         self.header = header
         self.options = options
         self.multiSelect = multiSelect
     }
 
+    /// Convenience for fixtures and for the bare-label form.
+    init(question: String, header: String? = nil, options: [String], multiSelect: Bool = false) {
+        self.init(question: question, header: header,
+                  options: options.map { AskOption(label: $0) }, multiSelect: multiSelect)
+    }
+
     /// Hand-written so a form built from `userInfo` — plain `Any` out of an
     /// APNs payload, never `Data` — can be decoded with the same rules.
     init?(userInfo: [String: Any]) {
         guard let question = userInfo["question"] as? String, !question.isEmpty,
-              let options = userInfo["options"] as? [String], !options.isEmpty
+              let raw = userInfo["options"] as? [Any], !raw.isEmpty
         else { return nil }
+        // All or nothing, for the reason `form(userInfo:)` is: an option that
+        // silently vanished is a choice the user cannot make and cannot see
+        // they could have made.
+        let parsed = raw.compactMap(AskOption.init(userInfo:))
+        guard parsed.count == raw.count else { return nil }
         self.question = question
         self.header = userInfo["header"] as? String
-        self.options = options
+        self.options = parsed
         self.multiSelect = userInfo["multiSelect"] as? Bool ?? false
     }
 
@@ -76,7 +136,8 @@ struct AskChoice: Codable, Hashable, Sendable {
     static func answers(for form: [AskChoice], picked: [String: Set<String>]) -> [String: String] {
         var out: [String: String] = [:]
         for choice in form {
-            let chosen = choice.options.filter { picked[choice.question]?.contains($0) == true }
+            let chosen = choice.options.map(\.label)
+                .filter { picked[choice.question]?.contains($0) == true }
             if !chosen.isEmpty { out[choice.question] = chosen.joined(separator: ", ") }
         }
         return out
@@ -206,6 +267,38 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
               requestId != nil, let choices, !choices.isEmpty
         else { return nil }
         return choices
+    }
+
+    /// Whether to render `body` in the conversation.
+    ///
+    /// **False once a form came through.** For an `AskUserQuestion` the body
+    /// is the tool's input rendered as JSON — which, before `choices`
+    /// existed, was the only thing there was to show. Now the questions and
+    /// their options are drawn as controls directly underneath it, so the
+    /// body is the same content twice, the longer and less useful time
+    /// first: on device it pushed the buttons most of a screen down
+    /// (measured 2026-09-05).
+    ///
+    /// Deliberately keyed on `choices`, not on whether the form is still
+    /// answerable — an ANSWERED ask keeps its questions on screen for the
+    /// recorded answer to refer to, and reverting to raw JSON at the moment
+    /// it is answered would be the same duplication with worse timing.
+    ///
+    /// The History list is unaffected: it shows `listDisplayBody`, which is
+    /// one line and is what makes an ask findable there.
+    var showsBody: Bool { !rendersQuestions }
+
+    /// Whether the card puts the questions on screen itself.
+    ///
+    /// **This, not "has choices", is what `showsBody` must invert.** The two
+    /// came apart because drawing the form needs more than a form: it needs a
+    /// `requestId` to answer with and `answerable == false`. An item holding
+    /// choices but missing either draws no form — and keying the body on
+    /// `choices` alone hid that too, leaving a card with no question and no
+    /// controls. Found in review.
+    var rendersQuestions: Bool {
+        if answerableForm != nil { return true }
+        return decision != nil && choices?.isEmpty == false
     }
 
     /// Single source of truth for "what the History list row should show":

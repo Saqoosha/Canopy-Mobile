@@ -36,6 +36,7 @@ struct SessionConversationView: View {
     /// and "the roster doesn't list it" is not idle.
     let pane: PaneRow?
     let onDecision: (NotificationHistoryItem, String) -> Void
+    let onAnswer: (NotificationHistoryItem, [String: String]) -> Void
     let onSend: (String) async throws -> Void
 
     @State private var items: [NotificationHistoryItem] = []
@@ -91,7 +92,7 @@ struct SessionConversationView: View {
                             if shouldShowDaySeparator(at: index) {
                                 DaySeparator(date: item.receivedAt)
                             }
-                            MessageBlock(item: item, onDecision: onDecision)
+                            MessageBlock(item: item, onDecision: onDecision, onAnswer: onAnswer)
                         }
                         Color.clear.frame(height: 1).id(bottomAnchor)
                     }
@@ -300,13 +301,21 @@ struct SessionConversationView: View {
 private struct MessageBlock: View {
     let item: NotificationHistoryItem
     let onDecision: (NotificationHistoryItem, String) -> Void
+    let onAnswer: (NotificationHistoryItem, [String: String]) -> Void
 
+    /// An ask Allow/Deny can resolve. `answerable == false` is an
+    /// AskUserQuestion, which is answered by picking an option instead —
+    /// Canopy refuses an allow/deny for one, so offering the buttons would be
+    /// offering something that cannot work.
     private var isUnansweredAsk: Bool {
-        // `answerable == false` is an AskUserQuestion: its answer is text the
-        // model asked for, so Allow/Deny cannot resolve it and Canopy refuses
-        // one anyway. Show the ask, offer nothing that would not work.
         item.kind == "asking" && item.decision == nil && item.answerable != false
     }
+
+    /// An unanswered AskUserQuestion whose form came through. Without one
+    /// the ask renders as it used to: legible, and unanswerable from here.
+    /// The rules live on the model so they can be tested without a view —
+    /// see `NotificationHistoryItem.answerableForm`.
+    private var unansweredForm: [AskChoice]? { item.answerableForm }
 
     private var icon: String {
         switch item.kind {
@@ -382,6 +391,8 @@ private struct MessageBlock: View {
                     Button("Deny", role: .destructive) { onDecision(item, "deny") }
                         .buttonStyle(.bordered)
                 }
+            } else if let form = unansweredForm {
+                AskFormView(form: form) { answers in onAnswer(item, answers) }
             } else if let decision = item.decision {
                 Label(item.decisionDelivered == false
                       ? "\(decision) — not delivered"
@@ -393,6 +404,90 @@ private struct MessageBlock: View {
                     .foregroundStyle(item.decisionDelivered == false ? .orange : .secondary)
             }
         }
+    }
+}
+
+/// The buttons for an `AskUserQuestion`.
+///
+/// **Select then Send, always — never send on the first tap.** A form can
+/// carry several questions and a question can be multi-select, so there is no
+/// shape where one tap is always the whole answer, and a control that
+/// sometimes commits immediately and sometimes does not is worse than one
+/// that never does. It also means the same code path answers every form.
+///
+/// Nothing is sent until every question has a selection: the Mac refuses a
+/// partial answer anyway (see `AskUserQuestionForm.merged`), so letting the
+/// button be pressed would only produce a refusal the user cannot act on.
+private struct AskFormView: View {
+    let form: [AskChoice]
+    let onSend: ([String: String]) -> Void
+
+    @State private var picked: [String: Set<String>] = [:]
+    @State private var sent = false
+
+    private var complete: Bool { AskChoice.isComplete(form: form, picked: picked) }
+    private var answers: [String: String] { AskChoice.answers(for: form, picked: picked) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(form, id: \.question) { choice in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(choice.header ?? choice.question)
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.secondary)
+                    // The question itself is shown when a header stood in for
+                    // it above, so the text the answer is keyed by is always
+                    // on screen somewhere.
+                    if choice.header != nil {
+                        Text(choice.question)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(choice.options, id: \.self) { option in
+                        Button {
+                            toggle(option, in: choice)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: symbol(for: option, in: choice))
+                                Text(option)
+                                    .multilineTextAlignment(.leading)
+                                Spacer(minLength: 0)
+                            }
+                            .font(.caption)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(sent)
+                    }
+                }
+            }
+            Button(sent ? "Sending…" : "Send answer") {
+                sent = true
+                onSend(answers)
+            }
+            .buttonStyle(.borderedProminent)
+            .font(.caption)
+            .disabled(!complete || sent)
+        }
+    }
+
+    private func symbol(for option: String, in choice: AskChoice) -> String {
+        let on = picked[choice.question]?.contains(option) == true
+        if choice.multiSelect { return on ? "checkmark.square.fill" : "square" }
+        return on ? "largecircle.fill.circle" : "circle"
+    }
+
+    private func toggle(_ option: String, in choice: AskChoice) {
+        var current = picked[choice.question] ?? []
+        if choice.multiSelect {
+            if current.contains(option) { current.remove(option) } else { current.insert(option) }
+        } else {
+            // Single-select re-tap deselects rather than latching, so a
+            // mis-tap is recoverable without leaving the card.
+            current = current.contains(option) ? [] : [option]
+        }
+        picked[choice.question] = current
     }
 }
 

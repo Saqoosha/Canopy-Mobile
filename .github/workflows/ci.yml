@@ -36,7 +36,7 @@ jobs:
       # added; removing tests is meant to cost an edit to this file.
       - name: Assert the test count did not fall
         env:
-          EXPECTED_TESTS: "31"
+          EXPECTED_TESTS: "38"
         run: |
           set -o pipefail
           # LAST match, never the first: captured test stdout is echoed back
@@ -124,7 +124,7 @@ jobs:
       # assert the count. Same reasoning as the worker floor above.
       - name: Assert the test count did not fall
         env:
-          EXPECTED_SWIFT_TESTS: "20"
+          EXPECTED_SWIFT_TESTS: "37"
         run: |
           n=$(grep -oE 'Test run with [0-9]+ tests' "$RUNNER_TEMP/xctest.log" \
               | tail -1 | tr -dc '0-9') || true

@@ -114,14 +114,23 @@ struct RosterClient {
     /// same question two different ways. A 503 means no Mac is connected;
     /// that surfaces as `.unexpectedStatus(503)` like `sendReply`'s does,
     /// left for the caller to decide how to log it.
-    func sendDecision(machine: String, sessionId: String, requestId: String, decision: String) async throws {
+    /// - Parameter answers: an `AskUserQuestion`'s answer — the question's
+    ///   own text mapped to the chosen option labels joined with `", "`. Sent
+    ///   alongside `decision: "allow"`, because an ask IS resolved by allowing
+    ///   the tool; what makes it an answer rather than an echo is this map,
+    ///   which the Mac merges into the tool's input. The Mac refuses a label
+    ///   it never offered, so a stale card cannot answer a newer question.
+    func sendDecision(machine: String, sessionId: String, requestId: String,
+                      decision: String, answers: [String: String]? = nil) async throws {
         var request = URLRequest(url: baseURL.appendingPathComponent("decide"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
+        var payload: [String: Any] = [
             "machine": machine, "sessionId": sessionId, "requestId": requestId, "decision": decision,
-        ])
+        ]
+        if let answers, !answers.isEmpty { payload["answers"] = answers }
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         let (data, response) = try await URLSession.shared.data(for: request)
         try Self.check(status: (response as? HTTPURLResponse)?.statusCode ?? -1, body: data)
     }

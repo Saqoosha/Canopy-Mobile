@@ -90,7 +90,19 @@ final class NotificationService: UNNotificationServiceExtension {
             decidedAt: nil,
             allowAlways: userInfo["allowAlways"] as? Bool,
             resumeId: userInfo["resumeId"] as? String,
-            answerable: userInfo["answerable"] as? Bool
+            answerable: userInfo["answerable"] as? Bool,
+            // `[[String: Any]]` out of an APNs payload, never Data, so this
+            // goes through AskChoice's userInfo initializer rather than
+            // JSONDecoder.
+            //
+            // **All or nothing.** Keeping the entries that parsed would draw
+            // a form missing a question — and the phone only checks the form
+            // it HAS, so it would report itself complete and send an answer
+            // the Mac then refuses for omitting a question it did ask. The
+            // user sees "not delivered" with no way to do better. A partial
+            // form is worse than none: none falls back to answering at the
+            // Mac, which still works.
+            choices: AskChoice.form(userInfo: userInfo["choices"])
         )
 
         do {

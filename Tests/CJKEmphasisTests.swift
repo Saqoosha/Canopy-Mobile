@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import CanopyMobile
 
@@ -188,5 +189,172 @@ struct CJKEmphasisTests {
     func idempotent() {
         let once = CJKEmphasis.normalized("**正規化。**句読点")
         #expect(CJKEmphasis.normalized(once) == once)
+    }
+}
+
+/// The `AskUserQuestion` form. The format asserted here is the EXTENSION's,
+/// read out of its webview bundle — answers keyed by the question's own text,
+/// labels joined with ", ". Measured against 2.1.260, the version Canopy
+/// loads, and unchanged in 2.1.90. Nothing on the phone controls it, and
+/// getting it wrong produces a silent refusal on the Mac rather than anything
+/// visible here, which is why it is pinned on this side as well as the Mac's.
+struct AskChoiceTests {
+    private let form = [
+        AskChoice(question: "Which database?", header: "DB", options: ["Postgres", "SQLite"]),
+    ]
+
+    @Test("An answer is keyed by the question's own text")
+    func answerKeyedByQuestionText() {
+        let answers = AskChoice.answers(for: form, picked: ["Which database?": ["Postgres"]])
+        #expect(answers == ["Which database?": "Postgres"])
+    }
+
+    @Test("Several labels join with the extension's separator")
+    func multiSelectJoins() {
+        let multi = [AskChoice(question: "Which?", options: ["A", "B", "C"], multiSelect: true)]
+        #expect(AskChoice.answers(for: multi, picked: ["Which?": ["C", "A"]]) == ["Which?": "A, C"])
+    }
+
+    @Test("Labels come back in the order they were offered, not in set order")
+    func optionOrderWins() {
+        // A Set has no order, so building the string from it directly makes
+        // the answer vary between runs — and the Mac compares against the
+        // labels it offered, so an unstable order is an unstable answer.
+        let multi = [AskChoice(question: "Q", options: ["first", "second"], multiSelect: true)]
+        for picked in [Set(["second", "first"]), Set(["first", "second"])] {
+            #expect(AskChoice.answers(for: multi, picked: ["Q": picked]) == ["Q": "first, second"])
+        }
+    }
+
+    @Test("A question with nothing picked is omitted, which is what makes it detectable")
+    func unansweredQuestionOmitted() {
+        let two = [AskChoice(question: "Q1", options: ["a"]),
+                   AskChoice(question: "Q2", options: ["b"])]
+        #expect(AskChoice.answers(for: two, picked: ["Q1": ["a"]]) == ["Q1": "a"])
+        #expect(!AskChoice.isComplete(form: two, picked: ["Q1": ["a"]]))
+        #expect(AskChoice.isComplete(form: two, picked: ["Q1": ["a"], "Q2": ["b"]]))
+    }
+
+    @Test("An empty form is complete, so no card can be stuck unsendable")
+    func emptyFormIsComplete() {
+        #expect(AskChoice.isComplete(form: [], picked: [:]))
+    }
+
+    // MARK: - Decoding what APNs actually hands over
+
+    @Test("A push entry decodes, defaulting multiSelect to single")
+    func decodesFromUserInfo() {
+        let choice = AskChoice(userInfo: [
+            "question": "Which database?", "header": "DB", "options": ["Postgres", "SQLite"],
+        ])
+        #expect(choice?.question == "Which database?")
+        #expect(choice?.options == ["Postgres", "SQLite"])
+        #expect(choice?.multiSelect == false)
+    }
+
+    @Test("An entry with no options is refused rather than decoded into a dead card")
+    func refusesEmptyOptions() {
+        #expect(AskChoice(userInfo: ["question": "Q", "options": [String]()]) == nil)
+        #expect(AskChoice(userInfo: ["question": "", "options": ["a"]]) == nil)
+        #expect(AskChoice(userInfo: ["options": ["a"]]) == nil)
+    }
+}
+
+/// Which notifications draw an answerable form. Split out of the view so the
+/// rules can be exercised without one — the failure they prevent is a card
+/// that latches into "Sending…" forever, which no build error and no crash
+/// would ever surface.
+struct AnswerableFormTests {
+    private func item(
+        kind: String = "asking",
+        requestId: String? = "r1",
+        answerable: Bool? = false,
+        decision: String? = nil,
+        choices: [AskChoice]? = [AskChoice(question: "Q", options: ["a"])]
+    ) -> NotificationHistoryItem {
+        NotificationHistoryItem(
+            id: "1", receivedAt: Date(), title: "t", body: "b",
+            machine: "m", sessionId: "s", kind: kind, requestId: requestId,
+            decision: decision, answerable: answerable, choices: choices)
+    }
+
+    @Test("An unanswered ask with a form and a request id draws it")
+    func drawsTheForm() {
+        #expect(item().answerableForm?.count == 1)
+    }
+
+    // The reported bug: the form commits optimistically, and the send path
+    // needs a requestId to address anything. Without one the card disabled
+    // itself, showed "Sending…", and never came back.
+    @Test("A form with no request id is not drawn")
+    func refusesWithoutRequestId() {
+        #expect(item(requestId: nil).answerableForm == nil)
+    }
+
+    @Test("An already-answered ask is not drawn again")
+    func refusesAnswered() {
+        #expect(item(decision: "Postgres").answerableForm == nil)
+    }
+
+    @Test("An Allow/Deny ask is not drawn as a form")
+    func refusesAnswerableAsk() {
+        #expect(item(answerable: true).answerableForm == nil)
+        #expect(item(answerable: nil).answerableForm == nil)
+    }
+
+    @Test("A completion is never a form")
+    func refusesCompletion() {
+        #expect(item(kind: "completed").answerableForm == nil)
+    }
+
+    @Test("An ask with no form falls back to the older no-buttons rendering")
+    func refusesEmptyChoices() {
+        #expect(item(choices: nil).answerableForm == nil)
+        #expect(item(choices: []).answerableForm == nil)
+    }
+}
+
+/// Whether a push's form is usable at all. Every case here ends in the same
+/// fallback — draw no buttons, answer at the Mac — because a form that is
+/// wrong in these ways produces an answer the Mac refuses, which reaches the
+/// user as "not delivered" with no better move available.
+struct AskFormParsingTests {
+    @Test("A well-formed push becomes a form")
+    func parsesAWholeForm() {
+        let form = AskChoice.form(userInfo: [
+            ["question": "Q1", "options": ["a"]],
+            ["question": "Q2", "options": ["b"], "multiSelect": true],
+        ])
+        #expect(form?.count == 2)
+        #expect(form?[1].multiSelect == true)
+    }
+
+    // Keeping the entries that parsed would draw a form missing a question,
+    // and the phone only checks the form it has — so it would call itself
+    // complete and send an answer the Mac refuses.
+    @Test("One malformed entry discards the whole form, not just that entry")
+    func partialFormIsRefused() {
+        #expect(AskChoice.form(userInfo: [
+            ["question": "Q1", "options": ["a"]],
+            ["question": "Q2"],
+        ]) == nil)
+    }
+
+    // The answer map is keyed by the question's text, so one selection would
+    // answer both — while `isComplete` sees a single satisfied key and says
+    // the form is done.
+    @Test("Two questions sharing one text discard the form")
+    func duplicateQuestionIsRefused() {
+        #expect(AskChoice.form(userInfo: [
+            ["question": "Same", "options": ["a"]],
+            ["question": "Same", "options": ["b"]],
+        ]) == nil)
+    }
+
+    @Test("An absent or empty form is nil, not an empty list")
+    func absentFormIsNil() {
+        #expect(AskChoice.form(userInfo: nil) == nil)
+        #expect(AskChoice.form(userInfo: [[String: Any]]()) == nil)
+        #expect(AskChoice.form(userInfo: "not a form") == nil)
     }
 }

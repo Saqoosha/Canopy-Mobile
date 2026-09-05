@@ -338,7 +338,15 @@ struct CanopyMobileApp: App {
     /// cannot render identically to one it acted on. No background-task
     /// assertion here, unlike `PushRegistrar`'s path — this button is only
     /// reachable with the app in the foreground.
-    private func sendDecision(item: NotificationHistoryItem, decision: String) {
+    /// - Parameter answers: set only for an `AskUserQuestion`. `decision`
+    ///   stays `"allow"` on the wire — an ask is resolved by allowing the
+    ///   tool — while what gets RECORDED is `recordAs`, the labels the user
+    ///   picked, so the history row reads "Answered: Postgres" rather than
+    ///   "Answered: allow". The two differ on purpose: one is the protocol,
+    ///   the other is what the person did.
+    private func sendDecision(item: NotificationHistoryItem, decision: String,
+                              answers: [String: String]? = nil,
+                              recordAs: String? = nil) {
         guard let requestId = item.requestId else { return }
         let decidedAt = Date()
         Task {
@@ -346,7 +354,8 @@ struct CanopyMobileApp: App {
             if let client {
                 do {
                     try await client.sendDecision(machine: item.machine, sessionId: item.sessionId,
-                                                   requestId: requestId, decision: decision)
+                                                   requestId: requestId, decision: decision,
+                                                   answers: answers)
                     delivered = true
                 } catch {
                     print("Permission decision POST failed: \(error.localizedDescription)")
@@ -355,7 +364,8 @@ struct CanopyMobileApp: App {
                 print("Permission decision skipped: relay not configured")
             }
             do {
-                try HistoryStore.updateDecision(requestId: requestId, decision: decision,
+                try HistoryStore.updateDecision(requestId: requestId,
+                                                 decision: recordAs ?? decision,
                                                  decidedAt: decidedAt, delivered: delivered)
             } catch {
                 print("HistoryStore.updateDecision failed: \(error.localizedDescription)")
@@ -394,6 +404,13 @@ struct CanopyMobileApp: App {
             // because grey means idle here and "we don't know" is not idle.
             pane: livePane(for: target),
             onDecision: { item, decision in sendDecision(item: item, decision: decision) },
+            // An answered form is an allow carrying the picked labels. Same
+            // method, same single wire path as Allow/Deny — see
+            // `RosterClient.sendDecision`'s note on why there is only one.
+            onAnswer: { item, answers in
+                sendDecision(item: item, decision: "allow", answers: answers,
+                             recordAs: answers.values.sorted().joined(separator: " · "))
+            },
             onSend: { text in
                 try await sendReply(machine: target.machine,
                                     sessionId: target.sessionId, text: text)

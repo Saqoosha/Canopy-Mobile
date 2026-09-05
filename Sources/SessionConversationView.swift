@@ -244,6 +244,12 @@ struct SessionConversationView: View {
             // Cleared only on success, so a failed send leaves the text where
             // the user can retry it rather than making them retype it.
             draft = ""
+        } catch let error as RosterError {
+            // The relay's own words when it has them. `localizedDescription`
+            // on a plain Swift enum is the useless "The operation couldn't be
+            // completed", which is what the user used to see for every
+            // failure including the ones the Mac explained.
+            sendError = error.message
         } catch {
             sendError = "Could not send: \(error.localizedDescription)"
         }

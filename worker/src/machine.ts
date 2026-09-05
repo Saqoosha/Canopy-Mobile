@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import type { DecisionEnvelope, MachineSnapshot, ReplyEnvelope } from "./types";
+import type { DecisionEnvelope, DeliveryAck, MachineSnapshot, ReplyEnvelope } from "./types";
 
 export class MachineDO extends DurableObject {
   private cached: MachineSnapshot | null = null;
@@ -45,6 +45,54 @@ export class MachineDO extends DurableObject {
     this.cached = null;
   }
 
+  /** Deliveries waiting for the Mac to say what it did with them.
+   *
+   *  In memory on purpose, and safe to be: the only thing that resolves one is
+   *  a `webSocketMessage` arriving while the `fetch` that created it is still
+   *  awaiting. A DO cannot hibernate with a request in flight, so an entry
+   *  cannot outlive the promise that reads it — and if the DO is evicted
+   *  anyway, the request is gone too and there is nobody left to answer. */
+  private readonly pendingAcks = new Map<string, (ack: DeliveryAck) => void>();
+
+  /** How long to wait for the Mac before reporting the delivery unconfirmed.
+   *
+   *  A reply is injected the moment Canopy routes it, so the round trip is
+   *  local-network fast; this is long enough to absorb a slow wake, short
+   *  enough that the phone is not left spinning. A timeout is NOT a failure
+   *  claim — it is the honest "we do not know", and the phone says exactly
+   *  that. */
+  private static readonly ackTimeoutMs = 5000;
+
+  /** Sends a delivery and waits for the Mac to acknowledge it.
+   *
+   *  **Why this exists.** `ws.send()` on a half-open socket does not throw:
+   *  the write is buffered into a connection whose other end is gone, and
+   *  `deliverReply` reports success. Measured 2026-09-05 — a Mac Studio whose
+   *  socket had been dead for 47 minutes still took a `POST /reply` with a
+   *  200, and the phone told the user their message had been sent. An
+   *  acknowledgement is the only thing that can tell "written" from
+   *  "received". */
+  async deliverAndAwaitAck(
+    envelope: (ReplyEnvelope | DecisionEnvelope) & { deliveryId: string },
+  ): Promise<{ delivered: boolean; ok: boolean; reason?: string }> {
+    if (!this.deliverReply(envelope)) {
+      return { delivered: false, ok: false, reason: "no Mac connected" };
+    }
+    const ack = await new Promise<DeliveryAck | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingAcks.delete(envelope.deliveryId);
+        resolve(null);
+      }, MachineDO.ackTimeoutMs);
+      this.pendingAcks.set(envelope.deliveryId, (received) => {
+        clearTimeout(timer);
+        this.pendingAcks.delete(envelope.deliveryId);
+        resolve(received);
+      });
+    });
+    if (!ack) return { delivered: false, ok: false, reason: "the Mac did not answer" };
+    return { delivered: true, ok: ack.ok, reason: ack.reason };
+  }
+
   /** Writes a reply or a decision down the publisher socket, if one is
    *  connected. One finder for both envelope kinds, since the only thing
    *  either needs is "reach the publisher" — the shape of what gets sent is
@@ -85,19 +133,11 @@ export class MachineDO extends DurableObject {
     }
     if (url.pathname === "/reply" && request.method === "POST") {
       const envelope = (await request.json()) as ReplyEnvelope;
-      const ok = this.deliverReply(envelope);
-      return new Response(JSON.stringify({ ok }), {
-        status: ok ? 200 : 503,
-        headers: { "Content-Type": "application/json" },
-      });
+      return this.respondToDelivery({ ...envelope, deliveryId: crypto.randomUUID() });
     }
     if (url.pathname === "/decide" && request.method === "POST") {
       const envelope = (await request.json()) as DecisionEnvelope;
-      const ok = this.deliverReply(envelope);
-      return new Response(JSON.stringify({ ok }), {
-        status: ok ? 200 : 503,
-        headers: { "Content-Type": "application/json" },
-      });
+      return this.respondToDelivery({ ...envelope, deliveryId: crypto.randomUUID() });
     }
     if (request.headers.get("Upgrade") !== "websocket") {
       return new Response("expected websocket", { status: 426 });
@@ -126,9 +166,40 @@ export class MachineDO extends DurableObject {
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
 
+  /** One response shape for both delivery routes.
+   *
+   *  **200 now means the Mac acted on it**, which is the whole point of the
+   *  ack. The two failure shapes are kept apart because the phone shows them
+   *  differently: 503 is "it never got there" (no Mac, or no answer within the
+   *  timeout), and 409 is "it got there and could not be used" — a session
+   *  that has closed, a shim that is busy. Conflating them would tell the user
+   *  to retry when retrying cannot help. */
+  private respondToDelivery(
+    envelope: (ReplyEnvelope | DecisionEnvelope) & { deliveryId: string },
+  ): Promise<Response> {
+    return this.deliverAndAwaitAck(envelope).then(({ delivered, ok, reason }) => {
+      const status = ok ? 200 : delivered ? 409 : 503;
+      return new Response(JSON.stringify({ ok, reason }), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+  }
+
   webSocketMessage(_ws: WebSocket, message: string | ArrayBuffer): void {
     if (typeof message !== "string") return;
-    const parsed = JSON.parse(message) as Partial<MachineSnapshot>;
+    const parsed = JSON.parse(message) as Partial<MachineSnapshot> & Partial<DeliveryAck>;
+    // An acknowledgement, not a snapshot. Checked first because a snapshot
+    // has no `type` and would otherwise fall through the same shape guard.
+    if (parsed.type === "ack" && typeof parsed.deliveryId === "string") {
+      const waiting = this.pendingAcks.get(parsed.deliveryId);
+      // A late ack — one whose request already timed out — finds nothing and
+      // is dropped. Deliberately silent: the phone has already been told the
+      // truth for that delivery, and revising it afterwards is not something
+      // an HTTP response can do.
+      if (waiting) waiting(parsed as DeliveryAck);
+      return;
+    }
     // Narrow shape check, not a schema validator: a malformed publish must
     // not be persisted and served back to the phone, where — until the
     // RosterSocket fix — an undecodable frame permanently ended that

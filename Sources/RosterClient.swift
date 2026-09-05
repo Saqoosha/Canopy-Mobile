@@ -9,6 +9,17 @@ enum RosterError: Error {
     case notFound
     case unexpectedStatus(Int)
     case decodingFailed(String)
+    /// The Mac answered and said it could not use the delivery — a session
+    /// that has closed, a shim that is busy. Carries the Mac's own words.
+    ///
+    /// Separate from `.notDelivered` because the two need different advice:
+    /// this one will not work on a retry, that one might.
+    case refusedByMac(String)
+    /// It never reached the Mac: no publisher connected, or none answered
+    /// within the relay's window. **Not the same as "the Mac said no"** —
+    /// before the ack protocol these were one 200 and the user was told
+    /// their message had been sent.
+    case notDelivered(String)
 
     var message: String {
         switch self {
@@ -20,6 +31,10 @@ enum RosterError: Error {
             return "Unexpected response (\(code))"
         case .decodingFailed(let description):
             return "Could not parse roster: \(description)"
+        case .refusedByMac(let reason):
+            return reason
+        case .notDelivered(let reason):
+            return reason
         }
     }
 }
@@ -68,11 +83,24 @@ struct RosterClient {
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "machine": machine, "sessionId": sessionId, "text": text,
         ])
-        let (_, response) = try await URLSession.shared.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try Self.check(status: (response as? HTTPURLResponse)?.statusCode ?? -1, body: data)
+    }
+
+    /// Turns a delivery response into the truth about it.
+    ///
+    /// **200 means the Mac acted on it.** That is new: it used to mean the
+    /// relay had written to a socket, which on a half-open connection is
+    /// indistinguishable from success and told the user their message had
+    /// been sent when nothing had happened.
+    private static func check(status: Int, body: Data) throws {
+        if status == 200 { return }
+        let reason = (try? JSONSerialization.jsonObject(with: body) as? [String: Any])?
+            .flatMap { $0["reason"] as? String }
         switch status {
-        case 200: return
         case 401: throw RosterError.unauthorized
+        case 409: throw RosterError.refusedByMac(reason ?? "The Mac could not use that")
+        case 503: throw RosterError.notDelivered(reason ?? "It did not reach the Mac")
         default: throw RosterError.unexpectedStatus(status)
         }
     }
@@ -94,12 +122,7 @@ struct RosterClient {
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "machine": machine, "sessionId": sessionId, "requestId": requestId, "decision": decision,
         ])
-        let (_, response) = try await URLSession.shared.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-        switch status {
-        case 200: return
-        case 401: throw RosterError.unauthorized
-        default: throw RosterError.unexpectedStatus(status)
-        }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try Self.check(status: (response as? HTTPURLResponse)?.statusCode ?? -1, body: data)
     }
 }

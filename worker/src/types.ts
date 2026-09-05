@@ -55,6 +55,24 @@ export interface ReplyEnvelope {
   type: "reply";
   sessionId: string;
   text: string;
+  /** Correlates the Mac's acknowledgement with this delivery. Optional so a
+   *  Canopy older than the ack protocol still parses the envelope; the relay
+   *  then times out rather than hanging, and reports that honestly. */
+  deliveryId?: string;
+}
+
+/** What Canopy sends back once it has tried to act on a delivery.
+ *
+ *  `ok: false` is the case this protocol exists for: the socket was alive, so
+ *  the write "succeeded", but the Mac could not do anything with it — no such
+ *  session, no live shim, or a shim that refused. Before this, all three were
+ *  a 200 and a message the user believed they had sent. */
+export interface DeliveryAck {
+  type: "ack";
+  deliveryId: string;
+  ok: boolean;
+  /** Why it failed, for the phone to show. Never conversation content. */
+  reason?: string;
 }
 
 /** The only two legal values, captured from three real clicks in
@@ -88,6 +106,8 @@ export interface DecisionEnvelope {
   sessionId: string;
   requestId: string;
   decision: PermissionDecision;
+  /** See `ReplyEnvelope.deliveryId`. */
+  deliveryId?: string;
 }
 
 export interface MachineSnapshot {

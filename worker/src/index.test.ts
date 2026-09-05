@@ -175,3 +175,43 @@ describe("safeSlice", () => {
     expect("🍎🍎".slice(0, 1)).not.toBe("🍎"); // what we protect against
   });
 });
+
+describe("delivery acknowledgement", () => {
+  const auth = {
+    Authorization: `Bearer ${TEST_SHARED_SECRET}`,
+    "Content-Type": "application/json",
+  };
+
+  it("does not report success when no Mac is connected", async () => {
+    // The shape this protocol exists to end: before the ack, the relay
+    // answered 200 as soon as it had written to a socket — and on a
+    // half-open connection that write succeeds. The user was told their
+    // message had been sent while nothing had happened.
+    const res = await SELF.fetch("https://x/reply", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ machine: "no-such-mac", sessionId: "s1", text: "hi" }),
+    });
+    expect(res.status).toBe(503);
+    expect(res.status).not.toBe(200);
+    const body = (await res.json()) as { ok: boolean; reason?: string };
+    expect(body.ok).toBe(false);
+    expect(typeof body.reason).toBe("string");
+  });
+
+  it("does not report success for a decision no Mac can take", async () => {
+    const res = await SELF.fetch("https://x/decide", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        machine: "no-such-mac",
+        sessionId: "s1",
+        requestId: "abc",
+        decision: "allow",
+      }),
+    });
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { ok: boolean };
+    expect(body.ok).toBe(false);
+  });
+});

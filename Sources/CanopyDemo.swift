@@ -47,8 +47,18 @@ enum CanopyDemo {
                                 body: "Which database should the worker use?",
                                 machine: "studio", sessionId: "questions", kind: "asking", requestId: "demo-questions",
                                 resumeId: "questions", answerable: false, choices: [
-                                    AskChoice(question: "Which database?", header: "Database", options: ["Postgres", "SQLite"]),
-                                    AskChoice(question: "Which features?", header: "Features", options: ["Auth", "Billing", "Analytics"], multiSelect: true)
+                                    // Descriptions on purpose: on a real ask they carry the
+                                    // difference between terse labels, and the form is the
+                                    // only place they appear, so the demo must draw them.
+                                    AskChoice(question: "Which database?", header: "Database", options: [
+                                        AskOption(label: "Postgres", description: "Managed, relational; the team already runs one."),
+                                        AskOption(label: "SQLite", description: "Single file, zero ops; fine until two workers write."),
+                                    ]),
+                                    AskChoice(question: "Which features?", header: "Features", options: [
+                                        AskOption(label: "Auth", description: "Sign-in and sessions."),
+                                        AskOption(label: "Billing"),
+                                        AskOption(label: "Analytics", description: "Usage events, sampled."),
+                                    ], multiSelect: true)
                                 ]),
         NotificationHistoryItem(id: "permission", receivedAt: .now.addingTimeInterval(-120), title: "Review notification flow",
                                 body: "Run the test suite to verify the notification changes?\n\n```sh\nbun test\n```",

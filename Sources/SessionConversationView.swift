@@ -465,14 +465,26 @@ private struct AskFormView: View {
             ForEach(form, id: \.question) { choice in
                 VStack(alignment: .leading, spacing: 6) {
                     AskQuestionHeading(choice: choice)
-                    ForEach(choice.options, id: \.self) { option in
+                    ForEach(choice.options, id: \.label) { option in
                         Button {
-                            toggle(option, in: choice)
+                            toggle(option.label, in: choice)
                         } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: symbol(for: option, in: choice))
-                                Text(option)
-                                    .multilineTextAlignment(.leading)
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Image(systemName: symbol(for: option.label, in: choice))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(option.label)
+                                        .multilineTextAlignment(.leading)
+                                    // The description is why one option is
+                                    // not the other. Its only other copy was
+                                    // the raw tool input, which this card
+                                    // replaced.
+                                    if let description = option.description {
+                                        Text(description)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .multilineTextAlignment(.leading)
+                                    }
+                                }
                                 Spacer(minLength: 0)
                             }
                             .font(.caption)

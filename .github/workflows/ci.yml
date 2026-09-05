@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  worker:
+    name: worker tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci
+      # Typecheck separately from the tests: vitest transpiles without
+      # checking, so a type error that only shows up at a call site the
+      # tests do not reach would otherwise ship green.
+      - run: npx tsc --noEmit
+      # `tee` because the floor below reads the count, and a pipeline's exit
+      # status is the LAST command's — pipefail is not on by default in
+      # GitHub's `bash -e {0}`.
+      - name: Run tests
+        run: |
+          set -o pipefail
+          npx vitest run --reporter=default 2>&1 | tee "$RUNNER_TEMP/vitest.log"
+      # Exit 0 does not mean the suite ran: vitest exits 0 over a file with
+      # zero tests, so an accidentally-emptied or unimported test file is
+      # silently green. Assert a floor instead. Raise it when tests are
+      # added; removing tests is meant to cost an edit to this file.
+      - name: Assert the test count did not fall
+        env:
+          EXPECTED_TESTS: "22"
+        run: |
+          set -o pipefail
+          # LAST match, never the first: a test's own stdout is echoed back
+          # and could otherwise plant a fake "Tests  999 passed" line ahead
+          # of the real summary.
+          # Portable on purpose: awk's three-argument `match` is a gawk
+          # extension and ubuntu's default awk is mawk, where it is a syntax
+          # error — the step would have failed for a reason unrelated to the
+          # count. `tail -1` takes the LAST match for the forgery reason above.
+          n=$(grep -oE 'Tests[[:space:]]+[0-9]+ passed' "$RUNNER_TEMP/vitest.log" \
+              | tail -1 | grep -oE '[0-9]+' | head -1)
+          echo "measured=$n floor=$EXPECTED_TESTS"
+          # A non-integer operand makes `[ ]` exit 2, which `if` reads as
+          # false — so the comparison is written to fail loudly instead.
+          if [ -z "$n" ] || [ "$n" -lt "$EXPECTED_TESTS" ]; then
+            echo "::error::vitest reported $n passing tests, below the floor of $EXPECTED_TESTS"
+            exit 1
+          fi
+          if [ "$n" -gt "$EXPECTED_TESTS" ]; then
+            echo "::warning::$n tests now pass; raise EXPECTED_TESTS to $n so the floor keeps gating"
+          fi
+
+  app:
+    name: iOS build
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      # Ad-hoc signed: the runner has no keychain holding the Developer ID
+      # identity project.yml pins, and this job only needs the code to
+      # compile — it never installs or launches the app.
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project CanopyMobile.xcodeproj \
+            -scheme CanopyMobile \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            build

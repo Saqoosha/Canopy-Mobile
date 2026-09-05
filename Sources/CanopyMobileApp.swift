@@ -366,6 +366,17 @@ struct CanopyMobileApp: App {
     /// Builds the one destination. Kept here rather than in the view because
     /// `RosterClient` is owned by this scene — the view is handed closures,
     /// not credentials.
+    /// The roster's current row for a conversation, matched the same way the
+    /// history is: on `resumeId` when both sides have one, else `sessionId`.
+    /// A restart mints a new `sessionId`, so matching on that alone would
+    /// drop the dot exactly when Canopy came back.
+    private func livePane(for target: ConversationTarget) -> PaneRow? {
+        snapshots[target.machine]?.panes.first { pane in
+            if let want = target.resumeId, let have = pane.resumeId { return have == want }
+            return pane.sessionId == target.sessionId
+        }
+    }
+
     @ViewBuilder
     private func conversation(_ target: ConversationTarget) -> some View {
         SessionConversationView(
@@ -374,6 +385,14 @@ struct CanopyMobileApp: App {
             resumeId: target.resumeId,
             title: target.title,
             subtitle: target.subtitle,
+            // Looked up on every re-render rather than captured into the
+            // target, so the header tracks the roster instead of freezing at
+            // the moment the row was tapped. You open a session BECAUSE it
+            // raised its hand; it can finish while you are reading, and a
+            // frozen dot would still say "asking". nil when the roster does
+            // not list this session — the header then shows no dot at all,
+            // because grey means idle here and "we don't know" is not idle.
+            pane: livePane(for: target),
             onDecision: { item, decision in sendDecision(item: item, decision: decision) },
             onSend: { text in
                 try await sendReply(machine: target.machine,

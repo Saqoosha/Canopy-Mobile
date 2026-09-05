@@ -43,21 +43,26 @@ jobs:
           # ahead of the summary, so a test printing "Tests 999 passed" could
           # otherwise forge the count.
           #
-          # `|| true` and the explicit empty check below are what make a failed
-          # extraction REPORT instead of dying. The first run of this workflow
-          # failed here having printed nothing at all — not even the line
-          # below — so it died on the assignment itself under `pipefail`.
-          # Which stage returned non-zero was never established, and two
-          # theories (ANSI in the summary; SIGPIPE from a `head -1`) were both
-          # measured and refuted. So this does not guard a known cause: it
-          # guarantees that whatever the cause was, the step says so.
+          # **Strip ANSI first.** Captured from run 33939496067's own log, the
+          # summary line is:
+          #     ESC[2m      Tests ESC[22m ESC[1mESC[32m22 passed ...
+          # so escape sequences sit between "Tests" and the digits and a plain
+          # regex matches nothing. This strip was removed once on a reviewer's
+          # measurement that vitest emits no colour under CI — that
+          # measurement did not hold for what GitHub actually captures, and
+          # the very next run failed. Do not remove it again without reading a
+          # real run's log.
+          sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$RUNNER_TEMP/vitest.log" > "$RUNNER_TEMP/vitest.plain"
+          # `|| true` plus the empty check below is what turned that failure
+          # from silent into legible: the first run died on this assignment
+          # under `pipefail` and printed nothing at all, not even the echo.
           # `tr` rather than a second `grep | head` — it consumes all of its
           # input, so nothing upstream can be handed a closed pipe.
-          n=$(grep -oE 'Tests[[:space:]]+[0-9]+ passed' "$RUNNER_TEMP/vitest.log" \
+          n=$(grep -oE 'Tests[[:space:]]+[0-9]+ passed' "$RUNNER_TEMP/vitest.plain" \
               | tail -1 | tr -dc '0-9') || true
           if [ -z "$n" ]; then
             echo "::error::could not read a test count from vitest's output"
-            tail -30 "$RUNNER_TEMP/vitest.log"
+            tail -30 "$RUNNER_TEMP/vitest.plain"
             exit 1
           fi
           echo "measured=$n floor=$EXPECTED_TESTS"

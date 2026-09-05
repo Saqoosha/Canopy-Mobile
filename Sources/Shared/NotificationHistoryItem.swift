@@ -33,10 +33,16 @@ struct AskOption: Codable, Hashable, Sendable {
     /// Accepts a bare string as well as `{label, description}`.
     ///
     /// The bare form is what an option looked like before descriptions were
-    /// carried. Stored notifications from that build are still in the App
-    /// Group container, and `HistoryStore` decodes the whole file at once —
-    /// so refusing the old shape would not lose one card, it would make the
-    /// entire history unreadable.
+    /// carried, and notifications written by that build are still in the App
+    /// Group container.
+    ///
+    /// **Correcting the reason this was written down.** It claimed
+    /// `HistoryStore` decodes the whole history at once, so refusing the old
+    /// shape would make all of it unreadable. That is false: the store keeps
+    /// one JSON file per notification and `loadAll` catches per file, logs,
+    /// and skips. The real cost is bounded and still worth avoiding — every
+    /// ask card from before this change would silently vanish from its
+    /// conversation, which reads as "the push never arrived".
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if let label = try? container.decode(String.self) {

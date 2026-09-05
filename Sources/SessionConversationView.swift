@@ -174,7 +174,18 @@ struct SessionConversationView: View {
                 // open, so a push arriving on this screen has to land in it —
                 // that is the case this whole view exists for.
                 .onReceive(NotificationCenter.default.publisher(for: HistoryUpdateBridge.didUpdate)) { _ in
+                    // The event fires for EVERY session, and it cannot say
+                    // which one: it is re-posted from a Darwin notification,
+                    // and Darwin notifications carry no userInfo at all. So
+                    // the only honest test of "was this screen's session the
+                    // one that got a push" is whether OUR filtered list grew
+                    // — `load()` filters by machine + session, so a push to
+                    // another session leaves the count untouched. Scrolling
+                    // on the bare event yanked the reader to the bottom on
+                    // somebody else's notification.
+                    let before = items.count
                     load()
+                    guard items.count > before else { return }
                     withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
                 }
                 .onChange(of: composerFocused) { _, focused in

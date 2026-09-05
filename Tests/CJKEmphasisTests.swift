@@ -96,15 +96,20 @@ struct CJKEmphasisTests {
         // so the real closing fence read as a NEW opener and every paragraph
         // after it stayed "code" — the rewrite silently stopped applying for
         // the rest of the message.
+        // The trailing text must be one the rule actually fires on, and the
+        // assertion must be an AND, not an OR: an OR that also accepts the
+        // buggy "remainder swallowed as code" outcome passes against the old
+        // implementation and pins nothing. Verified: this fails against the
+        // pre-fix code, which never left the block.
         let src = """
         ````
         ```
         ````
 
-        続き。**強調**する
+        続き**強調。**する
         """
         let out = CJKEmphasis.normalized(src)
-        #expect(out.contains("強調\(zwsp)**する") || out.contains("**強調**する"))
+        #expect(out.contains("強調。\(zwsp)**する"))
         #expect(out.hasPrefix("````\n```\n````"))
     }
 
@@ -115,6 +120,12 @@ struct CJKEmphasisTests {
         #expect(CJKEmphasis.normalized(src) == src)
     }
 
+    /// A characterization test, not a regression one: it also passes against
+    /// the implementation that had no indented-code detection at all, because
+    /// that one treated every line as prose. What it pins is the FUTURE —
+    /// widening the indented rule to fire without a preceding blank line
+    /// would break it, and that is the change most likely to be made by
+    /// someone "tidying" the condition.
     @Test("An indented line that continues a paragraph is still prose")
     func indentedParagraphContinuationIsProse() {
         // Indented code cannot interrupt a paragraph, so this must still be
@@ -132,6 +143,19 @@ struct CJKEmphasisTests {
     func blankLineInsideIndentedCode() {
         let src = "説明。\n\n    a 。**x\n\n    b 。**y\n"
         #expect(CJKEmphasis.normalized(src) == src)
+    }
+
+    @Test("A closing fence may be followed by whitespace only")
+    func closingFenceRejectsTrailingText() {
+        // ```notes is content inside the block, not a close. Treating it as
+        // one exits early and hands the REST of the code block to the
+        // rewrite — the invisible-character-in-a-command failure this file
+        // exists to prevent.
+        let src = "```\n```notes\necho 。**x\n```\n\n続き**強調。**する"
+        let out = CJKEmphasis.normalized(src)
+        #expect(out.contains("echo 。**x"))
+        #expect(!out.contains("echo 。\(zwsp)**x"))
+        #expect(out.contains("強調。\(zwsp)**する"))
     }
 
     // MARK: - Line starts belong to lists, not emphasis

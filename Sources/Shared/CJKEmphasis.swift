@@ -153,7 +153,8 @@ enum CodeSegmenter {
                 // as a new opener and every following paragraph stayed
                 // "code" — silently skipping the rewrite for the rest of the
                 // message.
-                if let run = fenceRun(trimmed), run.marker == open.marker, run.length >= open.length {
+                if let run = fenceRun(trimmed), run.marker == open.marker, run.length >= open.length,
+                   run.trailing.allSatisfy(\.isWhitespace) {
                     flush(isCode: true)
                     fence = nil
                 }
@@ -164,7 +165,9 @@ enum CodeSegmenter {
             if let run = fenceRun(trimmed) {
                 if inIndentedCode { flush(isCode: true); inIndentedCode = false }
                 flush(isCode: false)
-                fence = run
+                // An opener keeps only what a close is matched against; its
+                // info string is content and is not carried.
+                fence = (run.marker, run.length)
                 buffer.append(line)
                 previousWasBlank = false
                 continue
@@ -213,10 +216,17 @@ enum CodeSegmenter {
     /// The fence marker and its run length, for a line already stripped of
     /// leading spaces. Three or more of the same character; the length is
     /// kept because a closing run must be at least as long as the opener.
-    private static func fenceRun(_ line: Substring) -> (marker: Character, length: Int)? {
+    ///
+    /// `trailing` is what follows the run. A CLOSING fence may be followed by
+    /// whitespace only — ```` ```notes ```` is content, not a close — and
+    /// treating it as one exits the block early and hands the rest of a code
+    /// block to the rewrite. An OPENING fence may be followed by an info
+    /// string, which is why the caller applies the rule and this does not.
+    private static func fenceRun(_ line: Substring) -> (marker: Character, length: Int, trailing: Substring)? {
         guard let first = line.first, first == "`" || first == "~" else { return nil }
         let run = line.prefix { $0 == first }.count
-        return run >= 3 ? (first, run) : nil
+        guard run >= 3 else { return nil }
+        return (first, run, line.dropFirst(run))
     }
 
     /// Backtick spans inside a prose segment. A run of N backticks opens a

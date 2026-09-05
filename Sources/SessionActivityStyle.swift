@@ -32,4 +32,17 @@ enum SessionActivityStyle {
         if seconds < 3600 { return "\(seconds / 60)m" }
         return "\(seconds / 3600)h"
     }
+
+    /// How long ago a Mac last published, for the section header.
+    ///
+    /// **No seconds.** The header sits over a `TimelineView` that ticks once
+    /// a second, and with `elapsed` in it the line re-read "5s ago", "6s ago",
+    /// "7s ago" — a counter running in the corner of a screen you are trying
+    /// to read, reporting a fact nobody acts on at that resolution. Under a
+    /// minute it is "just now"; from there it steps by the minute, which is
+    /// also the coarsest unit `elapsed` already uses for a session's state.
+    static func published(since unix: Int, now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince1970) - unix)
+        return seconds < 60 ? "just now" : "\(elapsed(since: unix, now: now)) ago"
+    }
 }

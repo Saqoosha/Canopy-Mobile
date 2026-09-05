@@ -476,3 +476,27 @@ struct RendersQuestionsTests {
         #expect(item(requestId: "r", answerable: true, decision: nil).showsBody)
     }
 }
+
+/// The roster header's "Updated …" wording. It sits over a once-a-second
+/// TimelineView, so anything with seconds in it becomes a counter.
+struct PublishedLabelTests {
+    private let now = Date(timeIntervalSince1970: 1_000_000)
+
+    @Test("Under a minute reads as just now, whatever the seconds say")
+    func underAMinuteIsJustNow() {
+        for s in [0, 5, 30, 59] {
+            #expect(SessionActivityStyle.published(since: 1_000_000 - s, now: now) == "just now")
+        }
+    }
+
+    @Test("From a minute on it steps by the minute, then the hour")
+    func minutesThenHours() {
+        #expect(SessionActivityStyle.published(since: 1_000_000 - 60, now: now) == "1m ago")
+        #expect(SessionActivityStyle.published(since: 1_000_000 - 7_200, now: now) == "2h ago")
+    }
+
+    @Test("A publish stamped in the future is treated as now, not as negative")
+    func futureClampsToNow() {
+        #expect(SessionActivityStyle.published(since: 1_000_000 + 30, now: now) == "just now")
+    }
+}

@@ -55,7 +55,7 @@ struct HistoryView: View {
                 .frame(width: 22)
                 .padding(.top, 2)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(item.title).font(.body.weight(.medium))
                     .foregroundStyle(.primary)
                 Text(item.listDisplayBody)
@@ -76,7 +76,7 @@ struct HistoryView: View {
             Spacer(minLength: 0)
             CanopyDisclosure().padding(.top, 5)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 2)
         .contentShape(Rectangle())
     }
 

@@ -11,13 +11,6 @@ struct RosterView: View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             List {
                 if !machineIds.isEmpty {
-                    Section {
-                        Text(summary)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .listRowBackground(Color.clear)
-                            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-                    }
                     let asking = attentionPanes(now: context.date)
                     if !asking.isEmpty {
                         Section {
@@ -62,13 +55,11 @@ struct RosterView: View {
             }
             .listStyle(.insetGrouped)
             .listSectionSpacing(20)
+            // Breathing room under the large title. The summary line that
+            // used to sit here was doing this job by accident; without it the
+            // first card butted against the title.
+            .contentMargins(.top, 12, for: .scrollContent)
         }
-    }
-
-    private var summary: String {
-        let count = machineIds.compactMap { snapshots[$0] }.reduce(0) { $0 + $1.panes.count }
-        // Directory membership doesn't guarantee a live connection.
-        return "\(count) session\(count == 1 ? "" : "s") · \(machineIds.count) Mac\(machineIds.count == 1 ? "" : "s")"
     }
 
     private var sortedMachineIds: [String] {
@@ -130,7 +121,7 @@ struct RosterView: View {
 
     @ViewBuilder private func updateLabel(_ snapshot: MachineSnapshot?, stale: Bool, now: Date) -> some View {
         if let snapshot {
-            Text("\(stale ? "Offline · " : "Updated ")\(SessionActivityStyle.elapsed(since: snapshot.publishedAt, now: now)) ago")
+            Text("\(stale ? "Offline · " : "Updated ")\(SessionActivityStyle.published(since: snapshot.publishedAt, now: now))")
                 .font(.caption2)
         }
     }
@@ -155,7 +146,7 @@ struct RosterView: View {
                     .frame(width: 7, height: 7)
                     .padding(.top, 7)
                     .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(pane.title).font(.body.weight(.medium))
                         .foregroundStyle(.primary)
                     (Text("\(pane.project) · ").foregroundStyle(.secondary)
@@ -170,7 +161,7 @@ struct RosterView: View {
                     .padding(.top, 3)
                 CanopyDisclosure().padding(.top, 5)
             }
-            .padding(.vertical, 6)
+            .padding(.vertical, 2)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

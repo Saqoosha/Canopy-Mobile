@@ -58,7 +58,29 @@ struct SessionConversationView: View {
     var body: some View {
         ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 28) {
+                    // **`VStack`, not `LazyVStack`, and that is the fix.**
+                    // A lazy stack estimates the height of rows it has not
+                    // measured, so anchoring to the bottom anchors the bottom
+                    // of a GUESS. Measured on device twice, on the two
+                    // DIFFERENT paths that position this view — which is what
+                    // makes the stack itself the culprit rather than either of
+                    // them. Opening a conversation landed on blank space below
+                    // the transcript; and, on a screen left open while a push
+                    // arrived, the `onReceive` re-scroll landed PAST the end,
+                    // transcript clipped at the top and blank filling the rest.
+                    // Same defect both times: the offset was right for the
+                    // estimate and wrong for the content, which measured
+                    // shorter once it was really laid out.
+                    //
+                    // Nothing that positions a scroll view can be correct
+                    // while the heights are guesses, so the guessing goes
+                    // rather than gaining a correction on top of it. These
+                    // rows are one session's notifications — bounded, and
+                    // small in every conversation seen so far — so measuring
+                    // them all up front is affordable. If a very long history
+                    // ever makes opening slow, that is visible and fixable;
+                    // a scroll position that is silently wrong is neither.
+                    VStack(alignment: .leading, spacing: 28) {
                         if let loadError {
                             // Never a bare icon: "the store would not open" and
                             // "this session has said nothing" look identical on

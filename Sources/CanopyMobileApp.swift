@@ -13,6 +13,10 @@ struct CanopyMobileApp: App {
     @State private var errors: [String: Error] = [:]
     @State private var directoryError: Error?
     @State private var sockets: [String: RosterSocket] = [:]
+    /// Live session events, held for the app's lifetime only. `HistoryStore`
+    /// remains the durable record; these two are merged at render time and
+    /// neither replaces the other.
+    @State private var eventStore = SessionEventStore()
     // The in-flight `connectAll()` task. Held so backgrounding can cancel
     // it — `connectAll()` awaits a network round trip before it creates any
     // socket, so without this the app could go background while that await
@@ -301,6 +305,10 @@ struct CanopyMobileApp: App {
             socket.connect(machine: id) { snapshot in
                 snapshots[id] = snapshot
                 errors[id] = nil
+            } onEvent: { record in
+                eventStore.apply(record)
+            } onBackfill: { records, oldestSeq, sessionId in
+                eventStore.apply(backfill: records, oldestSeq: oldestSeq, sessionId: sessionId)
             } onFailure: { error in
                 // The receive loop has stopped for this machine — surface it
                 // through the same `errors` slot `refresh()` uses, so the
@@ -452,6 +460,13 @@ struct CanopyMobileApp: App {
             onSend: { text in
                 try await sendReply(machine: target.machine,
                                     sessionId: target.sessionId, text: text)
+            },
+            eventStore: eventStore,
+            // Asked on this machine's own socket. A machine with no live
+            // socket simply gets no answer, which is the same state as being
+            // offline — the stored notifications still render.
+            onRequestBackfill: { sessionId, seq in
+                sockets[target.machine]?.requestEvents(sessionId: sessionId, since: seq)
             }
         )
     }

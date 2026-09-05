@@ -210,6 +210,14 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
     /// and on an ask whose form did not fit the 4 KB push budget — in both
     /// cases the UI falls back to that older no-buttons rendering.
     var choices: [AskChoice]?
+    /// The id Canopy gave the streamed event carrying this same text.
+    ///
+    /// **The only key that can say a push and an event are one turn.** `id`
+    /// above is minted locally by the notification service extension, so it
+    /// can never match anything Canopy holds. Absent on an item written by a
+    /// build that predates this field — read `nil` as "not a duplicate", never
+    /// as "duplicate", or the history disappears.
+    var eventId: String?
 
     init(
         id: String,
@@ -227,7 +235,8 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         allowAlways: Bool? = nil,
         resumeId: String? = nil,
         answerable: Bool? = nil,
-        choices: [AskChoice]? = nil
+        choices: [AskChoice]? = nil,
+        eventId: String? = nil
     ) {
         self.id = id
         self.receivedAt = receivedAt
@@ -245,6 +254,7 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         self.resumeId = resumeId
         self.answerable = answerable
         self.choices = choices
+        self.eventId = eventId
     }
 
     /// Jq and some pipelines pass through the four ASCII letters `null` as

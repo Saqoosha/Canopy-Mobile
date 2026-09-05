@@ -191,3 +191,74 @@ struct RosterSocketFrameTests {
         #expect(RosterSocket.decode(data("not json")) == nil)
     }
 }
+
+@MainActor
+struct ConversationMergeTests {
+    private func item(_ id: String,
+                      _ seconds: TimeInterval,
+                      eventId: String? = nil,
+                      kind: String = "completed") -> NotificationHistoryItem {
+        NotificationHistoryItem(id: id, receivedAt: Date(timeIntervalSince1970: seconds),
+                                title: "Canopy", body: "b", machine: "M",
+                                sessionId: "s1", kind: kind, eventId: eventId)
+    }
+
+    private func event(_ seq: Int, _ seconds: TimeInterval, eventId: String) -> SessionEventRecord {
+        SessionEventRecord(seq: seq, eventId: eventId, sessionId: "s1", resumeId: nil,
+                           kind: .assistant, text: "e",
+                           at: Date(timeIntervalSince1970: seconds))
+    }
+
+    @Test("Both sources interleave by time")
+    func ordersByTime() {
+        let rows = ConversationRow.merge(items: [item("i1", 30)],
+                                         events: [event(1, 10, eventId: "e1")])
+        #expect(rows.count == 2)
+        guard case .event = rows[0] else { Issue.record("the older event should be first"); return }
+    }
+
+    @Test("A completed notification duplicating an event is dropped")
+    func dropsTheDuplicate() {
+        let rows = ConversationRow.merge(items: [item("i1", 30, eventId: "e1")],
+                                         events: [event(1, 29, eventId: "e1")])
+        #expect(rows.count == 1)
+        if case .item = rows[0] { Issue.record("the notification duplicate should be dropped") }
+    }
+
+    // An asking is the only answerable route; the event stream has no
+    // equivalent, so it survives a same-text event.
+    @Test("An asking notification survives even when an event matches")
+    func keepsAsking() {
+        let rows = ConversationRow.merge(items: [item("i1", 30, eventId: "e1", kind: "asking")],
+                                         events: [event(1, 29, eventId: "e1")])
+        #expect(rows.count == 2)
+    }
+
+    // What a build older than the field wrote. Reading nil as "duplicate"
+    // would erase stored history rather than de-duplicate it.
+    @Test("A notification with no eventId is kept")
+    func keepsWithoutEventId() {
+        let rows = ConversationRow.merge(items: [item("i1", 30)],
+                                         events: [event(1, 29, eventId: "e1")])
+        #expect(rows.count == 2)
+    }
+
+    @Test("An unmatched eventId keeps its notification")
+    func keepsUnmatched() {
+        let rows = ConversationRow.merge(items: [item("i1", 30, eventId: "other")],
+                                         events: [event(1, 29, eventId: "e1")])
+        #expect(rows.count == 2)
+    }
+
+    @Test("Rows carry stable, source-distinct ids")
+    func stableIds() {
+        let rows = ConversationRow.merge(items: [item("x", 1)],
+                                         events: [event(1, 2, eventId: "x")])
+        #expect(Set(rows.map(\.id)).count == 2)
+    }
+
+    @Test("Merging nothing yields nothing")
+    func emptyMerge() {
+        #expect(ConversationRow.merge(items: [], events: []).isEmpty)
+    }
+}

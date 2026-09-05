@@ -1,6 +1,54 @@
 import MarkdownUI
 import SwiftUI
 
+/// One row of the conversation, from either of the two sources that feed it.
+///
+/// The two are not interchangeable and neither replaces the other. A
+/// notification is durable, arrives with the app closed, and — when it is an
+/// `asking` — can be answered. A streamed event is live, reaches only a
+/// foregrounded app, holds no answer path, and survives only as long as the
+/// relay's ring buffer.
+enum ConversationRow: Identifiable {
+    case item(NotificationHistoryItem)
+    case event(SessionEventRecord)
+
+    var id: String {
+        switch self {
+        case .item(let item): return "i-\(item.id)"
+        case .event(let event): return "e-\(event.eventId)"
+        }
+    }
+
+    var at: Date {
+        switch self {
+        case .item(let item): return item.receivedAt
+        case .event(let event): return event.at
+        }
+    }
+
+    /// Interleave the two sources by time, dropping a notification that says
+    /// the same thing as an event already present.
+    ///
+    /// **Only a `completed` notification is ever dropped.** An `asking` is the
+    /// one route that can be answered — Allow, Deny, or a chosen option — and
+    /// the event stream has no equivalent, so it stays even when an event
+    /// carries the same words.
+    ///
+    /// **A notification with no `eventId` also stays.** That is what a build
+    /// older than the field wrote, and reading `nil` as "duplicate" would
+    /// erase the stored history rather than de-duplicate it.
+    static func merge(items: [NotificationHistoryItem],
+                      events: [SessionEventRecord]) -> [ConversationRow] {
+        let streamed = Set(events.map(\.eventId))
+        let kept = items.filter { item in
+            guard item.kind == "completed", let eventId = item.eventId else { return true }
+            return !streamed.contains(eventId)
+        }
+        return (kept.map(ConversationRow.item) + events.map(ConversationRow.event))
+            .sorted { $0.at < $1.at }
+    }
+}
+
 /// One session, as a conversation: everything that session has notified about,
 /// oldest at the top, with a composer pinned at the bottom.
 ///
@@ -38,6 +86,13 @@ struct SessionConversationView: View {
     let onDecision: (NotificationHistoryItem, String) -> Void
     let onAnswer: (NotificationHistoryItem, [String: String]) -> Void
     let onSend: (String) async throws -> Void
+    /// Live events for every session on every machine. Filtered to this one at
+    /// render time rather than handed a pre-filtered slice, so an event that
+    /// arrives while this view is open lands without a re-plumb.
+    let eventStore: SessionEventStore
+    /// Ask the relay for what this store is missing. Called once when the view
+    /// appears; the socket answers on its own connection.
+    let onRequestBackfill: (String, Int) -> Void
 
     @State private var items: [NotificationHistoryItem] = []
     @State private var totalCount = 0
@@ -112,11 +167,16 @@ struct SessionConversationView: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.top, 40)
                         }
-                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                            if shouldShowDaySeparator(at: index) {
-                                DaySeparator(date: item.receivedAt)
+                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                            if shouldShowDaySeparator(in: rows, at: index) {
+                                DaySeparator(date: row.at)
                             }
-                            MessageBlock(item: item, onDecision: onDecision, onAnswer: onAnswer)
+                            switch row {
+                            case .item(let item):
+                                MessageBlock(item: item, onDecision: onDecision, onAnswer: onAnswer)
+                            case .event(let event):
+                                SessionEventBlock(event: event)
+                            }
                         }
                         Color.clear.frame(height: 1).id(bottomAnchor)
                     }
@@ -139,7 +199,14 @@ struct SessionConversationView: View {
                 // what you opened it for. `defaultScrollAnchor` is resolved
                 // during layout instead, so it does not race the load.
                 .defaultScrollAnchor(.bottom)
-                .onAppear { load() }
+                .onAppear {
+                    load()
+                    // Asked from `lastSeq`, which is shared across sessions:
+                    // the relay's seq counter is per Durable Object, so one
+                    // number is enough to say "everything this app has not
+                    // seen", whichever session it belongs to.
+                    onRequestBackfill(sessionId, eventStore.lastSeq)
+                }
                 // **The anchor alone is not enough, and the comment above
                 // says why without following it through.** It resolves during
                 // the FIRST layout — which happens before `onAppear` runs
@@ -372,10 +439,55 @@ struct SessionConversationView: View {
         }
     }
 
-    private func shouldShowDaySeparator(at index: Int) -> Bool {
+    /// The rows actually drawn: stored notifications and live events in one
+    /// timeline, with a notification dropped when an event already says it.
+    private var rows: [ConversationRow] {
+        ConversationRow.merge(items: items,
+                              events: eventStore.events(sessionId: sessionId, resumeId: resumeId))
+    }
+
+    /// Takes the row list rather than reading `items`, because the separators
+    /// belong to what is DRAWN. Reading the notifications while rendering the
+    /// merged list put the day breaks at the wrong places as soon as an event
+    /// sat between two notifications.
+    private func shouldShowDaySeparator(in rows: [ConversationRow], at index: Int) -> Bool {
         guard index > 0 else { return true }
-        return !Calendar.current.isDate(items[index].receivedAt,
-                                        inSameDayAs: items[index - 1].receivedAt)
+        return !Calendar.current.isDate(rows[index].at, inSameDayAs: rows[index - 1].at)
+    }
+}
+
+/// One streamed event.
+///
+/// A tool is a thin single line — it exists to say "not stuck, still working",
+/// and giving it a card would make the busiest thing on screen the least
+/// informative. The turn boundaries draw nothing at all: they carry no content
+/// and only break up the flow.
+private struct SessionEventBlock: View {
+    let event: SessionEventRecord
+
+    var body: some View {
+        switch event.kind {
+        case .tool:
+            HStack(spacing: 6) {
+                Image(systemName: "wrench.and.screwdriver")
+                    .font(.caption2)
+                Text(event.text)
+                    .font(.caption)
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        case .turnStart, .turnEnd:
+            EmptyView()
+        case .assistant, .user:
+            Text(event.text)
+                .font(.callout)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+                .background(Color(.secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 16))
+        }
     }
 }
 

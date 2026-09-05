@@ -42,7 +42,7 @@ struct SettingsView: View {
                     // no path to remove a bad stored secret.
                     if hasStoredSecret {
                         Button("Clear stored secret", role: .destructive) {
-                            KeychainHelper.delete(key: "rosterSecret")
+                            if !CanopyDemo.isEnabled { KeychainHelper.delete(key: "rosterSecret") }
                             secret = ""
                             hasStoredSecret = KeychainHelper.has(key: "rosterSecret")
                         }
@@ -69,6 +69,11 @@ struct SettingsView: View {
     /// means "the user typed a new secret."
     private func commitSecret() {
         guard !secret.isEmpty else { return }
+        // The demo binds the URL field to a throwaway `@State`, but the secret
+        // field is the real binding, so without this a keystroke here during
+        // a demo run overwrote the simulator's stored secret and the next
+        // real launch came up unable to authenticate. Found in review.
+        guard !CanopyDemo.isEnabled else { return }
         KeychainHelper.save(key: "rosterSecret", value: secret)
         hasStoredSecret = KeychainHelper.has(key: "rosterSecret")
     }

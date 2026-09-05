@@ -322,7 +322,12 @@ struct SessionConversationView: View {
         do {
             // `loadAll()` is newest-first; a conversation reads oldest-first.
             loadError = nil
-            let all = try CanopyDemo.isEnabled ? CanopyDemo.history : HistoryStore.loadAll()
+            let all: [NotificationHistoryItem]
+            if CanopyDemo.isEnabled {
+                all = CanopyDemo.history
+            } else {
+                all = try HistoryStore.loadAll()
+            }
             totalCount = all.count
             // Prefer the durable id. `sessionId` is minted per Canopy process,
             // so after a restart it matches nothing stored earlier and this

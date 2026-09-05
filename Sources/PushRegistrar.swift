@@ -62,7 +62,17 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         // No APNs registration in demo mode: the simulator has no token to
         // get, and asking for one raises a permission prompt over the design
         // being reviewed.
-        if CanopyDemo.isEnabled { return true }
+        if CanopyDemo.isEnabled {
+            // Also UNregister. Skipping registration leaves a token from an
+            // earlier non-demo run of this same install in place, and the
+            // Notification Service Extension is a separate process that does
+            // not see `--demo` — so a real push arriving mid-demo would be
+            // appended to the shared history the real app reads next. The
+            // next non-demo launch re-registers on its own; this costs it
+            // nothing.
+            application.unregisterForRemoteNotifications()
+            return true
+        }
         UNUserNotificationCenter.current().delegate = self
         registerNotificationCategory()
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in

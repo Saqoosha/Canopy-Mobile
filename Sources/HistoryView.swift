@@ -63,7 +63,11 @@ struct HistoryView: View {
 
     private func load() {
         do {
-            items = try CanopyDemo.isEnabled ? CanopyDemo.history : HistoryStore.loadAll()
+            if CanopyDemo.isEnabled {
+                items = CanopyDemo.history
+            } else {
+                items = try HistoryStore.loadAll()
+            }
             loadError = nil
         } catch {
             loadError = error

@@ -358,3 +358,33 @@ struct AskFormParsingTests {
         #expect(AskChoice.form(userInfo: "not a form") == nil)
     }
 }
+
+/// Whether the raw `body` is worth rendering under a form. The failure it
+/// prevents is not a crash — it is the tool's input JSON printed above the
+/// buttons that say the same thing, pushing them most of a screen down.
+struct ShowsBodyTests {
+    private func item(choices: [AskChoice]?, decision: String? = nil) -> NotificationHistoryItem {
+        NotificationHistoryItem(
+            id: "1", receivedAt: Date(), title: "t", body: "{\"questions\":[…]}",
+            machine: "m", sessionId: "s", kind: "asking", requestId: "r",
+            decision: decision, answerable: choices == nil ? nil : false, choices: choices)
+    }
+
+    @Test("A notification with no form shows its body")
+    func plainNotificationShowsBody() {
+        #expect(item(choices: nil).showsBody)
+        #expect(item(choices: []).showsBody)
+    }
+
+    @Test("A form replaces the body rather than sitting under it")
+    func formHidesBody() {
+        #expect(!item(choices: [AskChoice(question: "Q", options: ["a"])]).showsBody)
+    }
+
+    // Keyed on the form, not on answerability: reverting to raw JSON at the
+    // moment the ask is answered is the same duplication with worse timing.
+    @Test("An answered form still hides the body")
+    func answeredFormHidesBody() {
+        #expect(!item(choices: [AskChoice(question: "Q", options: ["a"])], decision: "a").showsBody)
+    }
+}

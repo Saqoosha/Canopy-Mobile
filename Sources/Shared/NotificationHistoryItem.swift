@@ -208,6 +208,27 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         return choices
     }
 
+    /// Whether to render `body` in the conversation.
+    ///
+    /// **False once a form came through.** For an `AskUserQuestion` the body
+    /// is the tool's input rendered as JSON — which, before `choices`
+    /// existed, was the only thing there was to show. Now the questions and
+    /// their options are drawn as controls directly underneath it, so the
+    /// body is the same content twice, the longer and less useful time
+    /// first: on device it pushed the buttons most of a screen down
+    /// (measured 2026-09-05).
+    ///
+    /// Deliberately keyed on `choices`, not on whether the form is still
+    /// answerable — an ANSWERED ask keeps its questions on screen for the
+    /// recorded answer to refer to, and reverting to raw JSON at the moment
+    /// it is answered would be the same duplication with worse timing.
+    ///
+    /// The History list is unaffected: it shows `listDisplayBody`, which is
+    /// one line and is what makes an ask findable there.
+    var showsBody: Bool {
+        choices?.isEmpty != false
+    }
+
     /// Single source of truth for "what the History list row should show":
     /// the worker-generated short summary if it exists, else the full body.
     /// Already `null`-cleaned so the row can render it directly.

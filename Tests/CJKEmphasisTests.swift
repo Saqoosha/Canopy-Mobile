@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import CanopyMobile
 
@@ -256,5 +257,59 @@ struct AskChoiceTests {
         #expect(AskChoice(userInfo: ["question": "Q", "options": [String]()]) == nil)
         #expect(AskChoice(userInfo: ["question": "", "options": ["a"]]) == nil)
         #expect(AskChoice(userInfo: ["options": ["a"]]) == nil)
+    }
+}
+
+/// Which notifications draw an answerable form. Split out of the view so the
+/// rules can be exercised without one — the failure they prevent is a card
+/// that latches into "Sending…" forever, which no build error and no crash
+/// would ever surface.
+struct AnswerableFormTests {
+    private func item(
+        kind: String = "asking",
+        requestId: String? = "r1",
+        answerable: Bool? = false,
+        decision: String? = nil,
+        choices: [AskChoice]? = [AskChoice(question: "Q", options: ["a"])]
+    ) -> NotificationHistoryItem {
+        NotificationHistoryItem(
+            id: "1", receivedAt: Date(), title: "t", body: "b",
+            machine: "m", sessionId: "s", kind: kind, requestId: requestId,
+            decision: decision, answerable: answerable, choices: choices)
+    }
+
+    @Test("An unanswered ask with a form and a request id draws it")
+    func drawsTheForm() {
+        #expect(item().answerableForm?.count == 1)
+    }
+
+    // The reported bug: the form commits optimistically, and the send path
+    // needs a requestId to address anything. Without one the card disabled
+    // itself, showed "Sending…", and never came back.
+    @Test("A form with no request id is not drawn")
+    func refusesWithoutRequestId() {
+        #expect(item(requestId: nil).answerableForm == nil)
+    }
+
+    @Test("An already-answered ask is not drawn again")
+    func refusesAnswered() {
+        #expect(item(decision: "Postgres").answerableForm == nil)
+    }
+
+    @Test("An Allow/Deny ask is not drawn as a form")
+    func refusesAnswerableAsk() {
+        #expect(item(answerable: true).answerableForm == nil)
+        #expect(item(answerable: nil).answerableForm == nil)
+    }
+
+    @Test("A completion is never a form")
+    func refusesCompletion() {
+        #expect(item(kind: "completed").answerableForm == nil)
+    }
+
+    @Test("An ask with no form falls back to the older no-buttons rendering")
+    func refusesEmptyChoices() {
+        #expect(item(choices: nil).answerableForm == nil)
+        #expect(item(choices: []).answerableForm == nil)
     }
 }

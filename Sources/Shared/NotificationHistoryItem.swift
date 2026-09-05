@@ -169,6 +169,26 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         return body
     }
 
+    /// The `AskUserQuestion` form to draw, or nil if there is nothing
+    /// answerable here.
+    ///
+    /// **`requestId` is part of the test, and that is the whole reason this
+    /// lives on the model.** The form commits optimistically — it disables
+    /// itself and shows "Sending…" the moment Send is pressed — and the send
+    /// path needs a `requestId` to address anything at all. Drawing a form
+    /// without one produced a card that latched into "Sending…" with no
+    /// request made, no history written, and no way back. Today the relay
+    /// refuses an `asking` push with no `requestId` and Canopy only attaches
+    /// `choices` alongside one, so this is unreachable through the live path
+    /// — which is exactly why it belongs here as one local invariant rather
+    /// than as a property of two other codebases agreeing.
+    var answerableForm: [AskChoice]? {
+        guard kind == "asking", decision == nil, answerable == false,
+              requestId != nil, let choices, !choices.isEmpty
+        else { return nil }
+        return choices
+    }
+
     /// Single source of truth for "what the History list row should show":
     /// the worker-generated short summary if it exists, else the full body.
     /// Already `null`-cleaned so the row can render it directly.

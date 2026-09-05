@@ -311,15 +311,11 @@ private struct MessageBlock: View {
         item.kind == "asking" && item.decision == nil && item.answerable != false
     }
 
-    /// An unanswered AskUserQuestion whose form came through. Without the
-    /// form there is nothing to draw, and the ask renders as it used to:
-    /// legible, and unanswerable from here.
-    private var unansweredForm: [AskChoice]? {
-        guard item.kind == "asking", item.decision == nil, item.answerable == false,
-              let choices = item.choices, !choices.isEmpty
-        else { return nil }
-        return choices
-    }
+    /// An unanswered AskUserQuestion whose form came through. Without one
+    /// the ask renders as it used to: legible, and unanswerable from here.
+    /// The rules live on the model so they can be tested without a view —
+    /// see `NotificationHistoryItem.answerableForm`.
+    private var unansweredForm: [AskChoice]? { item.answerableForm }
 
     private var icon: String {
         switch item.kind {

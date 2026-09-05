@@ -95,3 +95,54 @@ jobs:
             -destination 'generic/platform=iOS' \
             CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
             build
+      # Pinned by UDID, never by name. `name=iPhone 16` fuzzy-matched a
+      # PHYSICAL device called "S" running iOS 16.5.1 on the dev machine and
+      # failed for a reason that had nothing to do with the tests; a runner
+      # has no such device today, but the failure mode is silent and the fix
+      # costs one line.
+      # Pinned by UDID, never by name. `name=iPhone 16` fuzzy-matched a
+      # PHYSICAL device called "S" running iOS 16.5.1 on the dev machine and
+      # failed for a reason that had nothing to do with the tests; a runner
+      # has no such device today, but the failure mode is silent.
+      - name: Resolve a simulator
+        id: sim
+        run: |
+          udid=$(xcrun simctl list devices available \
+            | grep -oE '\(([0-9A-F-]{36})\) \(Shutdown\)' | head -1 \
+            | grep -oE '[0-9A-F-]{36}')
+          if [ -z "$udid" ]; then
+            echo "::error::no available iOS simulator on this runner"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+      - name: Test
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project CanopyMobile.xcodeproj \
+            -scheme CanopyMobile \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/xctest.log"
+      # `** TEST SUCCEEDED **` is printed for a run of zero tests too, so
+      # assert the count. Same reasoning as the worker floor above.
+      - name: Assert the test count did not fall
+        env:
+          EXPECTED_SWIFT_TESTS: "15"
+        run: |
+          n=$(grep -oE 'Test run with [0-9]+ tests' "$RUNNER_TEMP/xctest.log" \
+              | tail -1 | tr -dc '0-9') || true
+          echo "measured=$n floor=$EXPECTED_SWIFT_TESTS"
+          if [ -z "$n" ]; then
+            echo "::error::could not read a Swift test count"
+            tail -30 "$RUNNER_TEMP/xctest.log"
+            exit 1
+          fi
+          if [ "$n" -lt "$EXPECTED_SWIFT_TESTS" ]; then
+            echo "::error::$n Swift tests ran, below the floor of $EXPECTED_SWIFT_TESTS"
+            exit 1
+          fi
+          if [ "$n" -gt "$EXPECTED_SWIFT_TESTS" ]; then
+            echo "::warning::$n Swift tests now run; raise EXPECTED_SWIFT_TESTS to $n"
+          fi

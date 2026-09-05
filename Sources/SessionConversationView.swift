@@ -324,10 +324,22 @@ private struct MessageBlock: View {
             }
             .foregroundStyle(.secondary)
 
-            Markdown(NotificationHistoryItem.displayableBody(item.body))
+            // Normalised on the way in: Japanese bold whose closing `**`
+            // sits between punctuation and a letter is not emphasis to
+            // CommonMark, and rendered as literal asterisks.
+            Markdown(CJKEmphasis.normalized(NotificationHistoryItem.displayableBody(item.body)))
+                // Matches Canopy's own inline-code rule
+                // (Resources/canopy-overrides.css): the same dark red on the
+                // same 4% black. **The border and the 1x4 padding are not
+                // reproducible** — MarkdownUI's `\.code` is a text style, and
+                // SwiftUI has no inline box to pad or stroke — so this is the
+                // chip's colour without the chip's shape, deliberately, not
+                // an oversight to be "finished" with a background view.
                 .markdownTextStyle(\.code) {
                     FontFamilyVariant(.monospaced)
                     FontSize(.em(0.92))
+                    ForegroundColor(Color(red: 138 / 255, green: 36 / 255, blue: 36 / 255))
+                    BackgroundColor(Color.black.opacity(0.05))
                 }
                 // A shell command is the one body that must not be wrapped OR
                 // clipped: wrapping it makes a pipeline unreadable, and the

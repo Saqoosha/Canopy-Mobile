@@ -42,6 +42,23 @@ targets:
   # it — `app-extension` is the same product type Xcode's own NSE template
   # uses; the NSE identity comes from Info.plist's NSExtensionPointIdentifier
   # (com.apple.usernotifications.service) below, not from the target type.
+  # Pure-logic unit tests. A host application is deliberately not set: these
+  # exercise value types only, and a hosted bundle would need a simulator to
+  # launch the app before running a string transform.
+  CanopyMobileTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+    dependencies:
+      - target: CanopyMobile
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sh.saqoo.canopy-app.tests
+        DEVELOPMENT_TEAM: VCFY2GFR89
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES
+
   CanopyMobileNotificationService:
     type: app-extension
     platform: iOS
@@ -61,3 +78,12 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         INFOPLIST_FILE: Sources/CanopyMobileNotificationService/Info.plist
+
+schemes:
+  CanopyMobile:
+    build:
+      targets:
+        CanopyMobile: all
+    test:
+      targets:
+        - CanopyMobileTests

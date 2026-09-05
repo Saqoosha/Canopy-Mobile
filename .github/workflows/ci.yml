@@ -98,11 +98,6 @@ jobs:
       # Pinned by UDID, never by name. `name=iPhone 16` fuzzy-matched a
       # PHYSICAL device called "S" running iOS 16.5.1 on the dev machine and
       # failed for a reason that had nothing to do with the tests; a runner
-      # has no such device today, but the failure mode is silent and the fix
-      # costs one line.
-      # Pinned by UDID, never by name. `name=iPhone 16` fuzzy-matched a
-      # PHYSICAL device called "S" running iOS 16.5.1 on the dev machine and
-      # failed for a reason that had nothing to do with the tests; a runner
       # has no such device today, but the failure mode is silent.
       - name: Resolve a simulator
         id: sim

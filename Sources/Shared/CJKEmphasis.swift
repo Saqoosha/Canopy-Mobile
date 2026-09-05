@@ -53,9 +53,20 @@ enum CJKEmphasis {
 
     /// One pass over prose. A delimiter run of `*` gets a ZWSP before it when
     /// the character before is punctuation and the character after is neither
-    /// whitespace nor punctuation — the exact failing condition, nothing
-    /// wider. A run at the start of a line is never touched: that is a bullet
-    /// or a thematic break, not emphasis.
+    /// whitespace nor punctuation.
+    ///
+    /// **That condition does not distinguish an opening run from a closing
+    /// one**, and deliberately so: telling them apart needs the delimiter
+    /// matching a real parser does, and this is a pre-pass, not a parser. An
+    /// opener that picks up a ZWSP — `合計+**強調**` — is unaffected in the
+    /// output, because the same "followed by a non-whitespace,
+    /// non-punctuation character" clause that triggers the insert is already
+    /// what makes an opener left-flanking, whatever precedes it. Measured
+    /// against markdown-it 14: no input that rendered before renders
+    /// differently after.
+    ///
+    /// A run at the start of a line is never touched: that is a bullet or a
+    /// thematic break, not emphasis.
     private static func fixEmphasis(in text: String) -> String {
         var out = ""
         out.reserveCapacity(text.count + 8)

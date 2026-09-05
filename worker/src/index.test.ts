@@ -159,8 +159,11 @@ describe("safeSlice", () => {
   });
 
   it("counts code points, not code units", () => {
-    // Both assertions differ from a plain `.slice`: it would return one
-    // emoji plus half of the second, and "あ" plus half of the emoji.
+    // The second assertion is the one that differs from a plain `.slice`:
+    // it would return "あ" plus half the emoji. The first does NOT differ —
+    // two UTF-16 units are exactly one pair — and is kept as the ordinary
+    // case, since a helper that only handled the split boundary would be a
+    // helper nobody could use for a plain count.
     expect(safeSlice("🍎🍎🍎", 2)).toBe("🍎🍎");
     expect(safeSlice("あ🍎b", 2)).toBe("あ🍎");
   });

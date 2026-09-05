@@ -21,6 +21,45 @@ function authorized(request: Request, env: Env): boolean {
   return request.headers.get("Authorization") === `Bearer ${env.SHARED_SECRET}`;
 }
 
+/** APNs rejects a payload over 4 KB outright, and the push is the only place
+ *  the whole notification exists — Canopy caps its own text in bytes, but it
+ *  cannot see the title, the ids, the category or the form that ride with it.
+ *
+ *  Two stages, and the ORDER is the decision. `bodyFull` shrinks first,
+ *  because it is context. `choices` is dropped only when the body is already
+ *  exhausted and the payload is still over, because those are the buttons —
+ *  an ask the phone cannot answer is exactly the state this field was added
+ *  to end, so it is the last thing to go, not the first.
+ *
+ *  Without the second stage the loop simply exits with an oversized payload
+ *  and APNs drops it: no notification, and silence on both ends. */
+export function fitPushPayload<T extends { bodyFull: string; choices?: unknown }>(
+  payload: T,
+  limit = 4096,
+): T {
+  const encodedLength = (value: unknown) =>
+    new TextEncoder().encode(JSON.stringify(value)).length;
+  let shrunk = payload;
+  while (encodedLength(shrunk) > limit && shrunk.bodyFull.length > 0) {
+    const over = encodedLength(shrunk) - limit;
+    // Cut at least one character, and roughly the overshoot, so a body of
+    // multibyte text converges in a few passes instead of one per byte.
+    const drop = Math.max(1, Math.ceil(over / 3));
+    // Code points, so the shrink cannot end mid-pair either.
+    const points = Array.from(shrunk.bodyFull);
+    shrunk = {
+      ...shrunk,
+      bodyFull: safeSlice(shrunk.bodyFull, Math.max(0, points.length - drop)),
+    };
+  }
+  if (shrunk.choices !== undefined && encodedLength(shrunk) > limit) {
+    console.warn("notify: dropping choices to fit the APNs limit");
+    const { choices: _dropped, ...withoutChoices } = shrunk;
+    shrunk = withoutChoices as T;
+  }
+  return shrunk;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -157,31 +196,17 @@ export default {
         // they had not.
         ...(body.allowAlways ? { allowAlways: true } : {}),
         ...(body.answerable === false ? { answerable: false } : {}),
+        // Only for an ask that Allow/Deny cannot resolve. The phone draws its
+        // buttons from these; without them it rendered the tool input as raw
+        // JSON with a plain text field under it — legible and unanswerable.
+        ...(body.choices?.length ? { choices: body.choices } : {}),
       };
       // APNs rejects a payload over 4 KB outright, and this is the only
       // place the whole thing exists — Canopy caps its own text in bytes, but
       // it cannot see the title, the ids or the category that ride with it.
       // Shrink `bodyFull` until the encoded payload fits rather than trusting
       // an upstream guess; a dropped notification is silent on both ends.
-      const APNS_LIMIT = 4096;
-      let shrunk = payload;
-      while (
-        new TextEncoder().encode(JSON.stringify(shrunk)).length > APNS_LIMIT &&
-        shrunk.bodyFull.length > 0
-      ) {
-        const over =
-          new TextEncoder().encode(JSON.stringify(shrunk)).length - APNS_LIMIT;
-        // Cut at least one character, and roughly the overshoot, so a body of
-        // multibyte text converges in a few passes instead of one per byte.
-        const drop = Math.max(1, Math.ceil(over / 3));
-        // Code points, so the shrink cannot end mid-pair either.
-        const points = Array.from(shrunk.bodyFull);
-        shrunk = {
-          ...shrunk,
-          bodyFull: safeSlice(shrunk.bodyFull, Math.max(0, points.length - drop)),
-        };
-      }
-      return sendPush(env, deviceToken, shrunk);
+      return sendPush(env, deviceToken, fitPushPayload(payload));
     }
     if (url.pathname === "/reply" && request.method === "POST") {
       const body = await request.json<ReplyBody>().catch(() => null);
@@ -218,6 +243,18 @@ export default {
       ) {
         return json({ error: "decision must be allow, deny, or allowAlways" }, 400);
       }
+      // Shape only — the relay cannot know which questions were asked. A
+      // malformed map would be refused by the Mac anyway; refusing it here
+      // costs nothing and keeps a garbage payload off the publisher socket.
+      if (
+        body.answers !== undefined &&
+        (typeof body.answers !== "object" ||
+          body.answers === null ||
+          Array.isArray(body.answers) ||
+          Object.values(body.answers).some((v) => typeof v !== "string"))
+      ) {
+        return json({ error: "answers must be an object of strings" }, 400);
+      }
       const stub = env.MACHINE.get(env.MACHINE.idFromName(`mac:${body.machine}`));
       return stub.fetch(
         new Request("https://do/decide", {
@@ -227,6 +264,10 @@ export default {
             sessionId: body.sessionId,
             requestId: body.requestId,
             decision: body.decision,
+            // Passed through untouched; only the Mac holds the form to
+            // validate the labels against, and it refuses anything that does
+            // not resolve the question it actually asked.
+            ...(body.answers ? { answers: body.answers } : {}),
           }),
         })
       );

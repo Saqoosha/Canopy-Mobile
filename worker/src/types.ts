@@ -35,8 +35,14 @@ export interface NotifyBody {
    *  "Always" only when there is something to write. */
   allowAlways?: boolean;
   /** False for an ask that Allow/Deny cannot resolve (an AskUserQuestion,
-   *  whose answer is text). The phone then shows it without buttons. */
+   *  whose answer is a chosen option). The phone then shows it without
+   *  Allow/Deny — and, when `choices` is present, with those instead. */
   answerable?: boolean;
+  /** An AskUserQuestion's form: what the phone draws buttons from. Present
+   *  exactly when `answerable` is false. Rides in the push for the same
+   *  reason `bodyFull` does — the Notification Service Extension stores the
+   *  notification and has no credential to fetch anything. */
+  choices?: AskChoice[];
   /** The CLI's own session id, stable across Canopy restarts. */
   resumeId?: string;
 }
@@ -87,6 +93,17 @@ export interface DeliveryAck {
 export type PermissionDecision = "allow" | "deny" | "allowAlways";
 
 /** What the phone posts to /decide. */
+/** One question of an AskUserQuestion, reduced to what a phone can render.
+ *  Option descriptions are deliberately dropped: they are prose the Mac shows
+ *  beside each choice, and they are the largest thing in the form — carrying
+ *  them would spend the 4 KB push budget on text nobody taps. */
+export interface AskChoice {
+  question: string;
+  header?: string;
+  options: string[];
+  multiSelect: boolean;
+}
+
 export interface DecisionBody {
   machine: string;
   sessionId: string;
@@ -95,6 +112,11 @@ export interface DecisionBody {
    *  could approve a tool the user never saw. */
   requestId: string;
   decision: PermissionDecision;
+  /** An AskUserQuestion's answer: the question's own text mapped to the
+   *  chosen option labels joined with ", ". Passed through untouched — the
+   *  relay cannot tell an ask from an ordinary permission request, and only
+   *  the Mac holds the form to validate against. */
+  answers?: Record<string, string>;
 }
 
 /** What the DO writes down the publisher socket. A decision is not a reply
@@ -106,6 +128,8 @@ export interface DecisionEnvelope {
   sessionId: string;
   requestId: string;
   decision: PermissionDecision;
+  /** See `DecisionBody.answers`. */
+  answers?: Record<string, string>;
   /** See `ReplyEnvelope.deliveryId`. */
   deliveryId?: string;
 }

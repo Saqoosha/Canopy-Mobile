@@ -55,6 +55,10 @@ struct RosterView: View {
             }
             .listStyle(.insetGrouped)
             .listSectionSpacing(20)
+            // Breathing room under the large title. The summary line that
+            // used to sit here was doing this job by accident; without it the
+            // first card butted against the title.
+            .contentMargins(.top, 12, for: .scrollContent)
         }
     }
 

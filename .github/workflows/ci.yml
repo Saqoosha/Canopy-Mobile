@@ -36,7 +36,7 @@ jobs:
       # added; removing tests is meant to cost an edit to this file.
       - name: Assert the test count did not fall
         env:
-          EXPECTED_TESTS: "22"
+          EXPECTED_TESTS: "31"
         run: |
           set -o pipefail
           # LAST match, never the first: captured test stdout is echoed back

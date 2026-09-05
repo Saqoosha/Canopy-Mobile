@@ -103,4 +103,160 @@ describe("MachineDO", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(publisherMessages).toEqual([]);
   });
+
+  // Every test below drives the real POST /reply route rather than calling
+  // `deliverAndAwaitAck` directly, because the thing worth pinning is the
+  // status code the PHONE sees: 200 acted on it, 409 got there and could not
+  // be used, 503 never got there or never answered. A test against the
+  // internal return shape would pass while `respondToDelivery` mapped it to
+  // the wrong one.
+  //
+  // `machineId` differs per test on purpose — the DO is addressed by name, so
+  // two tests sharing one would share its sockets.
+  describe("delivery acknowledgement", () => {
+    /** Opens a publisher socket that answers every delivery it receives with
+     *  the given verdict, and records the deliveries it saw.
+     *
+     *  `answer: null` makes it deliberately silent — a Canopy that received
+     *  the delivery and never came back, which is a different outcome from
+     *  one that rejected it. */
+    async function publisher(
+      stub: DurableObjectStub<MachineDO>,
+      answer: { ok: boolean; reason?: string } | null,
+      /** Milliseconds to wait before acking. **Load-bearing, not a hack.**
+       *  Every publisher receives a delivery from the same synchronous send
+       *  loop, so with all of them answering immediately the arrival order is
+       *  whatever the runtime happens to do. A test for "a rejection must not
+       *  beat a success" that does not FORCE the rejection to arrive first
+       *  measures nothing: measured here, the first version passed against
+       *  the first-ack-wins bug it was written for. */
+      delayMs = 0,
+    ): Promise<{ seen: string[] }> {
+      const upgrade = await stub.fetch("https://do/publish", { headers: { Upgrade: "websocket" } });
+      const ws = upgrade.webSocket!;
+      ws.accept();
+      const seen: string[] = [];
+      ws.addEventListener("message", (e) => {
+        const envelope = JSON.parse(e.data as string) as { deliveryId?: string };
+        if (!envelope.deliveryId) return;
+        seen.push(envelope.deliveryId);
+        if (!answer) return;
+        const send = () =>
+          ws.send(JSON.stringify({ type: "ack", deliveryId: envelope.deliveryId, ...answer }));
+        if (delayMs > 0) setTimeout(send, delayMs);
+        else send();
+      });
+      return { seen };
+    }
+
+    function reply(stub: DurableObjectStub<MachineDO>): Promise<Response> {
+      return stub.fetch("https://do/reply", {
+        method: "POST",
+        body: JSON.stringify({ type: "reply", sessionId: "s1", text: "hi" }),
+      });
+    }
+
+    // **The bug this whole block exists for.** One Mac runs more than one
+    // Canopy — a Debug build and the installed Release share a machine id, and
+    // a reconnect overlaps two sockets — so a delivery reaches several
+    // publishers and only one owns the session. The others answer "no open
+    // session matches" immediately, and first-ack-wins reported that rejection
+    // as the verdict for a reply that HAD been injected. Found by review, not
+    // by any test here; this is the test that was missing.
+    it("does not let one Canopy's rejection mask another's success", async () => {
+      const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ACK-1"));
+      // The rejecter answers immediately, the owner 50 ms later. Without the
+      // delay this passed against the bug — see the note on `publisher`.
+      await publisher(stub, { ok: false, reason: "no open session matches" });
+      await publisher(stub, { ok: true }, 50);
+      const response = await reply(stub);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ ok: true });
+    });
+
+    // The order the rejection and the success arrive in must not matter. With
+    // the fix, a success settles the wait wherever it lands; without it, this
+    // case passed by luck while the one above failed.
+    it("accepts a success that arrives after every other Canopy has rejected", async () => {
+      const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ACK-2"));
+      await publisher(stub, { ok: false, reason: "no open session matches" });
+      await publisher(stub, { ok: false, reason: "no open session matches" });
+      await publisher(stub, { ok: true }, 50);
+      const response = await reply(stub);
+      expect(response.status).toBe(200);
+    });
+
+    it("reports a rejection once every Canopy has rejected, in its own words", async () => {
+      const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ACK-3"));
+      await publisher(stub, { ok: false, reason: "no open session matches" });
+      await publisher(stub, { ok: false, reason: "no open session matches" });
+      const response = await reply(stub);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ ok: false, reason: "no open session matches" });
+    });
+
+    it("reports 503 when no Mac is connected at all", async () => {
+      const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ACK-4"));
+      const response = await reply(stub);
+      expect(response.status).toBe(503);
+    });
+
+    it("delivers to every connected publisher, not just the first", async () => {
+      const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ACK-5"));
+      const a = await publisher(stub, { ok: true });
+      const b = await publisher(stub, { ok: false });
+      await reply(stub);
+      // Both saw it. A delivery that reached only one socket would make the
+      // aggregation above vacuous — it would have nothing to aggregate.
+      expect(a.seen.length).toBe(1);
+      expect(b.seen.length).toBe(1);
+      expect(a.seen[0]).toBe(b.seen[0]);
+    });
+
+    // **A socket that was never a recipient must not be able to answer.**
+    // The delivery is written only to publisher sockets, so a WATCHER — the
+    // phone's own roster socket, which holds the same shared Bearer secret —
+    // receives nothing and knows nothing. Handed an in-flight deliveryId
+    // anyway (strictly more than an attacker has), its `ok: true` must settle
+    // nothing.
+    //
+    // This is the test the first version of this block did not have. It used
+    // an id that was never in flight, so it stopped at the map lookup and
+    // never reached the recipient check — measured: deleting that check left
+    // the whole suite green.
+    it("refuses an ack from a socket the delivery was never written to", async () => {
+      const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ACK-6"));
+      // The only real recipient, and deliberately silent.
+      const owner = await publisher(stub, null);
+
+      const watcherUpgrade = await stub.fetch("https://do/watch", { headers: { Upgrade: "websocket" } });
+      const watcher = watcherUpgrade.webSocket!;
+      watcher.accept();
+
+      const pending = reply(stub);
+      // Wait for the real delivery to reach the owner so its id is known,
+      // then forge a success from the watcher.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(owner.seen.length).toBe(1);
+      watcher.send(JSON.stringify({ type: "ack", deliveryId: owner.seen[0], ok: true }));
+
+      // 503, not 200: the only socket that could answer never did.
+      const response = await pending;
+      expect(response.status).toBe(503);
+    }, 10_000);
+
+    // The subtlest decision in the fix: with one recipient still silent we do
+    // not know whether it acted, so a rejection from the others is NOT the
+    // answer. Borrowing it would assert `delivered: true` — 409, "it got
+    // there and could not be used" — about a delivery that may well have
+    // succeeded on the silent Mac.
+    it("stays unconfirmed rather than borrowing a rejection while a Canopy is silent", async () => {
+      const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ACK-7"));
+      await publisher(stub, { ok: false, reason: "no open session matches" });
+      await publisher(stub, null);
+      const response = await reply(stub);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ ok: false, reason: "the Mac did not answer" });
+    }, 10_000);
+  });
 });

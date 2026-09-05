@@ -90,6 +90,50 @@ struct CJKEmphasisTests {
         #expect(CJKEmphasis.normalized("a ` b **強調。**続き").contains("強調。\(zwsp)**続き"))
     }
 
+    @Test("A four-backtick fence is not closed by a three-backtick line")
+    func longerFenceNeedsALongerClose() {
+        // Truncating the opener to three made the inner ``` close the block,
+        // so the real closing fence read as a NEW opener and every paragraph
+        // after it stayed "code" — the rewrite silently stopped applying for
+        // the rest of the message.
+        let src = """
+        ````
+        ```
+        ````
+
+        続き。**強調**する
+        """
+        let out = CJKEmphasis.normalized(src)
+        #expect(out.contains("強調\(zwsp)**する") || out.contains("**強調**する"))
+        #expect(out.hasPrefix("````\n```\n````"))
+    }
+
+    @Test("An indented code block is never rewritten")
+    func indentedCodeUntouched() {
+        // The dangerous shape: an invisible character inside a command.
+        let src = "説明。\n\n    echo 。**hidden\n"
+        #expect(CJKEmphasis.normalized(src) == src)
+    }
+
+    @Test("An indented line that continues a paragraph is still prose")
+    func indentedParagraphContinuationIsProse() {
+        // Indented code cannot interrupt a paragraph, so this must still be
+        // normalised — treating it as code would silently skip the fix on
+        // any wrapped, indented line.
+        // The punctuation must sit before the CLOSING delimiter for the rule
+        // to fire at all — `。**強調**する` puts it before the OPENING one and
+        // already renders, which is what a first draft of this fixture got
+        // wrong.
+        let src = "説明が続く\n    そして**強調。**する"
+        #expect(CJKEmphasis.normalized(src).contains("強調。\(zwsp)**する"))
+    }
+
+    @Test("A blank line inside an indented block does not end it")
+    func blankLineInsideIndentedCode() {
+        let src = "説明。\n\n    a 。**x\n\n    b 。**y\n"
+        #expect(CJKEmphasis.normalized(src) == src)
+    }
+
     // MARK: - Line starts belong to lists, not emphasis
 
     @Test("A bullet at the start of a line is never guarded")

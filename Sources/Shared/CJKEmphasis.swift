@@ -131,8 +131,9 @@ enum CodeSegmenter {
         let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false)
         var result: [Segment] = []
         var buffer: [Substring] = []
-        var inFence = false
-        var fenceMarker = ""
+        var fence: (marker: Character, length: Int)?
+        var inIndentedCode = false
+        var previousWasBlank = true
 
         func flush(isCode: Bool) {
             guard !buffer.isEmpty else { return }
@@ -141,30 +142,63 @@ enum CodeSegmenter {
         }
 
         for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            let isFenceLine = trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~")
-            if isFenceLine {
-                let marker = String(trimmed.prefix(3))
-                if inFence, marker == fenceMarker {
-                    buffer.append(line)
+            let trimmed = line.drop(while: { $0 == " " })
+            let blank = trimmed.isEmpty
+
+            if let open = fence {
+                buffer.append(line)
+                // **A closing run must be at least as long as the opener.**
+                // Truncating the opener to three characters made an inner
+                // ``` line close a ```` block, so the real closing fence read
+                // as a new opener and every following paragraph stayed
+                // "code" — silently skipping the rewrite for the rest of the
+                // message.
+                if let run = fenceRun(trimmed), run.marker == open.marker, run.length >= open.length {
                     flush(isCode: true)
-                    inFence = false
-                    continue
+                    fence = nil
                 }
-                if !inFence {
-                    flush(isCode: false)
-                    inFence = true
-                    fenceMarker = marker
-                    buffer.append(line)
-                    continue
-                }
+                previousWasBlank = blank
+                continue
             }
+
+            if let run = fenceRun(trimmed) {
+                if inIndentedCode { flush(isCode: true); inIndentedCode = false }
+                flush(isCode: false)
+                fence = run
+                buffer.append(line)
+                previousWasBlank = false
+                continue
+            }
+
+            // Four-space (or tab) indented code. It cannot interrupt a
+            // paragraph, so it only STARTS after a blank line — otherwise an
+            // indented continuation line of ordinary prose would be frozen.
+            // A blank line inside an indented block does not end it; a
+            // non-indented, non-blank line does.
+            let indented = line.hasPrefix("    ") || line.hasPrefix("\t")
+            if inIndentedCode {
+                if indented || blank {
+                    buffer.append(line)
+                    previousWasBlank = blank
+                    continue
+                }
+                flush(isCode: true)
+                inIndentedCode = false
+            } else if indented, previousWasBlank {
+                flush(isCode: false)
+                inIndentedCode = true
+                buffer.append(line)
+                previousWasBlank = false
+                continue
+            }
+
             buffer.append(line)
+            previousWasBlank = blank
         }
         // An unterminated fence stays code. The alternative — treating a
         // half-written block as prose — would rewrite inside a command
         // someone is about to approve.
-        flush(isCode: inFence)
+        flush(isCode: fence != nil || inIndentedCode)
 
         // Segments were split on newlines that are no longer inside any of
         // them, so re-insert exactly one between neighbours.
@@ -174,6 +208,15 @@ enum CodeSegmenter {
             joined.append(Segment(text: text, isCode: segment.isCode))
         }
         return joined.flatMap { $0.isCode ? [$0] : splitInlineCode($0.text) }
+    }
+
+    /// The fence marker and its run length, for a line already stripped of
+    /// leading spaces. Three or more of the same character; the length is
+    /// kept because a closing run must be at least as long as the opener.
+    private static func fenceRun(_ line: Substring) -> (marker: Character, length: Int)? {
+        guard let first = line.first, first == "`" || first == "~" else { return nil }
+        let run = line.prefix { $0 == first }.count
+        return run >= 3 ? (first, run) : nil
     }
 
     /// Backtick spans inside a prose segment. A run of N backticks opens a

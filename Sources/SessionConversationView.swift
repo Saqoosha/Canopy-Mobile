@@ -339,7 +339,7 @@ private struct MessageBlock: View {
                     FontFamilyVariant(.monospaced)
                     FontSize(.em(0.92))
                     ForegroundColor(Color(red: 138 / 255, green: 36 / 255, blue: 36 / 255))
-                    BackgroundColor(Color.black.opacity(0.05))
+                    BackgroundColor(Color.black.opacity(0.04))
                 }
                 // A shell command is the one body that must not be wrapped OR
                 // clipped: wrapping it makes a pipeline unreadable, and the

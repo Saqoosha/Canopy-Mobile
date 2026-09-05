@@ -500,3 +500,27 @@ struct PublishedLabelTests {
         #expect(SessionActivityStyle.published(since: 1_000_000 + 30, now: now) == "just now")
     }
 }
+
+/// What the History list previews for an ask. An AskUserQuestion's body is
+/// the tool's input as a fenced JSON block, which read as "```json" / "{…"
+/// in the two-line preview.
+struct ListDisplayBodyTests {
+    private func item(choices: [AskChoice]?, bodyShort: String? = nil) -> NotificationHistoryItem {
+        NotificationHistoryItem(
+            id: "1", receivedAt: Date(), title: "t", body: "```json\n{\n}\n```", bodyShort: bodyShort,
+            machine: "m", sessionId: "s", kind: "asking", requestId: "r", answerable: false, choices: choices)
+    }
+
+    @Test("An ask with a form previews its questions, not the JSON fence")
+    func askPreviewsQuestions() {
+        let form = [AskChoice(question: "Which database?", options: ["a"]),
+                    AskChoice(question: "Which features?", options: ["b"])]
+        #expect(item(choices: form).listDisplayBody == "Which database? · Which features?")
+    }
+
+    @Test("Without a form the preview is the body as before")
+    func noFormFallsBackToBody() {
+        #expect(item(choices: nil).listDisplayBody == "```json\n{\n}\n```")
+        #expect(item(choices: nil, bodyShort: "short").listDisplayBody == "short")
+    }
+}

@@ -155,7 +155,82 @@ async function writeCachedApnsEnv(env: ApnsEnv, deviceToken: string, sandbox: bo
  * with no retry (preserves legacy /notify and /request behaviour where the
  * hook already knows which environment to target).
  */
+// APNs answers 429 `TooManyRequests` when pushes to ONE device token arrive
+// too close together, and it REJECTS that push rather than queueing it — the
+// notification is simply lost. Measured 2026-09-05: three completed pushes
+// within a few seconds of each other, the third returned 429 and never
+// reached the phone. Nothing else noticed, because the relay logged no
+// failure and the phone cannot know about a push it never received; the only
+// trace was one `roster notify returned 429` line on the Mac.
+//
+// Apple documents neither the burst size nor the window, so this delay is a
+// guess and is deliberately the ONLY one: a single retry means a persistent
+// throttle costs one extra request instead of a storm, and the failure is
+// then logged rather than swallowed. Note the retry cannot double-deliver —
+// a 429 means APNs rejected the request, not that it delivered and then
+// complained.
+const APNS_THROTTLE_RETRY_MS = 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/// The reason string APNs puts in an error body, or undefined when the body
+/// is absent or not JSON. Always reads a `clone()` so the caller's copy of
+/// the response stays consumable.
+async function apnsReason(response: Response): Promise<string | undefined> {
+  try {
+    return ((await response.clone().json()) as { reason?: string }).reason;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function sendPush(
+  env: ApnsEnv,
+  deviceToken: string,
+  payload: object,
+  useSandbox?: boolean,
+): Promise<Response> {
+  const first = await sendPushResolvingEnv(env, deviceToken, payload, useSandbox);
+  if (first.status !== 429) {
+    // Every other rejection is logged here for the reason the 429 above was
+    // invisible: only the 400 paths said anything, so a 410 (dead token) or a
+    // 503 (APNs unavailable) dropped a notification in total silence.
+    // A 400 is already logged in detail inside, so don't say it twice.
+    if (!first.ok && first.status !== 400) {
+      console.error("APNs push rejected", {
+        deviceToken: maskDeviceToken(deviceToken),
+        status: first.status,
+        reason: (await apnsReason(first)) ?? "<unparseable>",
+      });
+    }
+    return first;
+  }
+
+  const firstReason = await apnsReason(first);
+  await sleep(APNS_THROTTLE_RETRY_MS);
+  const retry = await sendPushResolvingEnv(env, deviceToken, payload, useSandbox);
+  if (retry.ok) {
+    console.warn("APNs throttled a push; the retry landed", {
+      deviceToken: maskDeviceToken(deviceToken),
+      firstReason: firstReason ?? "<unparseable>",
+    });
+  } else {
+    console.error("APNs throttled a push; the retry failed too", {
+      deviceToken: maskDeviceToken(deviceToken),
+      firstReason: firstReason ?? "<unparseable>",
+      retryStatus: retry.status,
+      retryReason: (await apnsReason(retry)) ?? "<unparseable>",
+    });
+  }
+  return retry;
+}
+
+/// Picks the APNs environment (production or sandbox) for this token and
+/// sends one push, retrying the other environment once if APNs says the token
+/// belongs to it. Knows nothing about throttling — `sendPush` wraps it.
+async function sendPushResolvingEnv(
   env: ApnsEnv,
   deviceToken: string,
   payload: object,

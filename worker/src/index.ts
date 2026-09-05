@@ -99,9 +99,11 @@ export default {
       // `bodyFull` is the new, optional carrier for the untouched text; `body`
       // stays required so older callers keep working during rollout.
       const fullText = body.bodyFull ?? body.body;
-      // 3000 chars keeps the whole APNs payload under the 4 KB limit, matching
-      // Pager's own cap. The routing fields ride in the payload rather than in
-      // KV because they are two short ids, not a conversation.
+      // A coarse pre-cap, measured in CODE POINTS. It does not by itself keep
+      // the payload under APNs's 4 KB — 3000 emoji are 12 KB — and it never
+      // did; what guarantees the limit is the byte-accurate shrink below,
+      // which measures the encoded payload whole. This exists so the common
+      // case never reaches that loop, and so `bodyFull` cannot be unbounded.
       const MAX = 3000;
       // `safeSlice`, never `.slice`: cutting between a surrogate pair's
       // halves leaves a replacement glyph at the end of the body.

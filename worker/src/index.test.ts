@@ -159,11 +159,15 @@ describe("safeSlice", () => {
   });
 
   it("counts code points, not code units", () => {
+    // Both assertions differ from a plain `.slice`: it would return one
+    // emoji plus half of the second, and "あ" plus half of the emoji.
     expect(safeSlice("🍎🍎🍎", 2)).toBe("🍎🍎");
-    expect([...safeSlice("あ🍎b", 2)].length).toBe(2);
+    expect(safeSlice("あ🍎b", 2)).toBe("あ🍎");
   });
 
-  it("is a no-op when the text is already short enough", () => {
-    expect(safeSlice("hello", 10)).toBe("hello");
+  it("keeps a pair whole at the exact boundary", () => {
+    // n = 1 over a pure-emoji string is the smallest cut that can split one.
+    expect(safeSlice("🍎🍎", 1)).toBe("🍎");
+    expect("🍎🍎".slice(0, 1)).not.toBe("🍎"); // what we protect against
   });
 });

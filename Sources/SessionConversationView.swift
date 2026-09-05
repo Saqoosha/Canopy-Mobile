@@ -155,14 +155,22 @@ struct SessionConversationView: View {
         }
     }
 
-    /// "Canopy · main · asking 2m" — the project the header already carried,
-    /// plus what the session is doing and for how long. The state is dropped
-    /// rather than guessed when the roster does not list this session, so the
-    /// line shortens instead of claiming something.
+    /// "asking 2m · Canopy · main" — what the session is doing and for how
+    /// long, then the project the header already carried.
+    ///
+    /// **The state leads because the line truncates from the end.** With the
+    /// project first, a long "host · project" tail-truncated away exactly the
+    /// text this header was added to show, leaving the part that was already
+    /// there — the feature defeating itself on the sessions with the longest
+    /// names. Losing the project to truncation costs nothing: it is on the
+    /// row you tapped to get here.
+    ///
+    /// The state is dropped rather than guessed when the roster does not list
+    /// this session, so the line shortens instead of claiming something.
     private func statusLine(now: Date) -> String {
         guard let pane else { return subtitle }
         let age = SessionActivityStyle.elapsed(since: pane.stateSince, now: now)
-        return "\(subtitle) · \(pane.state) \(age)"
+        return "\(pane.state) \(age) · \(subtitle)"
     }
 
     private var composer: some View {

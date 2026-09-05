@@ -11,10 +11,10 @@ import Foundation
 /// One question of an `AskUserQuestion`, as the push carries it.
 ///
 /// The answer format is not ours: the extension keys its answer map by the
-/// question's own TEXT and joins chosen labels with `", "` (read out of
-/// `webview/index.js` 2.1.90, component `h30`). `question` is therefore an
-/// identifier, not just a caption — shortening it for display would break the
-/// answer.
+/// question's own TEXT and joins chosen labels with `", "` — read out of its
+/// `webview/index.js`, measured against 2.1.260 and unchanged in 2.1.90.
+/// `question` is therefore an identifier, not just a caption; shortening it
+/// for display would break the answer.
 struct AskChoice: Codable, Hashable, Sendable {
     let question: String
     let header: String?

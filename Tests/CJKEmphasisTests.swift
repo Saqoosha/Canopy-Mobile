@@ -192,11 +192,11 @@ struct CJKEmphasisTests {
 }
 
 /// The `AskUserQuestion` form. The format asserted here is the EXTENSION's,
-/// read out of its webview bundle (2.1.90, component `h30`) — answers keyed by
-/// the question's own text, labels joined with ", ". Nothing on the phone
-/// controls it, and getting it wrong produces a silent refusal on the Mac
-/// rather than anything visible here, which is why it is pinned on this side
-/// as well as the Mac's.
+/// read out of its webview bundle — answers keyed by the question's own text,
+/// labels joined with ", ". Measured against 2.1.260, the version Canopy
+/// loads, and unchanged in 2.1.90. Nothing on the phone controls it, and
+/// getting it wrong produces a silent refusal on the Mac rather than anything
+/// visible here, which is why it is pinned on this side as well as the Mac's.
 struct AskChoiceTests {
     private let form = [
         AskChoice(question: "Which database?", header: "DB", options: ["Postgres", "SQLite"]),

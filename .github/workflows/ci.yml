@@ -46,12 +46,22 @@ jobs:
           # extension and ubuntu's default awk is mawk, where it is a syntax
           # error — the step would have failed for a reason unrelated to the
           # count. `tail -1` takes the LAST match for the forgery reason above.
-          n=$(grep -oE 'Tests[[:space:]]+[0-9]+ passed' "$RUNNER_TEMP/vitest.log" \
+          # Strip ANSI first. vitest colours its summary when CI=true, so the
+          # bytes between "Tests" and the digits are escape sequences and a
+          # plain regex matches nothing — the count came back empty and the
+          # step failed for a reason that had nothing to do with the tests.
+          sed $'s/\033\\[[0-9;]*[a-zA-Z]//g' "$RUNNER_TEMP/vitest.log" > "$RUNNER_TEMP/vitest.plain"
+          n=$(grep -oE 'Tests[[:space:]]+[0-9]+ passed' "$RUNNER_TEMP/vitest.plain" \
               | tail -1 | grep -oE '[0-9]+' | head -1)
           echo "measured=$n floor=$EXPECTED_TESTS"
+          if [ -z "$n" ]; then
+            echo "::error::could not read a test count from vitest's output"
+            tail -30 "$RUNNER_TEMP/vitest.plain"
+            exit 1
+          fi
           # A non-integer operand makes `[ ]` exit 2, which `if` reads as
           # false — so the comparison is written to fail loudly instead.
-          if [ -z "$n" ] || [ "$n" -lt "$EXPECTED_TESTS" ]; then
+          if [ "$n" -lt "$EXPECTED_TESTS" ]; then
             echo "::error::vitest reported $n passing tests, below the floor of $EXPECTED_TESTS"
             exit 1
           fi

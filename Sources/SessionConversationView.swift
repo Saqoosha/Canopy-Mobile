@@ -499,17 +499,48 @@ private struct SessionEventBlock: View {
         case .turnStart, .turnEnd:
             EmptyView()
         case .assistant, .user:
-            // The same renderer as a notification's body. The first version
-            // used a plain `Text`, and the assistant's `**Suggestion**`
-            // arrived on the phone as literal asterisks beside a notification
-            // of the same message rendered in bold — two renderers for one
-            // conversation, measured on device.
-            ConversationMarkdown(text: event.text)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(14)
-                .background(Color(.secondarySystemGroupedBackground),
-                            in: RoundedRectangle(cornerRadius: 16))
+            // The same card as a notification: header, then body, through the
+            // same two shared views. The first version drew the body alone,
+            // and a streamed message sat headerless beside a notification of
+            // the same shape with "Canopy 9:49" on it — the row read as a
+            // different kind of thing, not as the same conversation arriving
+            // a different way (seen on device).
+            VStack(alignment: .leading, spacing: 10) {
+                ConversationHeader(
+                    icon: event.kind == .user ? "arrow.up.circle.fill" : "checkmark.circle",
+                    title: event.kind == .user ? "You" : "Canopy",
+                    at: event.at)
+                ConversationMarkdown(text: event.text)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(Color(.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 16))
         }
+    }
+}
+
+/// The one header for a conversation card, whichever route the row arrived
+/// by. Icon, who, when. Shared for the same reason `ConversationMarkdown` is:
+/// a notification and a streamed event of the same message must look like
+/// the same message.
+struct ConversationHeader: View {
+    let icon: String
+    let title: String
+    let at: Date
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption2)
+            Text(title)
+                .font(.caption)
+                .fontWeight(.medium)
+            Spacer()
+            Text(at, style: .time)
+                .font(.caption2)
+        }
+        .foregroundStyle(.secondary)
     }
 }
 
@@ -589,17 +620,7 @@ private struct MessageBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.caption2)
-                Text(item.title)
-                    .font(.caption)
-                    .fontWeight(.medium)
-                Spacer()
-                Text(item.receivedAt, style: .time)
-                    .font(.caption2)
-            }
-            .foregroundStyle(.secondary)
+            ConversationHeader(icon: icon, title: item.title, at: item.receivedAt)
 
             // Normalised on the way in: Japanese bold whose closing `**`
             // sits between punctuation and a letter is not emphasis to

@@ -23,6 +23,28 @@ struct CanopyMobileApp: App {
     // is still outstanding, and the late-arriving response would install
     // live sockets into a backgrounded app.
     @State private var connectTask: Task<Void, Never>?
+    /// The conversation currently on screen.
+    ///
+    /// Exists so a socket that opens LATER can still deliver this session's
+    /// backfill. The view asks once, when it appears — and on a cold start
+    /// that is before `connectAll()` has finished awaiting the directory, so
+    /// `sockets[machine]` is nil and the ask is dropped on the floor with
+    /// nothing to retry it. Same shape after a reconnect: the live stream
+    /// resumes and everything that happened while the socket was down stays
+    /// in the relay's ring buffer, addressable and unasked for.
+    /// Canopy-Mobile#24.
+    ///
+    /// **A reference box rather than an `Optional` held directly in `@State`,
+    /// and the difference is load-bearing.** The reader is `onOpen`, a
+    /// closure created once inside `connectAll()` and then owned by the
+    /// socket for its whole life — not rebuilt per body pass like the
+    /// closures in `conversation(_:)`. What such a closure captures is the
+    /// `App` value from the pass that started it, so reading a VALUE out of
+    /// `@State` through it is a question about SwiftUI's storage that this
+    /// code should not have to be right about. A box removes the question:
+    /// it is created once, never replaced, and `.current` is read at call
+    /// time.
+    @State private var viewedSession = ViewedSessionBox()
     @Environment(\.scenePhase) private var scenePhase
 
     // Configurable from inside the app now (see `SettingsView`) — an app
@@ -312,6 +334,33 @@ struct CanopyMobileApp: App {
             } onBackfill: { records, oldestSeq, sessionId in
                 eventStore.apply(backfill: records, oldestSeq: oldestSeq,
                                  sessionId: sessionId, machine: id)
+            } onOpen: { [weak socket] in
+                // This socket is up. If a conversation on THIS Mac is open,
+                // re-ask for its backfill — the view's own ask may have run
+                // before any socket existed (cold start), or belonged to a
+                // socket that has since died (reconnect).
+                //
+                // Re-asking on a session that missed nothing is cheap and
+                // idempotent rather than merely harmless: the relay answers
+                // `WHERE seq > lastSeq`, so an up-to-date store gets an empty
+                // page, and `apply` is keyed by seq, so even a full page
+                // overwrites nothing. That is what makes this safe to fire
+                // unconditionally instead of gating it on a suspicion that
+                // something was missed — a gate would need its own notion of
+                // "was the socket down", which is the state this is here to
+                // stop relying on.
+                //
+                // The socket is handed over rather than looked up in
+                // `sockets`, for the same reason the viewed session is
+                // boxed: this closure outlives the pass that built it, and
+                // `socket` is right here. Weakly, because the socket owns
+                // the task that owns this closure — capturing it strongly
+                // would be a cycle, and a socket already replaced SHOULD
+                // resolve to nil and send nothing.
+                guard let viewing = viewedSession.current, viewing.machine == id else { return }
+                requestBackfill(machine: id, sessionId: viewing.sessionId,
+                                since: eventStore.lastSeq(sessionId: viewing.sessionId),
+                                using: socket)
             } onFailure: { error in
                 // The receive loop has stopped for this machine — surface it
                 // through the same `errors` slot `refresh()` uses, so the
@@ -326,6 +375,21 @@ struct CanopyMobileApp: App {
     private func disconnectAll() {
         for socket in sockets.values { socket.disconnect() }
         sockets.removeAll()
+    }
+
+    /// The one funnel for `events_since`, so the mark a session was last
+    /// asked from is recorded wherever the ask came from — the view
+    /// appearing, or a socket opening under it. `SessionEventStore.hasGap`
+    /// compares the relay's answer against that mark, and a mark written at
+    /// only one of the two sites is a mark that goes stale at the other.
+    ///
+    /// A machine with no live socket gets the mark and no request. That is
+    /// the same state as being offline, and it stays inert: with no answer
+    /// there is no `oldestHeld`, and no gap can be claimed from half a pair.
+    private func requestBackfill(machine: String, sessionId: String, since seq: Int,
+                                 using socket: RosterSocket?) {
+        eventStore.noteRequest(sessionId: sessionId, machine: machine, since: seq)
+        socket?.requestEvents(sessionId: sessionId, since: seq)
     }
 
     /// A notification tap carries only `machine` + `sessionId` (see
@@ -469,10 +533,44 @@ struct CanopyMobileApp: App {
             // socket simply gets no answer, which is the same state as being
             // offline — the stored notifications still render.
             onRequestBackfill: { sessionId, seq in
-                sockets[target.machine]?.requestEvents(sessionId: sessionId, since: seq)
+                requestBackfill(machine: target.machine, sessionId: sessionId, since: seq,
+                                using: sockets[target.machine])
             }
         )
+        // Recorded here rather than inside the view so the view keeps no
+        // opinion about the app's socket table — it asks, and something else
+        // decides whether the ask can be delivered yet.
+        //
+        // Cleared only when the id still matches. SwiftUI runs the incoming
+        // view's `onAppear` before the outgoing view's `onDisappear` when one
+        // conversation replaces another (a notification tap landing while a
+        // conversation is already open does exactly that), so an
+        // unconditional clear would wipe the session that had just been set.
+        .onAppear {
+            viewedSession.current = ViewedSession(machine: target.machine,
+                                                  sessionId: target.sessionId)
+        }
+        .onDisappear {
+            if viewedSession.current?.sessionId == target.sessionId {
+                viewedSession.current = nil
+            }
+        }
     }
+}
+
+/// The conversation on screen, as much of it as a socket needs to re-ask for
+/// a backfill: which Mac to ask, and which session to ask about.
+struct ViewedSession: Hashable {
+    let machine: String
+    let sessionId: String
+}
+
+/// Reference storage for `ViewedSession`, so a socket callback that outlives
+/// the body pass that created it reads the current value rather than a copy.
+/// See the note on `CanopyMobileApp.viewedSession`.
+@MainActor
+final class ViewedSessionBox {
+    var current: ViewedSession?
 }
 
 /// What a push onto the navigation stack needs to open one session's

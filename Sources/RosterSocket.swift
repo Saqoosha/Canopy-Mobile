@@ -26,12 +26,28 @@ final class RosterSocket {
         self.secret = secret
     }
 
+    /// Fired once per connection, the first time a frame is read off this
+    /// socket. See `onOpen` on `connect`.
+    private var didOpen = false
+
     func connect(machine: String,
                  onSnapshot: @escaping @Sendable (MachineSnapshot) -> Void,
                  onEvent: @escaping @Sendable (SessionEventRecord) -> Void = { _ in },
                  onBackfill: @escaping @Sendable ([SessionEventRecord], Int, String) -> Void = { _, _, _ in },
+                 // Called once, when the first frame arrives — the open edge.
+                 //
+                 // **A received frame is the only proof of a completed
+                 // handshake available here.** `URLSessionWebSocketTask`
+                 // reports no open edge of its own, and a `send` issued
+                 // before the handshake finishes tells you nothing either:
+                 // its completion handler is the sole signal and a queued
+                 // send does not call it. So anything that must happen "once
+                 // this socket is really up" hangs off a frame, not off
+                 // `resume()`. Canopy-Mobile#24.
+                 onOpen: @escaping @Sendable () -> Void = {},
                  onFailure: @escaping @Sendable (RosterSocketError) -> Void) {
         disconnect()
+        didOpen = false
         var components = URLComponents(url: baseURL.appendingPathComponent("watch"),
                                        resolvingAgainstBaseURL: false)!
         components.scheme = components.scheme == "http" ? "ws" : "wss"
@@ -42,7 +58,7 @@ final class RosterSocket {
         self.task = task
         task.resume()
         receive(on: task, onSnapshot: onSnapshot, onEvent: onEvent,
-                onBackfill: onBackfill, onFailure: onFailure)
+                onBackfill: onBackfill, onOpen: onOpen, onFailure: onFailure)
     }
 
     /// Ask the relay for everything after `seq` in one session.
@@ -75,6 +91,7 @@ final class RosterSocket {
                          onSnapshot: @escaping @Sendable (MachineSnapshot) -> Void,
                          onEvent: @escaping @Sendable (SessionEventRecord) -> Void,
                          onBackfill: @escaping @Sendable ([SessionEventRecord], Int, String) -> Void,
+                         onOpen: @escaping @Sendable () -> Void,
                          onFailure: @escaping @Sendable (RosterSocketError) -> Void) {
         task.receive { [weak self] result in
             switch result {
@@ -95,6 +112,15 @@ final class RosterSocket {
                     // loop re-armed on the OLD task, so a discarded socket
                     // kept receiving forever. Found by review.
                     guard let self, self.task === task else { return }
+                    // Before the classification, deliberately: the proof
+                    // wanted here is that the handshake completed, and a
+                    // frame this build cannot classify is proof of exactly
+                    // that. Gating on a decoded frame would make the open
+                    // edge depend on the relay's vocabulary.
+                    if !self.didOpen {
+                        self.didOpen = true
+                        onOpen()
+                    }
                     switch decoded {
                     case .snapshot(let snapshot): onSnapshot(snapshot)
                     case .event(let record): onEvent(record)
@@ -102,7 +128,7 @@ final class RosterSocket {
                     case nil: break
                     }
                     self.receive(on: task, onSnapshot: onSnapshot, onEvent: onEvent,
-                                 onBackfill: onBackfill, onFailure: onFailure)
+                                 onBackfill: onBackfill, onOpen: onOpen, onFailure: onFailure)
                 }
             case .failure(let error):
                 Task { @MainActor in

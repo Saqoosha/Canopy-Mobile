@@ -74,11 +74,21 @@ check("a backfill answers with an events page", backfill.type === "events", JSON
 check("the backfill holds the event", backfill.events?.length === 1, String(backfill.events?.length));
 check("the backfill reports an oldestSeq", typeof backfill.oldestSeq === "number",
       String(backfill.oldestSeq));
+// The pair the gap row is drawn from. `since` echoes the request so the two
+// halves of the verdict cannot be assembled from different exchanges, and
+// `evictedThrough` is what this session has actually lost — never inferred
+// from where its seqs begin, which is a Mac-wide counter and says nothing
+// about one session's continuity.
+check("the backfill echoes the seq it was asked from", backfill.since === 0,
+      String(backfill.since));
+check("a fresh session reports nothing evicted", backfill.evictedThrough === 0,
+      String(backfill.evictedThrough));
 
 const empty = nextMessage(watcher);
 watcher.send(JSON.stringify({ type: "events_since", sessionId: "probe-session", seq: got.seq }));
 const after = await empty;
 check("nothing follows the newest seq", after.events?.length === 0, String(after.events?.length));
+check("the echo tracks the request", after.since === got.seq, String(after.since));
 
 // A malformed event must not be stored and must not reach the watcher.
 publisher.send(JSON.stringify({ type: "event", eventId: "bad", kind: "assistant", text: "x", at: 0 }));

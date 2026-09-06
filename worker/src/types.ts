@@ -31,6 +31,14 @@ export interface NotifyBody {
   bodyFull?: string;
   /** Present only for `kind: "asking"`. The id the phone answers with. */
   requestId?: string;
+  /** Canopy's id for the streamed event carrying this same text.
+   *
+   *  **Must be forwarded into the push payload, not just accepted here.** The
+   *  phone de-duplicates a completed notification against the event stream on
+   *  this field alone, and a relay that takes it and drops it produces exactly
+   *  the symptom it exists to prevent: the assistant's message drawn twice,
+   *  once from each route. Measured on device. */
+  eventId?: string;
   /** Whether the CLI proposed a rule for this ask, so the phone can offer
    *  "Always" only when there is something to write. */
   allowAlways?: boolean;

@@ -275,6 +275,32 @@ describe("AskUserQuestion form", () => {
     expect(new TextEncoder().encode(JSON.stringify(fitted)).length).toBeLessThanOrEqual(1000);
   });
 
+  // `eventId` is the phone's only handle for "this push and that streamed
+  // event are one turn". Losing it under pressure would draw the assistant's
+  // message twice — which is exactly what happened when the relay accepted the
+  // field and never put it in the payload at all (measured on device).
+  //
+  // **This pins only that the shrink cascade preserves it.** That the field is
+  // put into the payload in the first place is not reachable from here — the
+  // route needs a registered device token and an APNs call — and was verified
+  // on device instead.
+  it("keeps eventId while shrinking the body", () => {
+    const fitted = fitPushPayload(
+      { title: "t", body: "b", bodyFull: "x".repeat(4000), eventId: "abc" },
+      500,
+    );
+    expect(fitted.eventId).toBe("abc");
+  });
+
+  it("keeps eventId even when the buttons are dropped", () => {
+    const fitted = fitPushPayload(
+      { title: "t", body: "b", bodyFull: "x".repeat(500), choices: form, eventId: "abc" },
+      120,
+    );
+    expect(fitted.choices).toBeUndefined();
+    expect(fitted.eventId).toBe("abc");
+  });
+
   it("drops the buttons only once the body is exhausted", () => {
     // A limit no payload carrying this form can meet, so the body reaches
     // zero and the second stage has to fire. Without it the function returns

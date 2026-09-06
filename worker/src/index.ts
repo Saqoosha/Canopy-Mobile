@@ -204,6 +204,11 @@ export default {
         // everything stored so far.
         ...(body.resumeId ? { resumeId: body.resumeId } : {}),
         ...(body.requestId ? { requestId: body.requestId } : {}),
+        // The phone draws this notification OR the streamed event carrying the
+        // same text, never both, and this id is the only thing that can say
+        // they are one turn. Dropping it here is invisible on this side and
+        // shows up as a duplicated message on the phone.
+        ...(body.eventId ? { eventId: body.eventId } : {}),
         // Only true when the CLI proposed a rule for this ask. The phone
         // offers "Always" on this alone: a button that quietly degraded to a
         // plain Allow would tell the user they had made a standing decision

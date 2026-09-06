@@ -2,8 +2,16 @@
 // event, a watcher socket must receive it with a seq, and a backfill request
 // must come back with the same event and an oldestSeq.
 //
-// Uses a throwaway machine id so the real roster is untouched. The secret is
-// read from the keychain inside this process and never printed.
+// Uses a throwaway machine id so the real roster's PANES are untouched.
+//
+// **It does not leave nothing behind.** `/publish` writes `machine:<id>` into
+// the MACHINES KV namespace, which is exactly what the phone lists, so every
+// run adds a "PROBE-…" entry to the app's machine list — observed on device.
+// Clean it up afterwards, or the list fills with them:
+//
+//   npx wrangler kv key delete --binding MACHINES --remote "machine:PROBE-<id>"
+//
+// The secret is read from the keychain inside this process and never printed.
 import { execFileSync } from "node:child_process";
 
 const SECRET = execFileSync("/usr/bin/security",

@@ -331,9 +331,10 @@ struct CanopyMobileApp: App {
                 // `id` is this socket's Mac. Seq numbers are per Mac, so the
                 // store must know which one a record came from.
                 eventStore.apply(record, machine: id)
-            } onBackfill: { records, oldestSeq, sessionId in
-                eventStore.apply(backfill: records, oldestSeq: oldestSeq,
-                                 sessionId: sessionId, machine: id)
+            } onBackfill: { page in
+                eventStore.apply(backfill: page.events, since: page.since,
+                                 evictedThrough: page.evictedThrough,
+                                 sessionId: page.sessionId, machine: id)
             } onOpen: { [weak socket] in
                 // This socket is up. If a conversation on THIS Mac is open,
                 // re-ask for its backfill — the view's own ask may have run
@@ -358,7 +359,7 @@ struct CanopyMobileApp: App {
                 // would be a cycle, and a socket already replaced SHOULD
                 // resolve to nil and send nothing.
                 guard let viewing = viewedSession.current, viewing.machine == id else { return }
-                requestBackfill(machine: id, sessionId: viewing.sessionId,
+                requestBackfill(sessionId: viewing.sessionId,
                                 since: eventStore.lastSeq(sessionId: viewing.sessionId),
                                 using: socket)
             } onFailure: { error in
@@ -377,18 +378,16 @@ struct CanopyMobileApp: App {
         sockets.removeAll()
     }
 
-    /// The one funnel for `events_since`, so the mark a session was last
-    /// asked from is recorded wherever the ask came from — the view
-    /// appearing, or a socket opening under it. `SessionEventStore.hasGap`
-    /// compares the relay's answer against that mark, and a mark written at
-    /// only one of the two sites is a mark that goes stale at the other.
+    /// The one funnel for `events_since`, kept so both askers — the view
+    /// appearing, and a socket opening under it — go through one place.
     ///
-    /// A machine with no live socket gets the mark and no request. That is
-    /// the same state as being offline, and it stays inert: with no answer
-    /// there is no `oldestHeld`, and no gap can be claimed from half a pair.
-    private func requestBackfill(machine: String, sessionId: String, since seq: Int,
+    /// The socket is passed in rather than looked up here, because one of
+    /// those callers is a closure that outlives the body pass that built it.
+    /// A nil socket sends nothing, which is the same state as being offline:
+    /// the stored notifications still render, and the next socket to open
+    /// asks again.
+    private func requestBackfill(sessionId: String, since seq: Int,
                                  using socket: RosterSocket?) {
-        eventStore.noteRequest(sessionId: sessionId, machine: machine, since: seq)
         socket?.requestEvents(sessionId: sessionId, since: seq)
     }
 
@@ -533,7 +532,7 @@ struct CanopyMobileApp: App {
             // socket simply gets no answer, which is the same state as being
             // offline — the stored notifications still render.
             onRequestBackfill: { sessionId, seq in
-                requestBackfill(machine: target.machine, sessionId: sessionId, since: seq,
+                requestBackfill(sessionId: sessionId, since: seq,
                                 using: sockets[target.machine])
             }
         )

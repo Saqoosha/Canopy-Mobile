@@ -99,16 +99,15 @@ final class SessionEventStore {
         /// Keyed by `seq`, so a record arriving twice cannot appear twice.
         /// The backfill after a reconnect and the live fan-out overlap.
         var bySeq: [Int: SessionEventRecord] = [:]
-        /// The oldest seq the relay reported holding, per session.
-        var oldestHeld: [String: Int] = [:]
-        /// The seq the most recent `events_since` for that session asked
-        /// from. Half of the gap comparison, and it has to be stored beside
-        /// the other half rather than held by the view that asked: since
-        /// Canopy-Mobile#24 a session is re-asked for whenever its socket
-        /// opens, so the view's own number goes stale the moment a reconnect
-        /// asks again from a higher mark — and a stale LOW number makes
-        /// `oldest > requested + 1` fire on a session that missed nothing.
-        var requestedFrom: [String: Int] = [:]
+        /// Whether the last backfill answer for that session said something
+        /// inside the asked-for range had been thrown away.
+        ///
+        /// **A verdict, not the numbers behind it.** The relay decides this
+        /// from facts only it has, and both halves arrive in the same
+        /// message, so there is nothing here to pair up wrongly — an earlier
+        /// design kept the "asked from" mark on this side and could compare
+        /// it against a different exchange's answer.
+        var gapReported: [String: Bool] = [:]
         // **No per-Mac high-water mark lives here on purpose.** There was
         // one, and it is the exact notion `lastSeq(sessionId:)` replaced: the
         // relay resumes per session, so a Mac-wide maximum asks one session
@@ -166,76 +165,52 @@ final class SessionEventStore {
         byMachine[machine] = slice
     }
 
-    func apply(backfill: [SessionEventRecord], oldestSeq: Int, sessionId: String, machine: String) {
+    /// Take a backfill answer: its records, and the relay's verdict on
+    /// whether anything inside the asked-for range was thrown away.
+    ///
+    /// `since` and `evictedThrough` are optional because a relay deployed
+    /// before they existed sends neither; two nils record no gap, which is
+    /// the behaviour that preceded them.
+    func apply(backfill: [SessionEventRecord], since: Int?, evictedThrough: Int?,
+               sessionId: String, machine: String) {
         var slice = byMachine[machine] ?? MachineEvents()
-        slice.oldestHeld[sessionId] = oldestSeq
+        slice.gapReported[sessionId] = Self.isGap(evictedThrough: evictedThrough, since: since)
         byMachine[machine] = slice
         for record in backfill { apply(record, machine: machine) }
     }
 
-    /// Record that an `events_since` for this session went out from `seq`.
-    ///
-    /// Called on every ask, including one the app could not deliver because
-    /// no socket was up. That costs nothing and keeps this at one call site
-    /// per ask: a request with no answer leaves `oldestHeld` unset, and
-    /// `hasGap` needs both halves, so an undelivered ask cannot produce a
-    /// verdict on its own.
-    func noteRequest(sessionId: String, machine: String, since seq: Int) {
-        var slice = byMachine[machine] ?? MachineEvents()
-        slice.requestedFrom[sessionId] = seq
-        byMachine[machine] = slice
-    }
-
-    /// Whether everything between what was asked for and what came back is
-    /// gone for good.
+    /// Whether the relay has told this store that part of what it asked for
+    /// is gone for good.
     ///
     /// **Splicing a partial range on silently is the failure this exists to
     /// prevent** — the phone would render a conversation with a hole in it as
-    /// though it were continuous. A store that has never received a backfill
-    /// answer reports no gap: it has not asked, so it has not been told.
-    ///
-    /// The comparison is against `requested + 1`, not `requested`, and the
-    /// off-by-one is the whole content of this function: `events_since N`
-    /// means "everything AFTER N", so an oldest held seq of exactly `N + 1`
-    /// is a complete answer with nothing missing. Comparing against
-    /// `requested` reports a gap on every first connection.
-    ///
-    /// **The one state it cannot report is a session evicted in full, and
-    /// that is a limit of the data rather than an omission.** The relay
-    /// answers with the oldest seq it still holds FOR THAT SESSION, so a
-    /// session with no rows left reports `0` — the same answer as a session
-    /// that has never emitted anything. Nothing distinguishes them from
-    /// here, so this returns `false` and the view falls through to its empty
-    /// state. Reporting a gap on `0` would be a claim the store cannot back:
-    /// it would fire on every genuinely new session.
-    /// A store that has asked but not yet been answered — or been answered
-    /// without having asked, which a live `event` frame does — reports no
-    /// gap: both halves have to be present before there is a comparison to
-    /// make.
+    /// though it were continuous. A store that has received no backfill
+    /// answer for the session reports no gap: it has not been told.
     func hasGap(sessionId: String, machine: String) -> Bool {
-        guard let slice = byMachine[machine],
-              let oldest = slice.oldestHeld[sessionId],
-              let requested = slice.requestedFrom[sessionId]
-        else { return false }
-        return Self.isGap(oldestHeld: oldest, requestedFrom: requested)
+        byMachine[machine]?.gapReported[sessionId] ?? false
     }
 
-    /// The comparison itself, separated from where the two numbers are kept
-    /// so it can be asserted on directly. Everything the doc above argues
-    /// about — the `+ 1`, and `0` meaning "cannot tell" rather than "gone" —
-    /// is decided here.
+    /// The verdict, from the two numbers the relay sends with every answer.
     ///
-    /// **The zero guard is unreachable given every caller today, and is kept
-    /// as a statement rather than as a check.** Marks come from `lastSeq`,
-    /// which is never negative, and `0 > requested + 1` is already false for
-    /// every non-negative `requested` — so deleting the guard changes no
-    /// answer, and a mutation run confirmed it: the suite stays green
-    /// without it. It stays because the alternative is a rule that holds
-    /// only by arithmetic coincidence, and the next edit to the comparison
-    /// would silently take "0 means cannot tell" with it.
-    static func isGap(oldestHeld oldest: Int, requestedFrom requested: Int) -> Bool {
-        guard oldest > 0 else { return false }
-        return oldest > requested + 1
+    /// **`evictedThrough` is the highest seq of THIS SESSION the relay has
+    /// deleted, so `> since` is exact rather than inferred**: that event
+    /// belonged to this session, sat inside the range asked for, and is
+    /// gone. The comparison this replaced comes with a cautionary tale — it
+    /// used the oldest seq still held and asked whether it exceeded
+    /// `since + 1`, which reads as an off-by-one puzzle and is really a
+    /// category error. `seq` is one counter for the whole Mac, so a
+    /// session's own events are not consecutive, and a session that merely
+    /// started after another one reports an oldest seq well above what was
+    /// asked for while having lost nothing. Nearly every session would have
+    /// been told its history was missing. Caught in review before it
+    /// reached a phone; the relay states the fact now instead.
+    ///
+    /// Either number missing means the relay predates the fact and cannot
+    /// answer, which is not the same as answering no — but silence is the
+    /// only honest rendering, and it is what the phone did before.
+    static func isGap(evictedThrough: Int?, since: Int?) -> Bool {
+        guard let evictedThrough, let since else { return false }
+        return evictedThrough > since
     }
 
     /// One session's events in relay order.

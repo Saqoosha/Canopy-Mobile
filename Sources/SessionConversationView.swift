@@ -108,9 +108,9 @@ struct SessionConversationView: View {
     /// Not the only caller of that request any more — since
     /// Canopy-Mobile#24 the app re-asks whenever a socket opens under an
     /// open conversation, because this one runs before a cold start has a
-    /// socket to deliver it. Which is why the mark asked from is recorded in
-    /// `SessionEventStore` rather than held here: this view sees only its
-    /// own ask.
+    /// socket to deliver it. Which is why this view keeps no record of what
+    /// it asked for: it sees only its own ask, and the answer carries the
+    /// question back with it.
     let onRequestBackfill: (String, Int) -> Void
 
     @State private var items: [NotificationHistoryItem] = []

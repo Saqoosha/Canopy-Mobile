@@ -108,97 +108,94 @@ struct SessionEventStoreTests {
         #expect(store.lastSeq(sessionId: "live-process") == 4)
     }
 
-    @Test("A backfill that starts later than asked reports a gap")
+    @Test("An answer saying something in range was evicted reports a gap")
     func reportsAGap() {
         let store = SessionEventStore()
-        store.noteRequest(sessionId: "s1", machine: mac, since: 0)
-        store.apply(backfill: [rec(10), rec(11)], oldestSeq: 10, sessionId: "s1", machine: mac)
+        store.apply(backfill: [rec(10)], since: 0, evictedThrough: 4,
+                    sessionId: "s1", machine: mac)
         #expect(store.hasGap(sessionId: "s1", machine: mac))
     }
 
-    @Test("A complete backfill reports no gap")
+    @Test("An answer saying nothing in range was evicted reports no gap")
     func reportsNoGap() {
         let store = SessionEventStore()
-        store.noteRequest(sessionId: "s1", machine: mac, since: 0)
-        store.apply(backfill: [rec(1), rec(2)], oldestSeq: 1, sessionId: "s1", machine: mac)
+        store.apply(backfill: [rec(1), rec(2)], since: 0, evictedThrough: 0,
+                    sessionId: "s1", machine: mac)
         #expect(!store.hasGap(sessionId: "s1", machine: mac))
     }
 
-    // The boundary, asserted from both sides on the comparison itself.
-    // `events_since N` returns what comes AFTER N, so an oldest of exactly
-    // N+1 is complete and N+2 is not. Comparing against N instead of N+1
-    // reports a gap on every first connection — which is how the off-by-one
-    // was found.
-    @Test("The gap boundary sits at requested + 1")
+    // **The category error this comparison replaced, kept as a fixture.**
+    // `seq` is one counter for the whole Mac, so a session that merely
+    // started after another one holds an oldest seq far above what was asked
+    // for while having lost nothing. The verdict must come from what the
+    // relay says it DELETED, never from where this session's numbers begin —
+    // the version that inferred it from adjacency would have told nearly
+    // every session its history was missing.
+    @Test("A session that merely started late reports no gap")
+    func lateStartingSessionIsNotAGap() {
+        let store = SessionEventStore()
+        // Asked from nothing, first event at seq 10, and the relay has
+        // deleted none of this session's events.
+        store.apply(backfill: [rec(10), rec(11)], since: 0, evictedThrough: 0,
+                    sessionId: "s1", machine: mac)
+        #expect(!store.hasGap(sessionId: "s1", machine: mac))
+    }
+
+    // The boundary, from both sides. An eviction that stops exactly at what
+    // was asked for took nothing the phone still wanted; one seq past it did.
+    @Test("The gap boundary sits at since")
     func gapBoundary() {
-        #expect(!SessionEventStore.isGap(oldestHeld: 6, requestedFrom: 5))
-        #expect(SessionEventStore.isGap(oldestHeld: 7, requestedFrom: 5))
+        #expect(!SessionEventStore.isGap(evictedThrough: 5, since: 5))
+        #expect(SessionEventStore.isGap(evictedThrough: 6, since: 5))
     }
 
-    // A session the relay holds nothing for answers `0`, and so does a
-    // session that has never emitted anything. Nothing here can tell them
-    // apart, so `0` must not be read as "it is all gone" — that verdict
-    // would fire on every genuinely new session.
-    //
-    // **This pins the property, not the guard that expresses it — deleting
-    // `isGap`'s `oldest > 0` line leaves this green, measured.** With a
-    // non-negative mark the comparison already answers false on its own, so
-    // there is no fixture that separates the two implementations. Said here
-    // rather than left to read as coverage it does not provide.
-    @Test("An oldest of zero is not a gap")
-    func zeroOldestIsNotAGap() {
-        #expect(!SessionEventStore.isGap(oldestHeld: 0, requestedFrom: 5))
+    // A relay deployed before it could answer this sends neither number.
+    // Silence is the only honest rendering, and it is what the phone did
+    // before the fields existed.
+    @Test("A relay that cannot answer reports no gap")
+    func missingFieldsMeanNoGapClaim() {
+        #expect(!SessionEventStore.isGap(evictedThrough: nil, since: 0))
+        #expect(!SessionEventStore.isGap(evictedThrough: 9, since: nil))
     }
 
-    // Never having asked is not the same as having been told nothing is
-    // missing. A store with no answer yet must not claim a hole.
+    // Never having been answered is not the same as having been told nothing
+    // is missing. A live `event` frame is not an answer.
     @Test("A session that has had no backfill answer reports no gap")
     func noAnswerMeansNoGapClaim() {
         let store = SessionEventStore()
-        store.noteRequest(sessionId: "s1", machine: mac, since: 0)
         store.apply(rec(9), machine: mac)
         #expect(!store.hasGap(sessionId: "s1", machine: mac))
     }
 
-    // The other half of the pair. A live `event` frame sets `oldestHeld` for
-    // nobody, but a backfill answer for a session this store never asked
-    // about could still arrive — the relay answers on the shared socket.
-    // Half a pair is not a verdict.
-    @Test("An answer with no recorded request reports no gap")
-    func answerWithoutRequestMeansNoGapClaim() {
+    // The verdict is per machine as well as per session, for the reason
+    // every other number here is: seq is minted per Durable Object.
+    @Test("A verdict recorded for one Mac does not answer for another")
+    func verdictsAreScopedToTheirMachine() {
         let store = SessionEventStore()
-        store.apply(backfill: [rec(10)], oldestSeq: 10, sessionId: "s1", machine: mac)
-        #expect(!store.hasGap(sessionId: "s1", machine: mac))
-    }
-
-    // **The reason the mark lives in the store rather than in the view that
-    // asked.** Since #24 a reconnect re-asks from a higher mark, and the
-    // view never sees that ask. Left in the view, its stale low number turns
-    // `oldest > requested + 1` true on a session that missed nothing.
-    @Test("A re-ask from a higher mark replaces the one the gap is judged against")
-    func reAskReplacesTheRecordedMark() {
-        let store = SessionEventStore()
-        store.noteRequest(sessionId: "s1", machine: mac, since: 0)
-        store.noteRequest(sessionId: "s1", machine: mac, since: 50)
-        store.apply(backfill: [rec(51)], oldestSeq: 30, sessionId: "s1", machine: mac)
-        #expect(!store.hasGap(sessionId: "s1", machine: mac))
-    }
-
-    // Marks are per machine as well as per session, for the reason every
-    // other number here is: seq is minted per Durable Object.
-    @Test("A request noted for one Mac does not answer for another")
-    func requestMarksAreScopedToTheirMachine() {
-        let store = SessionEventStore()
-        store.noteRequest(sessionId: "s1", machine: mac, since: 0)
-        store.apply(backfill: [rec(10)], oldestSeq: 10, sessionId: "s1", machine: "other-mac")
+        store.apply(backfill: [rec(10)], since: 0, evictedThrough: 4,
+                    sessionId: "s1", machine: mac)
+        #expect(store.hasGap(sessionId: "s1", machine: mac))
         #expect(!store.hasGap(sessionId: "s1", machine: "other-mac"))
+    }
+
+    // A later answer replaces the earlier verdict rather than accumulating
+    // with it: the phone has since caught up past what was dropped, and a
+    // gap it can no longer be missing must stop being reported.
+    @Test("A later answer replaces the earlier verdict")
+    func laterAnswerReplacesTheVerdict() {
+        let store = SessionEventStore()
+        store.apply(backfill: [rec(10)], since: 0, evictedThrough: 4,
+                    sessionId: "s1", machine: mac)
+        store.apply(backfill: [rec(11)], since: 10, evictedThrough: 4,
+                    sessionId: "s1", machine: mac)
         #expect(!store.hasGap(sessionId: "s1", machine: mac))
     }
 
     @Test("A backfill's own records land in the store")
     func backfillIsStored() {
         let store = SessionEventStore()
-        store.apply(backfill: [rec(1), rec(2)], oldestSeq: 1, sessionId: "s1", machine: mac)
+        store.apply(backfill: [rec(1), rec(2)], since: 0, evictedThrough: 0,
+                    sessionId: "s1", machine: mac)
         #expect(store.events(sessionId: "s1", resumeId: nil).count == 2)
         #expect(store.lastSeq(sessionId: "s1") == 2)
     }
@@ -360,6 +357,25 @@ struct RosterSocketFrameTests {
         }
         #expect(page.oldestSeq == 5)
         #expect(page.events.count == 1)
+        // A relay that predates the eviction fields sends neither, and the
+        // page must still decode — a required field here would drop every
+        // backfill until the relay was redeployed.
+        #expect(page.since == nil)
+        #expect(page.evictedThrough == nil)
+    }
+
+    @Test("A backfill page carries the relay's eviction verdict when it has one")
+    func backfillCarriesTheVerdict() {
+        let json = """
+        {"type":"events","sessionId":"s1","oldestSeq":30,"since":4,"evictedThrough":29,
+         "events":[]}
+        """
+        guard case .backfill(let page)? = RosterSocket.decode(data(json)) else {
+            Issue.record("expected a backfill page"); return
+        }
+        #expect(page.since == 4)
+        #expect(page.evictedThrough == 29)
+        #expect(SessionEventStore.isGap(evictedThrough: page.evictedThrough, since: page.since))
     }
 
     // The same tolerance, asserted where production actually decodes. This

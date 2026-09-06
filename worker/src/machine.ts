@@ -1,5 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
-import type { DecisionEnvelope, DeliveryAck, MachineSnapshot, ReplyEnvelope } from "./types";
+import { safeSlice } from "./llm";
+import type {
+  DecisionEnvelope, DeliveryAck, EventsResponse, MachineSnapshot,
+  ReplyEnvelope, SessionEventMessage, StoredSessionEvent,
+} from "./types";
 
 /** One in-flight delivery's outstanding recipients and its verdict so far. */
 interface AckWaiter {
@@ -20,6 +24,23 @@ export class MachineDO extends DurableObject {
       this.ctx.storage.sql.exec(
         `CREATE TABLE IF NOT EXISTS snapshot (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL)`
       );
+      // The session-event ring buffer. A table rather than a JSON blob
+      // because both things this feature needs are one statement here:
+      // "everything after seq N" and "drop all but the newest 200".
+      this.ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS event (
+           seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+           session_id TEXT NOT NULL,
+           event_id   TEXT NOT NULL,
+           resume_id  TEXT,
+           kind       TEXT NOT NULL,
+           text       TEXT NOT NULL,
+           created_at REAL NOT NULL
+         )`
+      );
+      this.ctx.storage.sql.exec(
+        `CREATE INDEX IF NOT EXISTS event_by_session ON event (session_id, seq)`
+      );
     });
   }
 
@@ -38,6 +59,145 @@ export class MachineDO extends DurableObject {
       `INSERT INTO snapshot (id, json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json`,
       JSON.stringify(snapshot)
     );
+  }
+
+  /** How many events one session keeps. The design's "recent enough to catch
+   *  up on" made concrete. */
+  static readonly maxEventsPerSession = 200;
+  /** How many sessions keep a buffer at all. The least recently written one
+   *  is dropped whole. */
+  static readonly maxSessions = 20;
+  /** Ceiling on one event's text, in CODE POINTS. Canopy caps its own in
+   *  UTF-8 bytes; this is the relay refusing to take Canopy's word for it,
+   *  and the two units differ on purpose — this one only has to be a bound,
+   *  not the same bound. */
+  static readonly maxEventTextLength = 8 * 1024;
+
+  /** Store one event and return the seq assigned to it, or null if it was
+   *  refused.
+   *
+   *  **The shape check runs before the insert, not after.** A malformed value
+   *  that reaches storage is handed straight back to the phone on the next
+   *  backfill — the same mistake on the snapshot path once ended a machine's
+   *  watch socket permanently. */
+  appendEvent(msg: SessionEventMessage): StoredSessionEvent | null {
+    if (
+      typeof msg?.sessionId !== "string" || msg.sessionId.length === 0 ||
+      typeof msg.eventId !== "string" || msg.eventId.length === 0 ||
+      typeof msg.kind !== "string" || msg.kind.length === 0 ||
+      typeof msg.text !== "string"
+    ) {
+      console.error("rejected event: malformed shape");
+      return null;
+    }
+    // `safeSlice`, never `.slice`: this file's sibling uses it on the notify
+    // path for the reason that applies here too — `.slice` counts UTF-16
+    // units and can cut a surrogate pair, leaving a lone surrogate that the
+    // phone's JSON decode rejects. One such event would fail the record, and
+    // inside a backfill page it takes all 200 with it.
+    const text = safeSlice(msg.text, MachineDO.maxEventTextLength);
+    // **Never substitute `Date.now()` here.** Canopy sends seconds on Swift's
+    // 2001 reference date; an epoch-milliseconds value mixed in decodes on the
+    // phone as a date tens of thousands of years out and throws the merged
+    // conversation's order away. A missing timestamp sorts to the front, which
+    // is wrong but bounded.
+    const at = typeof msg.at === "number" && Number.isFinite(msg.at) ? msg.at : 0;
+    const rows = this.ctx.storage.sql
+      .exec<{ seq: number }>(
+        `INSERT INTO event (session_id, event_id, resume_id, kind, text, created_at)
+         VALUES (?, ?, ?, ?, ?, ?) RETURNING seq`,
+        msg.sessionId, msg.eventId, msg.resumeId ?? null, msg.kind, text, at
+      )
+      .toArray();
+    const seq = rows[0]?.seq;
+    if (typeof seq !== "number") return null;
+    this.trim(msg.sessionId);
+    // **The STORED row, not the message that arrived.** Fanning out the raw
+    // `parsed` was the first version, and it made the same event two
+    // different things depending on the route: live it carried untruncated
+    // text and, with `at` missing, no `at` key at all — which fails the
+    // phone's decode silently — while a backfill of the same event carried
+    // 8 KiB of text and `at: 0`. Everything the phone sees now comes from
+    // one normalisation.
+    return {
+      type: "event",
+      seq,
+      eventId: msg.eventId,
+      sessionId: msg.sessionId,
+      resumeId: msg.resumeId ?? null,
+      kind: msg.kind,
+      text,
+      at,
+    };
+  }
+
+  /** Drop whatever is over the caps. Runs on every write, so the buffer can
+   *  never be more than one event past either limit. */
+  private trim(sessionId: string): void {
+    this.ctx.storage.sql.exec(
+      `DELETE FROM event WHERE session_id = ? AND seq NOT IN (
+         SELECT seq FROM event WHERE session_id = ? ORDER BY seq DESC LIMIT ?
+       )`,
+      sessionId, sessionId, MachineDO.maxEventsPerSession
+    );
+    this.ctx.storage.sql.exec(
+      `DELETE FROM event WHERE session_id NOT IN (
+         SELECT session_id FROM event GROUP BY session_id ORDER BY MAX(seq) DESC LIMIT ?
+       )`,
+      MachineDO.maxSessions
+    );
+  }
+
+  /** Everything after `after` for one session, plus the oldest seq still held.
+   *
+   *  See `EventsResponse.oldestSeq` for why that number ships with every
+   *  answer rather than only when something is missing. */
+  eventsSince(sessionId: string, after: number): EventsResponse {
+    const rows = this.ctx.storage.sql
+      .exec<{
+        seq: number; session_id: string; event_id: string;
+        resume_id: string | null; kind: string; text: string; created_at: number;
+      }>(
+        `SELECT seq, session_id, event_id, resume_id, kind, text, created_at
+           FROM event WHERE session_id = ? AND seq > ? ORDER BY seq ASC`,
+        sessionId, after
+      )
+      .toArray();
+    const oldest = this.ctx.storage.sql
+      .exec<{ seq: number | null }>(
+        `SELECT MIN(seq) AS seq FROM event WHERE session_id = ?`, sessionId
+      )
+      .toArray();
+    return {
+      type: "events",
+      sessionId,
+      oldestSeq: oldest[0]?.seq ?? 0,
+      events: rows.map((r) => ({
+        type: "event" as const,
+        seq: r.seq,
+        eventId: r.event_id,
+        sessionId: r.session_id,
+        resumeId: r.resume_id,
+        kind: r.kind as SessionEventMessage["kind"],
+        text: r.text,
+        at: r.created_at,
+      })),
+    };
+  }
+
+  /** Send one event to every watcher. Publishers are skipped, exactly as in
+   *  `broadcast()`. */
+  broadcastEvent(event: StoredSessionEvent): void {
+    const text = JSON.stringify(event);
+    for (const ws of this.ctx.getWebSockets()) {
+      const attachment = ws.deserializeAttachment() as { role?: string } | null;
+      if (attachment?.role !== "watcher") continue;
+      try {
+        ws.send(text);
+      } catch {
+        // A watcher that has gone away is routine; the next event retries.
+      }
+    }
   }
 
   currentSnapshot(): MachineSnapshot | null {
@@ -221,7 +381,12 @@ export class MachineDO extends DurableObject {
 
   webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
     if (typeof message !== "string") return;
-    const parsed = JSON.parse(message) as Partial<MachineSnapshot> & Partial<DeliveryAck>;
+    // `type` is widened to a plain string because four different messages
+    // arrive on these sockets and only three of them carry one. Narrowing it
+    // to any single message's literal makes the comparisons below a compile
+    // error, which is what the type says rather than what the wire does.
+    const parsed = JSON.parse(message) as Partial<MachineSnapshot> &
+      Omit<Partial<DeliveryAck>, "type"> & { type?: string };
     // An acknowledgement, not a snapshot. Checked first because a snapshot
     // has no `type` and would otherwise fall through the same shape guard.
     if (parsed.type === "ack" && typeof parsed.deliveryId === "string") {
@@ -250,6 +415,33 @@ export class MachineDO extends DurableObject {
       } else {
         waiter.rejection ??= ack;
         if (waiter.outstanding.size === 0) waiter.settle(waiter.rejection);
+      }
+      return;
+    }
+    // A session event from the publisher. Checked before the snapshot shape
+    // guard below, which would otherwise reject it as "no panes" and log a
+    // rejection for a perfectly good message.
+    if (parsed.type === "event") {
+      const stored = this.appendEvent(parsed as unknown as SessionEventMessage);
+      if (stored === null) return;
+      this.broadcastEvent(stored);
+      return;
+    }
+    // A watcher asking for what it missed. Answered on its own socket rather
+    // than broadcast — nobody else asked.
+    if (parsed.type === "events_since") {
+      const sessionId = (parsed as { sessionId?: unknown }).sessionId;
+      if (typeof sessionId !== "string" || sessionId.length === 0) {
+        console.error("rejected events_since: no sessionId");
+        return;
+      }
+      const raw = (parsed as { seq?: unknown }).seq;
+      const after = typeof raw === "number" && Number.isFinite(raw) ? raw : 0;
+      try {
+        ws.send(JSON.stringify(this.eventsSince(sessionId, after)));
+      } catch {
+        // The watcher went away between asking and being answered. It will
+        // ask again on its next connection.
       }
       return;
     }

@@ -102,7 +102,10 @@ final class NotificationService: UNNotificationServiceExtension {
             // user sees "not delivered" with no way to do better. A partial
             // form is worse than none: none falls back to answering at the
             // Mac, which still works.
-            choices: AskChoice.form(userInfo: userInfo["choices"])
+            choices: AskChoice.form(userInfo: userInfo["choices"]),
+            // Canopy's id for the streamed event holding this same text. The
+            // conversation view draws one of the two, not both.
+            eventId: userInfo["eventId"] as? String
         )
 
         do {

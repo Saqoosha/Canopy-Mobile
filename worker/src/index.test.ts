@@ -262,6 +262,57 @@ describe("AskUserQuestion form", () => {
     expect(res.status).toBe(503);
   });
 
+  // Through the worker route, not the DO directly: the thing under test is
+  // index.ts FORWARDING the field, which a stub.fetch("https://do/reply")
+  // would skip. The publisher acks so the route returns 200 instead of
+  // waiting out the ack timeout; the assertion is on the envelope it saw.
+  it("forwards replyId to the Mac unchanged", async () => {
+    const machine = "REPLY-ID-1";
+    const upgrade = await SELF.fetch(`https://relay/publish?machine=${machine}`, {
+      headers: { ...auth, Upgrade: "websocket" },
+    });
+    const ws = upgrade.webSocket!;
+    ws.accept();
+    const envelope = new Promise<Record<string, unknown>>((resolve) => {
+      ws.addEventListener("message", (e) => {
+        const parsed = JSON.parse(e.data as string) as Record<string, unknown>;
+        if (parsed.type !== "reply") return;
+        ws.send(JSON.stringify({ type: "ack", deliveryId: parsed.deliveryId, ok: true }));
+        resolve(parsed);
+      });
+    });
+    const res = await SELF.fetch("https://relay/reply", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ machine, sessionId: "s1", text: "hi", replyId: "r-42" }),
+    });
+    expect(res.status).toBe(200);
+    expect((await envelope).replyId).toBe("r-42");
+  });
+
+  it("forwards no replyId when the phone sent none", async () => {
+    const machine = "REPLY-ID-2";
+    const upgrade = await SELF.fetch(`https://relay/publish?machine=${machine}`, {
+      headers: { ...auth, Upgrade: "websocket" },
+    });
+    const ws = upgrade.webSocket!;
+    ws.accept();
+    const envelope = new Promise<Record<string, unknown>>((resolve) => {
+      ws.addEventListener("message", (e) => {
+        const parsed = JSON.parse(e.data as string) as Record<string, unknown>;
+        if (parsed.type !== "reply") return;
+        ws.send(JSON.stringify({ type: "ack", deliveryId: parsed.deliveryId, ok: true }));
+        resolve(parsed);
+      });
+    });
+    await SELF.fetch("https://relay/reply", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ machine, sessionId: "s1", text: "hi" }),
+    });
+    expect("replyId" in (await envelope)).toBe(false);
+  });
+
   // The push budget. `bodyFull` is context and goes first; `choices` are the
   // buttons and go last, because an ask the phone cannot answer is the state
   // this whole field was added to end.
@@ -273,6 +324,32 @@ describe("AskUserQuestion form", () => {
     expect(fitted.choices).toEqual(form);
     expect(fitted.bodyFull.length).toBeLessThan(4000);
     expect(new TextEncoder().encode(JSON.stringify(fitted)).length).toBeLessThanOrEqual(1000);
+  });
+
+  // `eventId` is the phone's only handle for "this push and that streamed
+  // event are one turn". Losing it under pressure would draw the assistant's
+  // message twice — which is exactly what happened when the relay accepted the
+  // field and never put it in the payload at all (measured on device).
+  //
+  // **This pins only that the shrink cascade preserves it.** That the field is
+  // put into the payload in the first place is not reachable from here — the
+  // route needs a registered device token and an APNs call — and was verified
+  // on device instead.
+  it("keeps eventId while shrinking the body", () => {
+    const fitted = fitPushPayload(
+      { title: "t", body: "b", bodyFull: "x".repeat(4000), eventId: "abc" },
+      500,
+    );
+    expect(fitted.eventId).toBe("abc");
+  });
+
+  it("keeps eventId even when the buttons are dropped", () => {
+    const fitted = fitPushPayload(
+      { title: "t", body: "b", bodyFull: "x".repeat(500), choices: form, eventId: "abc" },
+      120,
+    );
+    expect(fitted.choices).toBeUndefined();
+    expect(fitted.eventId).toBe("abc");
   });
 
   it("drops the buttons only once the body is exhausted", () => {

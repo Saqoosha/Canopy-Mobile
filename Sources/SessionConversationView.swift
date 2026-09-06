@@ -1,6 +1,63 @@
 import MarkdownUI
 import SwiftUI
 
+/// One row of the conversation, from either of the two sources that feed it.
+///
+/// The two are not interchangeable and neither replaces the other. A
+/// notification is durable, arrives with the app closed, and — when it is an
+/// `asking` — can be answered. A streamed event is live, reaches only a
+/// foregrounded app, holds no answer path, and survives only as long as the
+/// relay's ring buffer.
+enum ConversationRow: Identifiable {
+    case item(NotificationHistoryItem)
+    case event(SessionEventRecord)
+
+    var id: String {
+        switch self {
+        case .item(let item): return "i-\(item.id)"
+        case .event(let event): return "e-\(event.eventId)"
+        }
+    }
+
+    var at: Date {
+        switch self {
+        case .item(let item): return item.receivedAt
+        case .event(let event): return event.at
+        }
+    }
+
+    /// The kinds whose text also arrives as a streamed event, and so may be
+    /// drawn from the event instead: the assistant's final message (a
+    /// `completed` push carries it; the stream carries it as `assistant`),
+    /// and a reply typed on this phone (stored locally as `sent`; the Mac
+    /// echoes it and the stream carries it as `user`). Both share an id with
+    /// their event by construction, which is the only reason they can go.
+    static let kindsAnEventCanStandInFor: Set<String> = ["completed", "sent"]
+
+    /// Interleave the two sources by time, dropping a notification that says
+    /// the same thing as an event already present.
+    ///
+    /// **Only the kinds above are ever dropped.** An `asking` is the one route
+    /// that can be answered — Allow, Deny, or a chosen option — and the event
+    /// stream has no equivalent, so it stays even when an event carries the
+    /// same words.
+    ///
+    /// **A notification with no `eventId` also stays.** That is what a build
+    /// older than the field wrote, and reading `nil` as "duplicate" would
+    /// erase the stored history rather than de-duplicate it.
+    static func merge(items: [NotificationHistoryItem],
+                      events: [SessionEventRecord]) -> [ConversationRow] {
+        let streamed = Set(events.map(\.eventId))
+        let kept = items.filter { item in
+            guard kindsAnEventCanStandInFor.contains(item.kind),
+                  let eventId = item.eventId else { return true }
+            return !streamed.contains(eventId)
+        }
+        return (kept.map(ConversationRow.item) + events.map(ConversationRow.event))
+            .sorted { $0.at < $1.at }
+    }
+}
+
 /// One session, as a conversation: everything that session has notified about,
 /// oldest at the top, with a composer pinned at the bottom.
 ///
@@ -37,7 +94,17 @@ struct SessionConversationView: View {
     let pane: PaneRow?
     let onDecision: (NotificationHistoryItem, String) -> Void
     let onAnswer: (NotificationHistoryItem, [String: String]) -> Void
-    let onSend: (String) async throws -> Void
+    /// Text, then the id this view stored its local copy under. The id is
+    /// minted HERE, before the request leaves, so the local record and the
+    /// echo the Mac stamps can never disagree about it.
+    let onSend: (String, String) async throws -> Void
+    /// Live events for every session on every machine. Filtered to this one at
+    /// render time rather than handed a pre-filtered slice, so an event that
+    /// arrives while this view is open lands without a re-plumb.
+    let eventStore: SessionEventStore
+    /// Ask the relay for what this store is missing. Called once when the view
+    /// appears; the socket answers on its own connection.
+    let onRequestBackfill: (String, Int) -> Void
 
     @State private var items: [NotificationHistoryItem] = []
     @State private var totalCount = 0
@@ -56,7 +123,16 @@ struct SessionConversationView: View {
     @State private var didInitialScroll = false
 
     var body: some View {
-        ScrollViewReader { proxy in
+        // **Bound once per pass, not read as a computed property.** `rows`
+        // merges the notifications with `eventStore.events(...)`, which
+        // flat-maps every event of every session on every Mac and then
+        // sorts twice. Reading it from the `ForEach`, from
+        // `shouldShowDaySeparator` once per row, from `rows.isEmpty` and
+        // from two `onChange` keys made that N+4 full evaluations per body
+        // pass, in a deliberately non-lazy `VStack` where every row is built
+        // every time. The version this replaced indexed a stored array.
+        let rows = self.rows
+        return ScrollViewReader { proxy in
                 ScrollView {
                     // **`VStack`, not `LazyVStack`, and that is the fix.**
                     // A lazy stack estimates the height of rows it has not
@@ -94,7 +170,11 @@ struct SessionConversationView: View {
                             .foregroundStyle(.orange)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.top, 40)
-                        } else if items.isEmpty {
+                        // Keyed on the DRAWN rows, not on the notifications:
+                        // a session whose content arrived only over the
+                        // stream drew "Nothing from this session yet"
+                        // stacked on top of its own conversation.
+                        } else if rows.isEmpty {
                             VStack(spacing: 8) {
                                 Text("Nothing from this session yet")
                                     .font(.footnote)
@@ -112,11 +192,16 @@ struct SessionConversationView: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.top, 40)
                         }
-                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                            if shouldShowDaySeparator(at: index) {
-                                DaySeparator(date: item.receivedAt)
+                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                            if shouldShowDaySeparator(in: rows, at: index) {
+                                DaySeparator(date: row.at)
                             }
-                            MessageBlock(item: item, onDecision: onDecision, onAnswer: onAnswer)
+                            switch row {
+                            case .item(let item):
+                                MessageBlock(item: item, onDecision: onDecision, onAnswer: onAnswer)
+                            case .event(let event):
+                                SessionEventBlock(event: event)
+                            }
                         }
                         Color.clear.frame(height: 1).id(bottomAnchor)
                     }
@@ -139,7 +224,15 @@ struct SessionConversationView: View {
                 // what you opened it for. `defaultScrollAnchor` is resolved
                 // during layout instead, so it does not race the load.
                 .defaultScrollAnchor(.bottom)
-                .onAppear { load() }
+                .onAppear {
+                    load()
+                    // Asked from THIS SESSION's high-water mark. The relay
+                    // filters `WHERE session_id = ? AND seq > ?`, so asking
+                    // with a Mac-wide mark — which is what the first version
+                    // did — returns nothing for any session whose events all
+                    // sit below whatever the busiest session reached.
+                    onRequestBackfill(sessionId, eventStore.lastSeq(sessionId: sessionId))
+                }
                 // **The anchor alone is not enough, and the comment above
                 // says why without following it through.** It resolves during
                 // the FIRST layout — which happens before `onAppear` runs
@@ -161,7 +254,11 @@ struct SessionConversationView: View {
                 // the view back down while the user is reading older
                 // messages, and `onReceive` below already handles the case
                 // where a NEW message should pull them to the bottom.
-                .onChange(of: items.count) { _, count in
+                // Also keyed on the drawn rows. Gating this on `items` left
+                // `didInitialScroll` false forever on an events-only session,
+                // and the arrival scroll below is guarded on it — so that
+                // session never scrolled at all.
+                .onChange(of: rows.count) { _, count in
                     guard !didInitialScroll, count > 0 else { return }
                     didInitialScroll = true
                     // One hop, so the rows this load produced have been laid
@@ -177,22 +274,27 @@ struct SessionConversationView: View {
                     // The event fires for EVERY session, and it cannot say
                     // which one: it is re-posted from a Darwin notification,
                     // and Darwin notifications carry no userInfo at all. So
-                    // the only handle this screen has is its own filtered
-                    // list, which `load()` narrows to machine + session.
-                    // Scrolling on the bare event yanked the reader to the
-                    // bottom on somebody else's notification.
-                    //
-                    // Compare the NEWEST item's id, not the count: the store
-                    // prunes to `HistoryStore.maxItems`, so an append that
-                    // evicts an older item of this same session leaves the
-                    // count unchanged, and a count test would swallow the
-                    // one scroll this view exists to perform. `loadAll`
-                    // sorts newest-first and the filter reverses it, so
-                    // `items.last` is the newest.
-                    let newestBefore = items.last?.id
+                    // this only reloads; whether anything for THIS session
+                    // arrived is decided by `rows.last?.id` below, which the
+                    // reload feeds. Scrolling on the bare event here yanked
+                    // the reader to the bottom on somebody else's push.
                     load()
-                    guard items.last?.id != newestBefore else { return }
-                    withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
+                }
+                // **One rule for every arrival.** The newest DRAWN row changed
+                // — a push for this session, the local record of a reply just
+                // sent, a streamed event — so pull to the bottom. Keyed on the
+                // merged rows rather than on `items`, because two of the three
+                // routes never touch `items`: a streamed event lands in
+                // `eventStore`, and before this the reply you had just typed
+                // sat below the fold until you scrolled to find it (seen on
+                // device). Same one-hop deferral as the initial scroll, for
+                // the same reason: the row must be laid out before its offset
+                // exists.
+                .onChange(of: rows.last?.id) { _, newest in
+                    guard didInitialScroll, newest != nil else { return }
+                    DispatchQueue.main.async {
+                        withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
+                    }
                 }
                 .onChange(of: composerFocused) { _, focused in
                     if focused { withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) } }
@@ -259,6 +361,21 @@ struct SessionConversationView: View {
                     .lineLimit(1 ... 6)
                     .textFieldStyle(.plain)
                     .focused($composerFocused)
+                    // A vertical-axis field treats Return as a newline, which
+                    // is right for the on-screen keyboard (it has a separate
+                    // send button and no Shift worth speaking of) and wrong
+                    // for a hardware one — under iPhone Mirroring, Return
+                    // did nothing but add a line. Return sends; Shift+Return
+                    // keeps the newline, so a multi-line reply is still
+                    // typeable from a real keyboard.
+                    .onKeyPress(keys: [.return], phases: .down) { press in
+                        if press.modifiers.contains(.shift) { return .ignored }
+                        guard !sending,
+                              !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        else { return .handled }
+                        Task { await send() }
+                        return .handled
+                    }
                 Button {
                     Task { await send() }
                 } label: {
@@ -292,13 +409,19 @@ struct SessionConversationView: View {
         // user's hands either way, and leaving the keyboard up over a stream
         // that is about to gain their message hides the thing they just sent.
         composerFocused = false
+        // Minted before the send, and stored on the local record below, so
+        // the Mac can stamp the streamed echo of this text with the same id
+        // and the merge draws the two as one row. Once the stream existed,
+        // every reply typed here appeared twice — the local record and the
+        // echo — until the two shared a key (measured on device).
+        let replyId = UUID().uuidString
         do {
-            try await onSend(text)
-            // Record it locally. Nothing on the wire brings a reply back —
-            // the relay forwards it to the Mac and the Mac answers in its own
-            // time — so without this the message you just sent vanishes and
-            // the stream reads as though you never spoke. It is the one item
-            // in here the phone itself authored, which is why `kind` says so.
+            try await onSend(text, replyId)
+            // Record it locally. The stream DOES now bring the echo back, but
+            // only while this app is foregrounded and only for as long as
+            // the relay's ring buffer holds it; this record is the durable
+            // copy, readable offline, and the one item in here the phone
+            // itself authored — which is why `kind` says so.
             let sentItem = NotificationHistoryItem(
                 id: UUID().uuidString,
                 receivedAt: Date(),
@@ -307,7 +430,8 @@ struct SessionConversationView: View {
                 machine: machine,
                 sessionId: sessionId,
                 kind: "sent",
-                resumeId: resumeId
+                resumeId: resumeId,
+                eventId: replyId
             )
             if CanopyDemo.isEnabled {
                 // Into the fixtures, never the App Group: a demo run must not
@@ -372,10 +496,133 @@ struct SessionConversationView: View {
         }
     }
 
-    private func shouldShowDaySeparator(at index: Int) -> Bool {
+    /// The rows actually drawn: stored notifications and live events in one
+    /// timeline, with a notification dropped when an event already says it.
+    private var rows: [ConversationRow] {
+        ConversationRow.merge(items: items,
+                              events: eventStore.events(sessionId: sessionId, resumeId: resumeId))
+    }
+
+    /// Takes the row list rather than reading `items`, because the separators
+    /// belong to what is DRAWN. Reading the notifications while rendering the
+    /// merged list put the day breaks at the wrong places as soon as an event
+    /// sat between two notifications.
+    private func shouldShowDaySeparator(in rows: [ConversationRow], at index: Int) -> Bool {
         guard index > 0 else { return true }
-        return !Calendar.current.isDate(items[index].receivedAt,
-                                        inSameDayAs: items[index - 1].receivedAt)
+        return !Calendar.current.isDate(rows[index].at, inSameDayAs: rows[index - 1].at)
+    }
+}
+
+/// One streamed event.
+///
+/// A tool is a thin single line — it exists to say "not stuck, still working",
+/// and giving it a card would make the busiest thing on screen the least
+/// informative. The turn boundaries draw nothing at all: they carry no content
+/// and only break up the flow.
+private struct SessionEventBlock: View {
+    let event: SessionEventRecord
+
+    var body: some View {
+        switch event.kind {
+        case .tool:
+            HStack(spacing: 6) {
+                Image(systemName: "wrench.and.screwdriver")
+                    .font(.caption2)
+                Text(event.text)
+                    .font(.caption)
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        case .turnStart, .turnEnd:
+            EmptyView()
+        case .assistant, .user:
+            // The same card as a notification: header, then body, through the
+            // same two shared views. The first version drew the body alone,
+            // and a streamed message sat headerless beside a notification of
+            // the same shape with "Canopy 9:49" on it — the row read as a
+            // different kind of thing, not as the same conversation arriving
+            // a different way (seen on device).
+            VStack(alignment: .leading, spacing: 10) {
+                ConversationHeader(
+                    icon: event.kind == .user ? "arrow.up.circle.fill" : "checkmark.circle",
+                    title: event.kind == .user ? "You" : "Canopy",
+                    at: event.at)
+                ConversationMarkdown(text: event.text)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(Color(.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 16))
+        }
+    }
+}
+
+/// The one header for a conversation card, whichever route the row arrived
+/// by. Icon, who, when. Shared for the same reason `ConversationMarkdown` is:
+/// a notification and a streamed event of the same message must look like
+/// the same message.
+struct ConversationHeader: View {
+    let icon: String
+    let title: String
+    let at: Date
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption2)
+            Text(title)
+                .font(.caption)
+                .fontWeight(.medium)
+            Spacer()
+            Text(at, style: .time)
+                .font(.caption2)
+        }
+        .foregroundStyle(.secondary)
+    }
+}
+
+/// The one Markdown renderer for conversation text, whichever route the text
+/// arrived by. A notification body and a streamed event are the same words
+/// from the same session and must look the same; keeping this in one place
+/// is what stops the two from drifting.
+struct ConversationMarkdown: View {
+    let text: String
+
+    var body: some View {
+        Markdown(CJKEmphasis.normalized(text))
+            // Matches Canopy's own inline-code rule
+            // (Resources/canopy-overrides.css): the same dark red on the
+            // same 4% black. **The border and the 1x4 padding are not
+            // reproducible** — MarkdownUI's `\.code` is a text style, and
+            // SwiftUI has no inline box to pad or stroke — so this is the
+            // chip's colour without the chip's shape, deliberately, not
+            // an oversight to be "finished" with a background view.
+            .markdownTextStyle(\.code) {
+                FontFamilyVariant(.monospaced)
+                FontSize(.em(0.92))
+                ForegroundColor(Color(red: 138 / 255, green: 36 / 255, blue: 36 / 255))
+                BackgroundColor(Color.black.opacity(0.04))
+            }
+            // A shell command is the one body that must not be wrapped OR
+            // clipped: wrapping it makes a pipeline unreadable, and the
+            // default block silently cut a `curl` line mid-flag at phone
+            // width (measured on device 2026-09-04) — you could not see
+            // what you were being asked to approve. Scroll it instead.
+            .markdownBlockStyle(\.codeBlock) { configuration in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    configuration.label
+                        .fixedSize(horizontal: true, vertical: false)
+                        .markdownTextStyle {
+                            FontFamilyVariant(.monospaced)
+                            FontSize(.em(0.88))
+                        }
+                        .padding(12)
+                }
+                .background(Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .markdownMargin(top: .em(0.4), bottom: .em(0.4))
+            }
     }
 }
 
@@ -411,55 +658,13 @@ private struct MessageBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.caption2)
-                Text(item.title)
-                    .font(.caption)
-                    .fontWeight(.medium)
-                Spacer()
-                Text(item.receivedAt, style: .time)
-                    .font(.caption2)
-            }
-            .foregroundStyle(.secondary)
+            ConversationHeader(icon: icon, title: item.title, at: item.receivedAt)
 
             // Normalised on the way in: Japanese bold whose closing `**`
             // sits between punctuation and a letter is not emphasis to
             // CommonMark, and rendered as literal asterisks.
             if item.showsBody {
-            Markdown(CJKEmphasis.normalized(NotificationHistoryItem.displayableBody(item.body)))
-                // Matches Canopy's own inline-code rule
-                // (Resources/canopy-overrides.css): the same dark red on the
-                // same 4% black. **The border and the 1x4 padding are not
-                // reproducible** — MarkdownUI's `\.code` is a text style, and
-                // SwiftUI has no inline box to pad or stroke — so this is the
-                // chip's colour without the chip's shape, deliberately, not
-                // an oversight to be "finished" with a background view.
-                .markdownTextStyle(\.code) {
-                    FontFamilyVariant(.monospaced)
-                    FontSize(.em(0.92))
-                    ForegroundColor(Color(red: 138 / 255, green: 36 / 255, blue: 36 / 255))
-                    BackgroundColor(Color.black.opacity(0.04))
-                }
-                // A shell command is the one body that must not be wrapped OR
-                // clipped: wrapping it makes a pipeline unreadable, and the
-                // default block silently cut a `curl` line mid-flag at phone
-                // width (measured on device 2026-09-04) — you could not see
-                // what you were being asked to approve. Scroll it instead.
-                .markdownBlockStyle(\.codeBlock) { configuration in
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        configuration.label
-                            .fixedSize(horizontal: true, vertical: false)
-                            .markdownTextStyle {
-                                FontFamilyVariant(.monospaced)
-                                FontSize(.em(0.88))
-                            }
-                            .padding(12)
-                    }
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .markdownMargin(top: .em(0.4), bottom: .em(0.4))
-                }
+            ConversationMarkdown(text: NotificationHistoryItem.displayableBody(item.body))
             }
 
             if isUnansweredAsk {

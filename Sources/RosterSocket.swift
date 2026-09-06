@@ -28,6 +28,8 @@ final class RosterSocket {
 
     func connect(machine: String,
                  onSnapshot: @escaping @Sendable (MachineSnapshot) -> Void,
+                 onEvent: @escaping @Sendable (SessionEventRecord) -> Void = { _ in },
+                 onBackfill: @escaping @Sendable ([SessionEventRecord], Int, String) -> Void = { _, _, _ in },
                  onFailure: @escaping @Sendable (RosterSocketError) -> Void) {
         disconnect()
         var components = URLComponents(url: baseURL.appendingPathComponent("watch"),
@@ -39,7 +41,22 @@ final class RosterSocket {
         let task = URLSession.shared.webSocketTask(with: request)
         self.task = task
         task.resume()
-        receive(on: task, onSnapshot: onSnapshot, onFailure: onFailure)
+        receive(on: task, onSnapshot: onSnapshot, onEvent: onEvent,
+                onBackfill: onBackfill, onFailure: onFailure)
+    }
+
+    /// Ask the relay for everything after `seq` in one session.
+    ///
+    /// Sent on the same socket the events arrive on, so the answer comes back
+    /// to this phone only. A send failure is silent: the socket is either
+    /// about to report its own failure through `onFailure`, or the next
+    /// foreground cycle will connect a new one and ask again.
+    func requestEvents(sessionId: String, since seq: Int) {
+        let body: [String: Any] = ["type": "events_since", "sessionId": sessionId, "seq": seq]
+        guard let data = try? JSONSerialization.data(withJSONObject: body),
+              let text = String(data: data, encoding: .utf8)
+        else { return }
+        task?.send(.string(text)) { _ in }
     }
 
     func disconnect() {
@@ -56,20 +73,36 @@ final class RosterSocket {
     /// rather than keep rendering a frozen last snapshot as if it were live.
     private func receive(on task: URLSessionWebSocketTask,
                          onSnapshot: @escaping @Sendable (MachineSnapshot) -> Void,
+                         onEvent: @escaping @Sendable (SessionEventRecord) -> Void,
+                         onBackfill: @escaping @Sendable ([SessionEventRecord], Int, String) -> Void,
                          onFailure: @escaping @Sendable (RosterSocketError) -> Void) {
         task.receive { [weak self] result in
             switch result {
             case .success(let message):
-                var snapshot: MachineSnapshot?
+                var decoded: Frame?
                 if case .string(let text) = message,
                    let data = text.data(using: .utf8) {
-                    snapshot = try? JSONDecoder().decode(MachineSnapshot.self, from: data)
+                    decoded = Self.decode(data)
                 }
                 Task { @MainActor in
-                    if let snapshot {
-                        onSnapshot(snapshot)
+                    // **Same identity check the failure branch makes, and for
+                    // a reason that got sharper with the stream.** A frame
+                    // read from a task this object has already replaced is
+                    // from a socket nobody asked for: with only snapshots it
+                    // meant a stale roster, and now it also means events and
+                    // a whole backfill page landing in the store under a
+                    // machine whose live socket is somewhere else. Worse, the
+                    // loop re-armed on the OLD task, so a discarded socket
+                    // kept receiving forever. Found by review.
+                    guard let self, self.task === task else { return }
+                    switch decoded {
+                    case .snapshot(let snapshot): onSnapshot(snapshot)
+                    case .event(let record): onEvent(record)
+                    case .backfill(let page): onBackfill(page.events, page.oldestSeq, page.sessionId)
+                    case nil: break
                     }
-                    self?.receive(on: task, onSnapshot: onSnapshot, onFailure: onFailure)
+                    self.receive(on: task, onSnapshot: onSnapshot, onEvent: onEvent,
+                                 onBackfill: onBackfill, onFailure: onFailure)
                 }
             case .failure(let error):
                 Task { @MainActor in
@@ -94,4 +127,48 @@ final class RosterSocket {
             }
         }
     }
+
+    /// What one text frame on this socket turned out to be.
+    enum Frame: Equatable {
+        case snapshot(MachineSnapshot)
+        case event(SessionEventRecord)
+        case backfill(EventsPage)
+    }
+
+    /// The relay's answer to `events_since`.
+    struct EventsPage: Decodable, Equatable {
+        let sessionId: String
+        /// The oldest seq the relay still holds. Greater than what was asked
+        /// for means everything between is gone; see `SessionEventStore.hasGap`.
+        let oldestSeq: Int
+        let events: [SessionEventRecord]
+    }
+
+    /// Decide what a frame is, then decode it.
+    ///
+    /// **Discriminated by the `type` field's presence, not by trying each
+    /// decode in turn.** A roster snapshot carries no `type` at all, which is
+    /// the whole basis of the split — and attempting `MachineSnapshot` first
+    /// would swallow an event as a snapshot with no panes, silently.
+    ///
+    /// An unrecognised `type` returns nil rather than being forced into one of
+    /// the three: the relay may grow a message this build does not know, and a
+    /// wrong guess renders it as a conversation entry.
+    static func decode(_ data: Data) -> Frame? {
+        let decoder = JSONDecoder()
+        guard let tag = try? decoder.decode(TypeTag.self, from: data) else { return nil }
+        switch tag.type {
+        case "event":
+            return (try? decoder.decode(SessionEventRecord.self, from: data)).map(Frame.event)
+        case "events":
+            return (try? decoder.decode(EventsPage.self, from: data)).map(Frame.backfill)
+        case nil:
+            return (try? decoder.decode(MachineSnapshot.self, from: data)).map(Frame.snapshot)
+        default:
+            return nil
+        }
+    }
+
+    /// Reads only `type`, so the frame can be classified before it is decoded.
+    private struct TypeTag: Decodable { let type: String? }
 }

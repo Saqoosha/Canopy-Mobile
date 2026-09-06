@@ -31,6 +31,14 @@ export interface NotifyBody {
   bodyFull?: string;
   /** Present only for `kind: "asking"`. The id the phone answers with. */
   requestId?: string;
+  /** Canopy's id for the streamed event carrying this same text.
+   *
+   *  **Must be forwarded into the push payload, not just accepted here.** The
+   *  phone de-duplicates a completed notification against the event stream on
+   *  this field alone, and a relay that takes it and drops it produces exactly
+   *  the symptom it exists to prevent: the assistant's message drawn twice,
+   *  once from each route. Measured on device. */
+  eventId?: string;
   /** Whether the CLI proposed a rule for this ask, so the phone can offer
    *  "Always" only when there is something to write. */
   allowAlways?: boolean;
@@ -52,6 +60,14 @@ export interface ReplyBody {
   machine: string;
   sessionId: string;
   text: string;
+  /** The phone's own id for this reply, which it has already stored the text
+   *  under. Forwarded to the Mac unchanged so the streamed echo of this text
+   *  comes back stamped with it, and the phone draws its local record and the
+   *  event as one thing. Optional: an older phone sends none, and the echo
+   *  then streams under a fresh id beside the local record — visible twice,
+   *  never lost. Like `eventId` on a push, **accepting it and not forwarding
+   *  it reproduces exactly the duplicate it exists to prevent.** */
+  replyId?: string;
 }
 
 /** What the DO writes down the publisher socket. The `type` discriminator
@@ -65,6 +81,8 @@ export interface ReplyEnvelope {
    *  Canopy older than the ack protocol still parses the envelope; the relay
    *  then times out rather than hanging, and reports that honestly. */
   deliveryId?: string;
+  /** See `ReplyBody.replyId`. Passed through as-is. */
+  replyId?: string;
 }
 
 /** What Canopy sends back once it has tried to act on a delivery.
@@ -140,6 +158,48 @@ export interface DecisionEnvelope {
   answers?: Record<string, string>;
   /** See `ReplyEnvelope.deliveryId`. */
   deliveryId?: string;
+}
+
+/** One thing that happened in a session, as Canopy writes it to the
+ *  publisher socket.
+ *
+ *  **`type` is the only thing separating this from a `MachineSnapshot` on
+ *  that socket** — a snapshot carries no `type` field at all, so
+ *  `webSocketMessage` branches on its presence. */
+export interface SessionEventMessage {
+  type: "event";
+  /** Minted by Canopy, and also carried on the `completed` push so the phone
+   *  can tell a notification and an event are the same turn. Distinct from
+   *  `seq`, which the relay assigns and Canopy cannot know. */
+  eventId: string;
+  sessionId: string;
+  resumeId: string | null;
+  kind: "assistant" | "user" | "tool" | "turnStart" | "turnEnd";
+  text: string;
+  /** Seconds on Swift's reference date (2001), as `JSONEncoder` writes a
+   *  `Date` by default. **Never mix an epoch-milliseconds value in here** —
+   *  the phone decodes it straight back into a `Date`. */
+  at: number;
+}
+
+/** A stored event on its way to a watcher: the message plus the relay's own
+ *  ordering number. */
+export interface StoredSessionEvent extends SessionEventMessage {
+  seq: number;
+}
+
+/** The answer to a watcher's backfill request.
+ *
+ *  **`oldestSeq` is the load-bearing field.** It is the oldest seq the relay
+ *  still holds for that session; when it is greater than what the watcher
+ *  asked for, everything between is gone for good. Returning the events
+ *  without it would let the phone splice a partial range onto what it has as
+ *  if the two were contiguous. */
+export interface EventsResponse {
+  type: "events";
+  sessionId: string;
+  oldestSeq: number;
+  events: StoredSessionEvent[];
 }
 
 export interface MachineSnapshot {

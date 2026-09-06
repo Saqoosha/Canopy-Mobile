@@ -13,6 +13,10 @@ struct CanopyMobileApp: App {
     @State private var errors: [String: Error] = [:]
     @State private var directoryError: Error?
     @State private var sockets: [String: RosterSocket] = [:]
+    /// Live session events, held for the app's lifetime only. `HistoryStore`
+    /// remains the durable record; these two are merged at render time and
+    /// neither replaces the other.
+    @State private var eventStore = SessionEventStore()
     // The in-flight `connectAll()` task. Held so backgrounding can cancel
     // it — `connectAll()` awaits a network round trip before it creates any
     // socket, so without this the app could go background while that await
@@ -301,6 +305,13 @@ struct CanopyMobileApp: App {
             socket.connect(machine: id) { snapshot in
                 snapshots[id] = snapshot
                 errors[id] = nil
+            } onEvent: { record in
+                // `id` is this socket's Mac. Seq numbers are per Mac, so the
+                // store must know which one a record came from.
+                eventStore.apply(record, machine: id)
+            } onBackfill: { records, oldestSeq, sessionId in
+                eventStore.apply(backfill: records, oldestSeq: oldestSeq,
+                                 sessionId: sessionId, machine: id)
             } onFailure: { error in
                 // The receive loop has stopped for this machine — surface it
                 // through the same `errors` slot `refresh()` uses, so the
@@ -351,10 +362,10 @@ struct CanopyMobileApp: App {
     /// Every reply goes through here, whichever entry point opened the
     /// conversation, so `RosterClient` stays owned by this scene rather than
     /// by the view — the view is handed a closure, never the credentials.
-    private func sendReply(machine: String, sessionId: String, text: String) async throws {
+    private func sendReply(machine: String, sessionId: String, text: String, replyId: String) async throws {
         if CanopyDemo.isEnabled { return }
         guard let client else { throw RosterError.unexpectedStatus(-1) }
-        try await client.sendReply(machine: machine, sessionId: sessionId, text: text)
+        try await client.sendReply(machine: machine, sessionId: sessionId, text: text, replyId: replyId)
     }
 
     /// `SessionConversationView`'s Allow/Deny route here, through the SAME
@@ -449,9 +460,16 @@ struct CanopyMobileApp: App {
                 sendDecision(item: item, decision: "allow", answers: answers,
                              recordAs: answers.values.sorted().joined(separator: " · "))
             },
-            onSend: { text in
+            onSend: { text, replyId in
                 try await sendReply(machine: target.machine,
-                                    sessionId: target.sessionId, text: text)
+                                    sessionId: target.sessionId, text: text, replyId: replyId)
+            },
+            eventStore: eventStore,
+            // Asked on this machine's own socket. A machine with no live
+            // socket simply gets no answer, which is the same state as being
+            // offline — the stored notifications still render.
+            onRequestBackfill: { sessionId, seq in
+                sockets[target.machine]?.requestEvents(sessionId: sessionId, since: seq)
             }
         )
     }

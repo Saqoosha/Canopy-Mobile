@@ -204,6 +204,11 @@ export default {
         // everything stored so far.
         ...(body.resumeId ? { resumeId: body.resumeId } : {}),
         ...(body.requestId ? { requestId: body.requestId } : {}),
+        // The phone draws this notification OR the streamed event carrying the
+        // same text, never both, and this id is the only thing that can say
+        // they are one turn. Dropping it here is invisible on this side and
+        // shows up as a duplicated message on the phone.
+        ...(body.eventId ? { eventId: body.eventId } : {}),
         // Only true when the CLI proposed a rule for this ask. The phone
         // offers "Always" on this alone: a button that quietly degraded to a
         // plain Allow would tell the user they had made a standing decision
@@ -229,11 +234,23 @@ export default {
       // An empty reply would inject a blank user turn into a real conversation
       // and permanently into its transcript. Refuse rather than normalize.
       if (!text) return json({ error: "text required" }, 400);
+      // Forwarded, not merely accepted. The phone stores its local copy of
+      // this reply under `replyId` before the request leaves; the Mac stamps
+      // the streamed echo with the same id; the phone then draws one of the
+      // two. Dropping it here reproduces the duplicate this field prevents,
+      // and is invisible from this side — the same trap `eventId` fell into.
+      const replyId =
+        typeof body.replyId === "string" && body.replyId.length > 0 ? body.replyId : undefined;
       const stub = env.MACHINE.get(env.MACHINE.idFromName(`mac:${body.machine}`));
       return stub.fetch(
         new Request("https://do/reply", {
           method: "POST",
-          body: JSON.stringify({ type: "reply", sessionId: body.sessionId, text }),
+          body: JSON.stringify({
+            type: "reply",
+            sessionId: body.sessionId,
+            text,
+            ...(replyId ? { replyId } : {}),
+          }),
         })
       );
     }

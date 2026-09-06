@@ -1,8 +1,8 @@
 // worker/src/machine.test.ts
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
-import type { MachineSnapshot } from "./types";
-import type { MachineDO } from "./machine";
+import type { MachineSnapshot, SessionEventMessage } from "./types";
+import { MachineDO } from "./machine";
 
 const snapshot: MachineSnapshot = {
   machineId: "AAAA-1111",
@@ -258,5 +258,217 @@ describe("MachineDO", () => {
       expect(response.status).toBe(503);
       expect(await response.json()).toMatchObject({ ok: false, reason: "the Mac did not answer" });
     }, 10_000);
+  });
+});
+
+function ev(sessionId: string, text: string): SessionEventMessage {
+  return {
+    type: "event",
+    eventId: `${sessionId}-${text}`,
+    sessionId,
+    resumeId: null,
+    kind: "assistant",
+    text,
+    at: 0,
+  };
+}
+
+/** A stand-in for a watcher socket. Only `send` and the role attachment are
+ *  read on the paths under test, and using a real pair would need a live
+ *  upgrade this suite has no way to make from inside the object. */
+function fakeWatcher(): { ws: WebSocket; sent: string[] } {
+  const sent: string[] = [];
+  const ws = {
+    send: (text: string) => { sent.push(text); },
+    deserializeAttachment: () => ({ role: "watcher" }),
+  } as unknown as WebSocket;
+  return { ws, sent };
+}
+
+describe("session event ring buffer", () => {
+  it("assigns a strictly increasing seq", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-seq"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      const a = instance.appendEvent(ev("s1", "one"));
+      const b = instance.appendEvent(ev("s1", "two"));
+      expect(a).not.toBeNull();
+      expect(b).not.toBeNull();
+      expect(b!.seq).toBeGreaterThan(a!.seq);
+    });
+  });
+
+  it("keeps the newest events once the per-session cap is passed", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-trim"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      const over = MachineDO.maxEventsPerSession + 5;
+      for (let i = 0; i < over; i++) instance.appendEvent(ev("s1", `t${i}`));
+      const page = instance.eventsSince("s1", 0);
+      expect(page.events.length).toBe(MachineDO.maxEventsPerSession);
+      expect(page.events.some((e) => e.text === `t${over - 1}`)).toBe(true);
+      expect(page.events.some((e) => e.text === "t0")).toBe(false);
+    });
+  });
+
+  it("reports an oldest seq the phone can read a gap from", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-gap"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      for (let i = 0; i < MachineDO.maxEventsPerSession + 5; i++) {
+        instance.appendEvent(ev("s1", `t${i}`));
+      }
+      // Asked from the very beginning, but the oldest still held is later —
+      // everything in between is gone and the phone must be able to see that.
+      expect(instance.eventsSince("s1", 0).oldestSeq).toBeGreaterThan(1);
+    });
+  });
+
+  it("refuses a malformed event instead of storing it", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-bad"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      const bad = { type: "event", eventId: "x", kind: "assistant", text: "hi", at: 0 };
+      expect(instance.appendEvent(bad as unknown as SessionEventMessage)).toBeNull();
+      expect(instance.eventsSince("", 0).events.length).toBe(0);
+    });
+  });
+
+  it("evicts the least recently written session past the session cap", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-sessions"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      const over = MachineDO.maxSessions + 1;
+      for (let i = 0; i < over; i++) instance.appendEvent(ev(`s${i}`, "x"));
+      expect(instance.eventsSince("s0", 0).events.length).toBe(0);
+      expect(instance.eventsSince(`s${over - 1}`, 0).events.length).toBe(1);
+    });
+  });
+
+  it("caps one event's text", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-size"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      instance.appendEvent({ ...ev("s1", "x"), text: "a".repeat(50_000) });
+      const stored = instance.eventsSince("s1", 0).events[0];
+      expect(stored.text.length).toBe(MachineDO.maxEventTextLength);
+    });
+  });
+
+  // **The ASCII fixture above cannot fail for the safeSlice fix**: at 8192
+  // ASCII characters `.slice` and `safeSlice` return the same string, so
+  // reverting to `.slice` leaves it green. This one cuts inside a run of
+  // astral-plane characters, where `.slice` counts UTF-16 units and leaves a
+  // lone surrogate that the phone's JSON decode rejects — taking the whole
+  // backfill page with it.
+  it("does not split a surrogate pair when capping", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-surrogate"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      instance.appendEvent({ ...ev("s1", "x"), text: "🍎".repeat(9000) });
+      const stored = instance.eventsSince("s1", 0).events[0].text;
+      // No unpaired surrogate anywhere in the stored text.
+      expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(stored))
+        .toBe(false);
+      // And it is cut by code point, so every kept character is whole.
+      expect(Array.from(stored).length).toBe(MachineDO.maxEventTextLength);
+    });
+  });
+
+  it("keeps a Swift reference-date timestamp intact", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-time"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      instance.appendEvent({ ...ev("s1", "x"), at: 778_000_000.5 });
+      expect(instance.eventsSince("s1", 0).events[0].at).toBe(778_000_000.5);
+    });
+  });
+
+  it("stores a missing timestamp as zero rather than inventing one", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-notime"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      instance.appendEvent({ ...ev("s1", "x"), at: undefined as unknown as number });
+      // Not Date.now(): epoch milliseconds decode on the phone as a date tens
+      // of thousands of years out, which throws the merged order away.
+      expect(instance.eventsSince("s1", 0).events[0].at).toBe(0);
+    });
+  });
+
+  // A REAL watcher socket, not the stand-in below: fan-out walks
+  // `ctx.getWebSockets()`, which only knows about sockets the object actually
+  // accepted. The first version of this test used the stand-in and failed for
+  // that reason — the fake can be written TO by a handler holding it, but it
+  // is not in the object's own set.
+  it("fans an incoming event out to watchers with its seq", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-fanout"));
+    const upgrade = await stub.fetch("https://do/watch", { headers: { Upgrade: "websocket" } });
+    const ws = upgrade.webSocket!;
+    ws.accept();
+    const received = new Promise<string>((resolve) => {
+      ws.addEventListener("message", (e) => resolve(e.data as string));
+    });
+    // Driven through `webSocketMessage`, not by calling appendEvent and
+    // broadcastEvent by hand: the first version did that and could not see
+    // the defect it should have caught — live fan-out was sending the RAW
+    // message while only the stored copy was normalised, so the same event
+    // was two different things depending on the route. The fixtures below
+    // carry an over-long text and no `at` for exactly that reason.
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      const raw = { ...ev("s1", "x"), text: "a".repeat(50_000) } as Record<string, unknown>;
+      delete raw.at;
+      // The sending socket is irrelevant to this path — the event branch
+      // reads only the message — so the stand-in is fine HERE. What must be
+      // real is the RECEIVING watcher above, which fan-out finds through the
+      // object's own socket list.
+      instance.webSocketMessage(fakeWatcher().ws, JSON.stringify(raw));
+    });
+    const body = JSON.parse(await received);
+    expect(body.type).toBe("event");
+    expect(typeof body.seq).toBe("number");
+    // Both of these were wrong before the fix: the live frame carried the
+    // full 50 000 characters, and no `at` key at all — which fails the
+    // phone's decode silently.
+    expect(body.text.length).toBe(MachineDO.maxEventTextLength);
+    expect(body.at).toBe(0);
+  });
+
+  it("answers a watcher's events_since on its own socket", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-backfill"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      instance.appendEvent(ev("s1", "one"));
+      instance.appendEvent(ev("s1", "two"));
+      const watcher = fakeWatcher();
+      instance.webSocketMessage(
+        watcher.ws,
+        JSON.stringify({ type: "events_since", sessionId: "s1", seq: 0 })
+      );
+      expect(watcher.sent.length).toBe(1);
+      const body = JSON.parse(watcher.sent[0]);
+      expect(body.type).toBe("events");
+      expect(body.events.length).toBe(2);
+      expect(typeof body.oldestSeq).toBe("number");
+    });
+  });
+
+  it("returns only what follows the seq a watcher asks from", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-after"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      const first = instance.appendEvent(ev("s1", "one"))!.seq;
+      instance.appendEvent(ev("s1", "two"));
+      const page = instance.eventsSince("s1", first);
+      expect(page.events.length).toBe(1);
+      expect(page.events[0].text).toBe("two");
+    });
+  });
+
+  it("ignores an events_since with no sessionId", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-nosession"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      const watcher = fakeWatcher();
+      instance.webSocketMessage(watcher.ws, JSON.stringify({ type: "events_since", seq: 0 }));
+      expect(watcher.sent.length).toBe(0);
+    });
+  });
+
+  it("keeps one session's events out of another's", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-split"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      instance.appendEvent(ev("s1", "mine"));
+      instance.appendEvent(ev("s2", "yours"));
+      expect(instance.eventsSince("s1", 0).events.map((e) => e.text)).toEqual(["mine"]);
+      expect(instance.eventsSince("s2", 0).events.map((e) => e.text)).toEqual(["yours"]);
+    });
   });
 });

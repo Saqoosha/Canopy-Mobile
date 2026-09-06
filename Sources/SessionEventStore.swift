@@ -60,11 +60,19 @@ final class SessionEventStore {
 
     private var byMachine: [String: MachineEvents] = [:]
 
-    /// The highest seq seen from one Mac — what to send as `events_since` to
-    /// THAT Mac's relay. Zero for a Mac nothing has arrived from yet, which
-    /// asks for everything the buffer holds.
-    func lastSeq(for machine: String) -> Int {
-        byMachine[machine]?.lastSeq ?? 0
+    /// The highest seq seen for ONE SESSION on one Mac — what to send as
+    /// `events_since` when opening that session. Zero when nothing has
+    /// arrived for it yet, which asks for everything the buffer holds.
+    ///
+    /// **Per session, not per Mac, because the relay filters per session.**
+    /// `seq` is minted per Durable Object — one per Mac — so a Mac-wide high
+    /// water mark is a number from whichever session happened to be busiest.
+    /// Asking `events_since` with it returns `WHERE session_id = ? AND seq >
+    /// ?`, so a session whose events all sit below that mark comes back
+    /// empty and its history never arrives. Found by three reviewers on the
+    /// first version, which did exactly that.
+    func lastSeq(sessionId: String, resumeId: String?) -> Int {
+        events(sessionId: sessionId, resumeId: resumeId).last?.seq ?? 0
     }
 
     func apply(_ record: SessionEventRecord, machine: String) {

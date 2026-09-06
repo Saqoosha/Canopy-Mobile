@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { safeSlice } from "./llm";
 import type {
   DecisionEnvelope, DeliveryAck, EventsResponse, MachineSnapshot,
   ReplyEnvelope, SessionEventMessage, StoredSessionEvent,
@@ -66,8 +67,10 @@ export class MachineDO extends DurableObject {
   /** How many sessions keep a buffer at all. The least recently written one
    *  is dropped whole. */
   static readonly maxSessions = 20;
-  /** Ceiling on one event's text. Canopy caps its own in UTF-8 bytes; this is
-   *  the relay refusing to take Canopy's word for it. */
+  /** Ceiling on one event's text, in CODE POINTS. Canopy caps its own in
+   *  UTF-8 bytes; this is the relay refusing to take Canopy's word for it,
+   *  and the two units differ on purpose — this one only has to be a bound,
+   *  not the same bound. */
   static readonly maxEventTextLength = 8 * 1024;
 
   /** Store one event and return the seq assigned to it, or null if it was
@@ -77,7 +80,7 @@ export class MachineDO extends DurableObject {
    *  that reaches storage is handed straight back to the phone on the next
    *  backfill — the same mistake on the snapshot path once ended a machine's
    *  watch socket permanently. */
-  appendEvent(msg: SessionEventMessage): number | null {
+  appendEvent(msg: SessionEventMessage): StoredSessionEvent | null {
     if (
       typeof msg?.sessionId !== "string" || msg.sessionId.length === 0 ||
       typeof msg.eventId !== "string" || msg.eventId.length === 0 ||
@@ -87,7 +90,12 @@ export class MachineDO extends DurableObject {
       console.error("rejected event: malformed shape");
       return null;
     }
-    const text = msg.text.slice(0, MachineDO.maxEventTextLength);
+    // `safeSlice`, never `.slice`: this file's sibling uses it on the notify
+    // path for the reason that applies here too — `.slice` counts UTF-16
+    // units and can cut a surrogate pair, leaving a lone surrogate that the
+    // phone's JSON decode rejects. One such event would fail the record, and
+    // inside a backfill page it takes all 200 with it.
+    const text = safeSlice(msg.text, MachineDO.maxEventTextLength);
     // **Never substitute `Date.now()` here.** Canopy sends seconds on Swift's
     // 2001 reference date; an epoch-milliseconds value mixed in decodes on the
     // phone as a date tens of thousands of years out and throws the merged
@@ -104,7 +112,23 @@ export class MachineDO extends DurableObject {
     const seq = rows[0]?.seq;
     if (typeof seq !== "number") return null;
     this.trim(msg.sessionId);
-    return seq;
+    // **The STORED row, not the message that arrived.** Fanning out the raw
+    // `parsed` was the first version, and it made the same event two
+    // different things depending on the route: live it carried untruncated
+    // text and, with `at` missing, no `at` key at all — which fails the
+    // phone's decode silently — while a backfill of the same event carried
+    // 8 KiB of text and `at: 0`. Everything the phone sees now comes from
+    // one normalisation.
+    return {
+      type: "event",
+      seq,
+      eventId: msg.eventId,
+      sessionId: msg.sessionId,
+      resumeId: msg.resumeId ?? null,
+      kind: msg.kind,
+      text,
+      at,
+    };
   }
 
   /** Drop whatever is over the caps. Runs on every write, so the buffer can
@@ -398,10 +422,9 @@ export class MachineDO extends DurableObject {
     // guard below, which would otherwise reject it as "no panes" and log a
     // rejection for a perfectly good message.
     if (parsed.type === "event") {
-      const event = parsed as unknown as SessionEventMessage;
-      const seq = this.appendEvent(event);
-      if (seq === null) return;
-      this.broadcastEvent({ ...event, seq });
+      const stored = this.appendEvent(parsed as unknown as SessionEventMessage);
+      if (stored === null) return;
+      this.broadcastEvent(stored);
       return;
     }
     // A watcher asking for what it missed. Answered on its own socket rather

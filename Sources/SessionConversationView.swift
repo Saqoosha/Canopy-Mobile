@@ -161,7 +161,11 @@ struct SessionConversationView: View {
                             .foregroundStyle(.orange)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.top, 40)
-                        } else if items.isEmpty {
+                        // Keyed on the DRAWN rows, not on the notifications:
+                        // a session whose content arrived only over the
+                        // stream drew "Nothing from this session yet"
+                        // stacked on top of its own conversation.
+                        } else if rows.isEmpty {
                             VStack(spacing: 8) {
                                 Text("Nothing from this session yet")
                                     .font(.footnote)
@@ -213,11 +217,12 @@ struct SessionConversationView: View {
                 .defaultScrollAnchor(.bottom)
                 .onAppear {
                     load()
-                    // Asked from THIS Mac's high-water mark. The relay's seq
-                    // counter is per Durable Object — one per Mac — so the
-                    // number is shared across a Mac's sessions but means
-                    // nothing to another Mac's relay.
-                    onRequestBackfill(sessionId, eventStore.lastSeq(for: machine))
+                    // Asked from THIS SESSION's high-water mark. The relay
+                    // filters `WHERE session_id = ? AND seq > ?`, so asking
+                    // with a Mac-wide mark — which is what the first version
+                    // did — returns nothing for any session whose events all
+                    // sit below whatever the busiest session reached.
+                    onRequestBackfill(sessionId, eventStore.lastSeq(sessionId: sessionId, resumeId: resumeId))
                 }
                 // **The anchor alone is not enough, and the comment above
                 // says why without following it through.** It resolves during
@@ -240,7 +245,11 @@ struct SessionConversationView: View {
                 // the view back down while the user is reading older
                 // messages, and `onReceive` below already handles the case
                 // where a NEW message should pull them to the bottom.
-                .onChange(of: items.count) { _, count in
+                // Also keyed on the drawn rows. Gating this on `items` left
+                // `didInitialScroll` false forever on an events-only session,
+                // and the arrival scroll below is guarded on it — so that
+                // session never scrolled at all.
+                .onChange(of: rows.count) { _, count in
                     guard !didInitialScroll, count > 0 else { return }
                     didInitialScroll = true
                     // One hop, so the rows this load produced have been laid

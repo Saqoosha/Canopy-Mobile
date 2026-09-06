@@ -36,12 +36,12 @@ struct SessionEventStoreTests {
         #expect(all.first?.text == "first")
     }
 
-    @Test("lastSeq is the highest seen, not the most recent")
+    @Test("lastSeq is the highest seen for that session, not the most recent")
     func tracksTheHighestSeq() {
         let store = SessionEventStore()
         store.apply(rec(5), machine: mac)
         store.apply(rec(2), machine: mac)
-        #expect(store.lastSeq(for: mac) == 5)
+        #expect(store.lastSeq(sessionId: "s1", resumeId: nil) == 5)
     }
 
     @Test("One session's events stay out of another's")
@@ -76,16 +76,18 @@ struct SessionEventStoreTests {
         #expect(store.events(sessionId: "laptop-s", resumeId: nil).first?.text == "laptop")
     }
 
-    // Asking a Mac's relay to resume from ANOTHER Mac's high-water mark
-    // skips everything below it, or reports a gap that is not there.
-    @Test("lastSeq is per Mac")
-    func lastSeqIsScopedByMachine() {
+    // **Per session, not per Mac.** The relay answers `events_since` with
+    // `WHERE session_id = ? AND seq > ?`, so asking with a Mac-wide mark
+    // returns nothing for any session sitting below the busiest one — the
+    // session opened second silently shows no history at all.
+    @Test("lastSeq is per session, not per Mac")
+    func lastSeqIsScopedBySession() {
         let store = SessionEventStore()
-        store.apply(rec(40, session: "studio-s"), machine: "studio")
-        store.apply(rec(3, session: "laptop-s"), machine: "laptop")
-        #expect(store.lastSeq(for: "studio") == 40)
-        #expect(store.lastSeq(for: "laptop") == 3)
-        #expect(store.lastSeq(for: "never-heard-from") == 0)
+        store.apply(rec(40, session: "busy"), machine: mac)
+        store.apply(rec(3, session: "quiet"), machine: mac)
+        #expect(store.lastSeq(sessionId: "busy", resumeId: nil) == 40)
+        #expect(store.lastSeq(sessionId: "quiet", resumeId: nil) == 3)
+        #expect(store.lastSeq(sessionId: "never-heard-from", resumeId: nil) == 0)
     }
 
     @Test("A backfill that starts later than asked reports a gap")
@@ -131,7 +133,7 @@ struct SessionEventStoreTests {
         let store = SessionEventStore()
         store.apply(backfill: [rec(1), rec(2)], oldestSeq: 1, sessionId: "s1", machine: mac)
         #expect(store.events(sessionId: "s1", resumeId: nil).count == 2)
-        #expect(store.lastSeq(for: mac) == 2)
+        #expect(store.lastSeq(sessionId: "s1", resumeId: nil) == 2)
     }
 
     // Mirrors the relay's own cap. A long foreground run receives live

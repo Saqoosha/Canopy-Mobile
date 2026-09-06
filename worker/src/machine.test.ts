@@ -293,7 +293,7 @@ describe("session event ring buffer", () => {
       const b = instance.appendEvent(ev("s1", "two"));
       expect(a).not.toBeNull();
       expect(b).not.toBeNull();
-      expect(b as number).toBeGreaterThan(a as number);
+      expect(b!.seq).toBeGreaterThan(a!.seq);
     });
   });
 
@@ -380,15 +380,29 @@ describe("session event ring buffer", () => {
     const received = new Promise<string>((resolve) => {
       ws.addEventListener("message", (e) => resolve(e.data as string));
     });
+    // Driven through `webSocketMessage`, not by calling appendEvent and
+    // broadcastEvent by hand: the first version did that and could not see
+    // the defect it should have caught — live fan-out was sending the RAW
+    // message while only the stored copy was normalised, so the same event
+    // was two different things depending on the route. The fixtures below
+    // carry an over-long text and no `at` for exactly that reason.
     await runInDurableObject<MachineDO, void>(stub, async (instance) => {
-      const seq = instance.appendEvent(ev("s1", "live"));
-      expect(seq).not.toBeNull();
-      instance.broadcastEvent({ ...ev("s1", "live"), seq: seq as number });
+      const raw = { ...ev("s1", "x"), text: "a".repeat(50_000) } as Record<string, unknown>;
+      delete raw.at;
+      // The sending socket is irrelevant to this path — the event branch
+      // reads only the message — so the stand-in is fine HERE. What must be
+      // real is the RECEIVING watcher above, which fan-out finds through the
+      // object's own socket list.
+      instance.webSocketMessage(fakeWatcher().ws, JSON.stringify(raw));
     });
     const body = JSON.parse(await received);
     expect(body.type).toBe("event");
-    expect(body.text).toBe("live");
     expect(typeof body.seq).toBe("number");
+    // Both of these were wrong before the fix: the live frame carried the
+    // full 50 000 characters, and no `at` key at all — which fails the
+    // phone's decode silently.
+    expect(body.text.length).toBe(MachineDO.maxEventTextLength);
+    expect(body.at).toBe(0);
   });
 
   it("answers a watcher's events_since on its own socket", async () => {
@@ -412,7 +426,7 @@ describe("session event ring buffer", () => {
   it("returns only what follows the seq a watcher asks from", async () => {
     const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-after"));
     await runInDurableObject<MachineDO, void>(stub, async (instance) => {
-      const first = instance.appendEvent(ev("s1", "one")) as number;
+      const first = instance.appendEvent(ev("s1", "one"))!.seq;
       instance.appendEvent(ev("s1", "two"));
       const page = instance.eventsSince("s1", first);
       expect(page.events.length).toBe(1);

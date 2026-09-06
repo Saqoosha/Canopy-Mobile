@@ -75,13 +75,18 @@ struct RosterClient {
     /// (shared with the roster-fetch path, where a 503 means something else
     /// entirely — a misconfigured relay); `SessionConversationView`'s catch is what turns
     /// this specific case into reply-specific wording.
-    func sendReply(machine: String, sessionId: String, text: String) async throws {
+    /// - Parameter replyId: the id this phone stored its local copy of the
+    ///   reply under. The Mac stamps the streamed echo of this text with it,
+    ///   so the conversation view draws the local record and the event as
+    ///   one thing. Minted by the CALLER, before the local record is written,
+    ///   so the two can never disagree.
+    func sendReply(machine: String, sessionId: String, text: String, replyId: String) async throws {
         var request = URLRequest(url: baseURL.appendingPathComponent("reply"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "machine": machine, "sessionId": sessionId, "text": text,
+            "machine": machine, "sessionId": sessionId, "text": text, "replyId": replyId,
         ])
         let (data, response) = try await URLSession.shared.data(for: request)
         try Self.check(status: (response as? HTTPURLResponse)?.statusCode ?? -1, body: data)

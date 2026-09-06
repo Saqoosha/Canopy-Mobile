@@ -26,13 +26,21 @@ enum ConversationRow: Identifiable {
         }
     }
 
+    /// The kinds whose text also arrives as a streamed event, and so may be
+    /// drawn from the event instead: the assistant's final message (a
+    /// `completed` push carries it; the stream carries it as `assistant`),
+    /// and a reply typed on this phone (stored locally as `sent`; the Mac
+    /// echoes it and the stream carries it as `user`). Both share an id with
+    /// their event by construction, which is the only reason they can go.
+    static let kindsAnEventCanStandInFor: Set<String> = ["completed", "sent"]
+
     /// Interleave the two sources by time, dropping a notification that says
     /// the same thing as an event already present.
     ///
-    /// **Only a `completed` notification is ever dropped.** An `asking` is the
-    /// one route that can be answered — Allow, Deny, or a chosen option — and
-    /// the event stream has no equivalent, so it stays even when an event
-    /// carries the same words.
+    /// **Only the kinds above are ever dropped.** An `asking` is the one route
+    /// that can be answered — Allow, Deny, or a chosen option — and the event
+    /// stream has no equivalent, so it stays even when an event carries the
+    /// same words.
     ///
     /// **A notification with no `eventId` also stays.** That is what a build
     /// older than the field wrote, and reading `nil` as "duplicate" would
@@ -41,7 +49,8 @@ enum ConversationRow: Identifiable {
                       events: [SessionEventRecord]) -> [ConversationRow] {
         let streamed = Set(events.map(\.eventId))
         let kept = items.filter { item in
-            guard item.kind == "completed", let eventId = item.eventId else { return true }
+            guard kindsAnEventCanStandInFor.contains(item.kind),
+                  let eventId = item.eventId else { return true }
             return !streamed.contains(eventId)
         }
         return (kept.map(ConversationRow.item) + events.map(ConversationRow.event))
@@ -85,7 +94,10 @@ struct SessionConversationView: View {
     let pane: PaneRow?
     let onDecision: (NotificationHistoryItem, String) -> Void
     let onAnswer: (NotificationHistoryItem, [String: String]) -> Void
-    let onSend: (String) async throws -> Void
+    /// Text, then the id this view stored its local copy under. The id is
+    /// minted HERE, before the request leaves, so the local record and the
+    /// echo the Mac stamps can never disagree about it.
+    let onSend: (String, String) async throws -> Void
     /// Live events for every session on every machine. Filtered to this one at
     /// render time rather than handed a pre-filtered slice, so an event that
     /// arrives while this view is open lands without a re-plumb.
@@ -201,11 +213,11 @@ struct SessionConversationView: View {
                 .defaultScrollAnchor(.bottom)
                 .onAppear {
                     load()
-                    // Asked from `lastSeq`, which is shared across sessions:
-                    // the relay's seq counter is per Durable Object, so one
-                    // number is enough to say "everything this app has not
-                    // seen", whichever session it belongs to.
-                    onRequestBackfill(sessionId, eventStore.lastSeq)
+                    // Asked from THIS Mac's high-water mark. The relay's seq
+                    // counter is per Durable Object — one per Mac — so the
+                    // number is shared across a Mac's sessions but means
+                    // nothing to another Mac's relay.
+                    onRequestBackfill(sessionId, eventStore.lastSeq(for: machine))
                 }
                 // **The anchor alone is not enough, and the comment above
                 // says why without following it through.** It resolves during
@@ -359,13 +371,19 @@ struct SessionConversationView: View {
         // user's hands either way, and leaving the keyboard up over a stream
         // that is about to gain their message hides the thing they just sent.
         composerFocused = false
+        // Minted before the send, and stored on the local record below, so
+        // the Mac can stamp the streamed echo of this text with the same id
+        // and the merge draws the two as one row. Once the stream existed,
+        // every reply typed here appeared twice — the local record and the
+        // echo — until the two shared a key (measured on device).
+        let replyId = UUID().uuidString
         do {
-            try await onSend(text)
-            // Record it locally. Nothing on the wire brings a reply back —
-            // the relay forwards it to the Mac and the Mac answers in its own
-            // time — so without this the message you just sent vanishes and
-            // the stream reads as though you never spoke. It is the one item
-            // in here the phone itself authored, which is why `kind` says so.
+            try await onSend(text, replyId)
+            // Record it locally. The stream DOES now bring the echo back, but
+            // only while this app is foregrounded and only for as long as
+            // the relay's ring buffer holds it; this record is the durable
+            // copy, readable offline, and the one item in here the phone
+            // itself authored — which is why `kind` says so.
             let sentItem = NotificationHistoryItem(
                 id: UUID().uuidString,
                 receivedAt: Date(),
@@ -374,7 +392,8 @@ struct SessionConversationView: View {
                 machine: machine,
                 sessionId: sessionId,
                 kind: "sent",
-                resumeId: resumeId
+                resumeId: resumeId,
+                eventId: replyId
             )
             if CanopyDemo.isEnabled {
                 // Into the fixtures, never the App Group: a demo run must not
@@ -480,14 +499,61 @@ private struct SessionEventBlock: View {
         case .turnStart, .turnEnd:
             EmptyView()
         case .assistant, .user:
-            Text(event.text)
-                .font(.callout)
-                .textSelection(.enabled)
+            // The same renderer as a notification's body. The first version
+            // used a plain `Text`, and the assistant's `**Suggestion**`
+            // arrived on the phone as literal asterisks beside a notification
+            // of the same message rendered in bold — two renderers for one
+            // conversation, measured on device.
+            ConversationMarkdown(text: event.text)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(14)
                 .background(Color(.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 16))
         }
+    }
+}
+
+/// The one Markdown renderer for conversation text, whichever route the text
+/// arrived by. A notification body and a streamed event are the same words
+/// from the same session and must look the same; keeping this in one place
+/// is what stops the two from drifting.
+struct ConversationMarkdown: View {
+    let text: String
+
+    var body: some View {
+        Markdown(CJKEmphasis.normalized(text))
+            // Matches Canopy's own inline-code rule
+            // (Resources/canopy-overrides.css): the same dark red on the
+            // same 4% black. **The border and the 1x4 padding are not
+            // reproducible** — MarkdownUI's `\.code` is a text style, and
+            // SwiftUI has no inline box to pad or stroke — so this is the
+            // chip's colour without the chip's shape, deliberately, not
+            // an oversight to be "finished" with a background view.
+            .markdownTextStyle(\.code) {
+                FontFamilyVariant(.monospaced)
+                FontSize(.em(0.92))
+                ForegroundColor(Color(red: 138 / 255, green: 36 / 255, blue: 36 / 255))
+                BackgroundColor(Color.black.opacity(0.04))
+            }
+            // A shell command is the one body that must not be wrapped OR
+            // clipped: wrapping it makes a pipeline unreadable, and the
+            // default block silently cut a `curl` line mid-flag at phone
+            // width (measured on device 2026-09-04) — you could not see
+            // what you were being asked to approve. Scroll it instead.
+            .markdownBlockStyle(\.codeBlock) { configuration in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    configuration.label
+                        .fixedSize(horizontal: true, vertical: false)
+                        .markdownTextStyle {
+                            FontFamilyVariant(.monospaced)
+                            FontSize(.em(0.88))
+                        }
+                        .padding(12)
+                }
+                .background(Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .markdownMargin(top: .em(0.4), bottom: .em(0.4))
+            }
     }
 }
 
@@ -539,39 +605,7 @@ private struct MessageBlock: View {
             // sits between punctuation and a letter is not emphasis to
             // CommonMark, and rendered as literal asterisks.
             if item.showsBody {
-            Markdown(CJKEmphasis.normalized(NotificationHistoryItem.displayableBody(item.body)))
-                // Matches Canopy's own inline-code rule
-                // (Resources/canopy-overrides.css): the same dark red on the
-                // same 4% black. **The border and the 1x4 padding are not
-                // reproducible** — MarkdownUI's `\.code` is a text style, and
-                // SwiftUI has no inline box to pad or stroke — so this is the
-                // chip's colour without the chip's shape, deliberately, not
-                // an oversight to be "finished" with a background view.
-                .markdownTextStyle(\.code) {
-                    FontFamilyVariant(.monospaced)
-                    FontSize(.em(0.92))
-                    ForegroundColor(Color(red: 138 / 255, green: 36 / 255, blue: 36 / 255))
-                    BackgroundColor(Color.black.opacity(0.04))
-                }
-                // A shell command is the one body that must not be wrapped OR
-                // clipped: wrapping it makes a pipeline unreadable, and the
-                // default block silently cut a `curl` line mid-flag at phone
-                // width (measured on device 2026-09-04) — you could not see
-                // what you were being asked to approve. Scroll it instead.
-                .markdownBlockStyle(\.codeBlock) { configuration in
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        configuration.label
-                            .fixedSize(horizontal: true, vertical: false)
-                            .markdownTextStyle {
-                                FontFamilyVariant(.monospaced)
-                                FontSize(.em(0.88))
-                            }
-                            .padding(12)
-                    }
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .markdownMargin(top: .em(0.4), bottom: .em(0.4))
-                }
+            ConversationMarkdown(text: NotificationHistoryItem.displayableBody(item.body))
             }
 
             if isUnansweredAsk {

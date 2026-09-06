@@ -4,11 +4,13 @@ import Testing
 
 @MainActor
 struct SessionEventStoreTests {
+    private let mac = "M1"
+
     private func rec(_ seq: Int,
                      session: String = "s1",
                      resume: String? = nil,
                      text: String = "x") -> SessionEventRecord {
-        SessionEventRecord(seq: seq, eventId: "e\(seq)", sessionId: session,
+        SessionEventRecord(seq: seq, eventId: "e\(session)-\(seq)", sessionId: session,
                            resumeId: resume, kind: .assistant, text: text,
                            at: Date(timeIntervalSince1970: Double(seq)))
     }
@@ -16,9 +18,9 @@ struct SessionEventStoreTests {
     @Test("Events sort by seq however they arrive")
     func ordersBySeq() {
         let store = SessionEventStore()
-        store.apply(rec(3))
-        store.apply(rec(1))
-        store.apply(rec(2))
+        store.apply(rec(3), machine: mac)
+        store.apply(rec(1), machine: mac)
+        store.apply(rec(2), machine: mac)
         #expect(store.events(sessionId: "s1", resumeId: nil).map(\.seq) == [1, 2, 3])
     }
 
@@ -27,8 +29,8 @@ struct SessionEventStoreTests {
     @Test("A repeated seq is dropped, and the first copy is the one kept")
     func dropsARepeatedSeq() {
         let store = SessionEventStore()
-        store.apply(rec(1, text: "first"))
-        store.apply(rec(1, text: "second"))
+        store.apply(rec(1, text: "first"), machine: mac)
+        store.apply(rec(1, text: "second"), machine: mac)
         let all = store.events(sessionId: "s1", resumeId: nil)
         #expect(all.count == 1)
         #expect(all.first?.text == "first")
@@ -37,16 +39,16 @@ struct SessionEventStoreTests {
     @Test("lastSeq is the highest seen, not the most recent")
     func tracksTheHighestSeq() {
         let store = SessionEventStore()
-        store.apply(rec(5))
-        store.apply(rec(2))
-        #expect(store.lastSeq == 5)
+        store.apply(rec(5), machine: mac)
+        store.apply(rec(2), machine: mac)
+        #expect(store.lastSeq(for: mac) == 5)
     }
 
     @Test("One session's events stay out of another's")
     func separatesSessions() {
         let store = SessionEventStore()
-        store.apply(rec(1, session: "s1"))
-        store.apply(rec(2, session: "s2"))
+        store.apply(rec(1, session: "s1"), machine: mac)
+        store.apply(rec(2, session: "s2"), machine: mac)
         #expect(store.events(sessionId: "s1", resumeId: nil).count == 1)
         #expect(store.events(sessionId: "s2", resumeId: nil).count == 1)
     }
@@ -56,23 +58,48 @@ struct SessionEventStoreTests {
     @Test("resumeId wins over sessionId when both sides have one")
     func prefersResumeId() {
         let store = SessionEventStore()
-        store.apply(rec(1, session: "old-process", resume: "R"))
+        store.apply(rec(1, session: "old-process", resume: "R"), machine: mac)
         #expect(store.events(sessionId: "new-process", resumeId: "R").count == 1)
         #expect(store.events(sessionId: "new-process", resumeId: nil).isEmpty)
+    }
+
+    // **Seq numbers are per Mac.** Two Macs both mint a seq 1. The first
+    // version keyed on seq alone, so the second Mac's seq 1 was dropped as
+    // "already seen" — one Mac's conversation silently missing every event
+    // whose number the other Mac had used first.
+    @Test("The same seq on two Macs is two events, not one")
+    func seqIsScopedByMachine() {
+        let store = SessionEventStore()
+        store.apply(rec(1, session: "studio-s", text: "studio"), machine: "studio")
+        store.apply(rec(1, session: "laptop-s", text: "laptop"), machine: "laptop")
+        #expect(store.events(sessionId: "studio-s", resumeId: nil).first?.text == "studio")
+        #expect(store.events(sessionId: "laptop-s", resumeId: nil).first?.text == "laptop")
+    }
+
+    // Asking a Mac's relay to resume from ANOTHER Mac's high-water mark
+    // skips everything below it, or reports a gap that is not there.
+    @Test("lastSeq is per Mac")
+    func lastSeqIsScopedByMachine() {
+        let store = SessionEventStore()
+        store.apply(rec(40, session: "studio-s"), machine: "studio")
+        store.apply(rec(3, session: "laptop-s"), machine: "laptop")
+        #expect(store.lastSeq(for: "studio") == 40)
+        #expect(store.lastSeq(for: "laptop") == 3)
+        #expect(store.lastSeq(for: "never-heard-from") == 0)
     }
 
     @Test("A backfill that starts later than asked reports a gap")
     func reportsAGap() {
         let store = SessionEventStore()
-        store.apply(backfill: [rec(10), rec(11)], oldestSeq: 10, sessionId: "s1")
-        #expect(store.hasGap(sessionId: "s1", requestedFrom: 0))
+        store.apply(backfill: [rec(10), rec(11)], oldestSeq: 10, sessionId: "s1", machine: mac)
+        #expect(store.hasGap(sessionId: "s1", machine: mac, requestedFrom: 0))
     }
 
     @Test("A complete backfill reports no gap")
     func reportsNoGap() {
         let store = SessionEventStore()
-        store.apply(backfill: [rec(1), rec(2)], oldestSeq: 1, sessionId: "s1")
-        #expect(!store.hasGap(sessionId: "s1", requestedFrom: 0))
+        store.apply(backfill: [rec(1), rec(2)], oldestSeq: 1, sessionId: "s1", machine: mac)
+        #expect(!store.hasGap(sessionId: "s1", machine: mac, requestedFrom: 0))
     }
 
     // The boundary, asserted from both sides. `events_since N` returns what
@@ -82,12 +109,12 @@ struct SessionEventStoreTests {
     @Test("The gap boundary sits at requested + 1")
     func gapBoundary() {
         let flush = SessionEventStore()
-        flush.apply(backfill: [rec(6)], oldestSeq: 6, sessionId: "s1")
-        #expect(!flush.hasGap(sessionId: "s1", requestedFrom: 5))
+        flush.apply(backfill: [rec(6)], oldestSeq: 6, sessionId: "s1", machine: mac)
+        #expect(!flush.hasGap(sessionId: "s1", machine: mac, requestedFrom: 5))
 
         let missing = SessionEventStore()
-        missing.apply(backfill: [rec(7)], oldestSeq: 7, sessionId: "s1")
-        #expect(missing.hasGap(sessionId: "s1", requestedFrom: 5))
+        missing.apply(backfill: [rec(7)], oldestSeq: 7, sessionId: "s1", machine: mac)
+        #expect(missing.hasGap(sessionId: "s1", machine: mac, requestedFrom: 5))
     }
 
     // Never having asked is not the same as having been told nothing is
@@ -95,16 +122,40 @@ struct SessionEventStoreTests {
     @Test("A session that has had no backfill answer reports no gap")
     func noAnswerMeansNoGapClaim() {
         let store = SessionEventStore()
-        store.apply(rec(9))
-        #expect(!store.hasGap(sessionId: "s1", requestedFrom: 0))
+        store.apply(rec(9), machine: mac)
+        #expect(!store.hasGap(sessionId: "s1", machine: mac, requestedFrom: 0))
     }
 
     @Test("A backfill's own records land in the store")
     func backfillIsStored() {
         let store = SessionEventStore()
-        store.apply(backfill: [rec(1), rec(2)], oldestSeq: 1, sessionId: "s1")
+        store.apply(backfill: [rec(1), rec(2)], oldestSeq: 1, sessionId: "s1", machine: mac)
         #expect(store.events(sessionId: "s1", resumeId: nil).count == 2)
-        #expect(store.lastSeq == 2)
+        #expect(store.lastSeq(for: mac) == 2)
+    }
+
+    // Mirrors the relay's own cap. A long foreground run receives live
+    // events indefinitely; without this the store outgrows what a backfill
+    // would ever have delivered.
+    @Test("A session keeps only the newest events past the cap")
+    func capsPerSession() {
+        let store = SessionEventStore()
+        let over = SessionEventStore.maxEventsPerSession + 5
+        for seq in 1...over { store.apply(rec(seq), machine: mac) }
+        let kept = store.events(sessionId: "s1", resumeId: nil)
+        #expect(kept.count == SessionEventStore.maxEventsPerSession)
+        #expect(kept.first?.seq == 6)
+        #expect(kept.last?.seq == over)
+    }
+
+    @Test("The cap is per session, not per Mac")
+    func capIsPerSession() {
+        let store = SessionEventStore()
+        let n = SessionEventStore.maxEventsPerSession
+        for seq in 1...n { store.apply(rec(seq, session: "a"), machine: mac) }
+        for seq in (n + 1)...(2 * n) { store.apply(rec(seq, session: "b"), machine: mac) }
+        #expect(store.events(sessionId: "a", resumeId: nil).count == n)
+        #expect(store.events(sessionId: "b", resumeId: nil).count == n)
     }
 
     // The relay writes `at` as the number Canopy's JSONEncoder produced, which
@@ -203,9 +254,10 @@ struct ConversationMergeTests {
                                 sessionId: "s1", kind: kind, eventId: eventId)
     }
 
-    private func event(_ seq: Int, _ seconds: TimeInterval, eventId: String) -> SessionEventRecord {
+    private func event(_ seq: Int, _ seconds: TimeInterval, eventId: String,
+                       kind: SessionEventRecord.Kind = .assistant) -> SessionEventRecord {
         SessionEventRecord(seq: seq, eventId: eventId, sessionId: "s1", resumeId: nil,
-                           kind: .assistant, text: "e",
+                           kind: kind, text: "e",
                            at: Date(timeIntervalSince1970: seconds))
     }
 
@@ -225,6 +277,17 @@ struct ConversationMergeTests {
         if case .item = rows[0] { Issue.record("the notification duplicate should be dropped") }
     }
 
+    // A reply typed on this phone is stored locally under replyId, and the
+    // Mac stamps the streamed echo with the same id. Two rows for one message
+    // was the symptom; this is the assertion that the local record yields.
+    @Test("A sent record duplicating its own echo is dropped")
+    func dropsTheSentDuplicate() {
+        let rows = ConversationRow.merge(items: [item("i1", 30, eventId: "reply-1", kind: "sent")],
+                                         events: [event(1, 31, eventId: "reply-1", kind: .user)])
+        #expect(rows.count == 1)
+        if case .item = rows[0] { Issue.record("the local sent record should yield to the echo") }
+    }
+
     // An asking is the only answerable route; the event stream has no
     // equivalent, so it survives a same-text event.
     @Test("An asking notification survives even when an event matches")
@@ -240,6 +303,15 @@ struct ConversationMergeTests {
     func keepsWithoutEventId() {
         let rows = ConversationRow.merge(items: [item("i1", 30)],
                                          events: [event(1, 29, eventId: "e1")])
+        #expect(rows.count == 2)
+    }
+
+    // A sent record whose echo never came back (the Mac was offline, or the
+    // buffer has since rolled past it) must stay — it is the only copy.
+    @Test("A sent record with no matching echo is kept")
+    func keepsUnechoedSent() {
+        let rows = ConversationRow.merge(items: [item("i1", 30, eventId: "reply-1", kind: "sent")],
+                                         events: [event(1, 29, eventId: "other", kind: .user)])
         #expect(rows.count == 2)
     }
 

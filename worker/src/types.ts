@@ -60,6 +60,14 @@ export interface ReplyBody {
   machine: string;
   sessionId: string;
   text: string;
+  /** The phone's own id for this reply, which it has already stored the text
+   *  under. Forwarded to the Mac unchanged so the streamed echo of this text
+   *  comes back stamped with it, and the phone draws its local record and the
+   *  event as one thing. Optional: an older phone sends none, and the echo
+   *  then streams under a fresh id beside the local record — visible twice,
+   *  never lost. Like `eventId` on a push, **accepting it and not forwarding
+   *  it reproduces exactly the duplicate it exists to prevent.** */
+  replyId?: string;
 }
 
 /** What the DO writes down the publisher socket. The `type` discriminator
@@ -73,6 +81,8 @@ export interface ReplyEnvelope {
    *  Canopy older than the ack protocol still parses the envelope; the relay
    *  then times out rather than hanging, and reports that honestly. */
   deliveryId?: string;
+  /** See `ReplyBody.replyId`. Passed through as-is. */
+  replyId?: string;
 }
 
 /** What Canopy sends back once it has tried to act on a delivery.

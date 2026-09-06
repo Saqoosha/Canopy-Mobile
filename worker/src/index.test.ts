@@ -262,6 +262,57 @@ describe("AskUserQuestion form", () => {
     expect(res.status).toBe(503);
   });
 
+  // Through the worker route, not the DO directly: the thing under test is
+  // index.ts FORWARDING the field, which a stub.fetch("https://do/reply")
+  // would skip. The publisher acks so the route returns 200 instead of
+  // waiting out the ack timeout; the assertion is on the envelope it saw.
+  it("forwards replyId to the Mac unchanged", async () => {
+    const machine = "REPLY-ID-1";
+    const upgrade = await SELF.fetch(`https://relay/publish?machine=${machine}`, {
+      headers: { ...auth, Upgrade: "websocket" },
+    });
+    const ws = upgrade.webSocket!;
+    ws.accept();
+    const envelope = new Promise<Record<string, unknown>>((resolve) => {
+      ws.addEventListener("message", (e) => {
+        const parsed = JSON.parse(e.data as string) as Record<string, unknown>;
+        if (parsed.type !== "reply") return;
+        ws.send(JSON.stringify({ type: "ack", deliveryId: parsed.deliveryId, ok: true }));
+        resolve(parsed);
+      });
+    });
+    const res = await SELF.fetch("https://relay/reply", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ machine, sessionId: "s1", text: "hi", replyId: "r-42" }),
+    });
+    expect(res.status).toBe(200);
+    expect((await envelope).replyId).toBe("r-42");
+  });
+
+  it("forwards no replyId when the phone sent none", async () => {
+    const machine = "REPLY-ID-2";
+    const upgrade = await SELF.fetch(`https://relay/publish?machine=${machine}`, {
+      headers: { ...auth, Upgrade: "websocket" },
+    });
+    const ws = upgrade.webSocket!;
+    ws.accept();
+    const envelope = new Promise<Record<string, unknown>>((resolve) => {
+      ws.addEventListener("message", (e) => {
+        const parsed = JSON.parse(e.data as string) as Record<string, unknown>;
+        if (parsed.type !== "reply") return;
+        ws.send(JSON.stringify({ type: "ack", deliveryId: parsed.deliveryId, ok: true }));
+        resolve(parsed);
+      });
+    });
+    await SELF.fetch("https://relay/reply", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ machine, sessionId: "s1", text: "hi" }),
+    });
+    expect("replyId" in (await envelope)).toBe(false);
+  });
+
   // The push budget. `bodyFull` is context and goes first; `choices` are the
   // buttons and go last, because an ask the phone cannot answer is the state
   // this whole field was added to end.

@@ -256,22 +256,27 @@ struct SessionConversationView: View {
                     // The event fires for EVERY session, and it cannot say
                     // which one: it is re-posted from a Darwin notification,
                     // and Darwin notifications carry no userInfo at all. So
-                    // the only handle this screen has is its own filtered
-                    // list, which `load()` narrows to machine + session.
-                    // Scrolling on the bare event yanked the reader to the
-                    // bottom on somebody else's notification.
-                    //
-                    // Compare the NEWEST item's id, not the count: the store
-                    // prunes to `HistoryStore.maxItems`, so an append that
-                    // evicts an older item of this same session leaves the
-                    // count unchanged, and a count test would swallow the
-                    // one scroll this view exists to perform. `loadAll`
-                    // sorts newest-first and the filter reverses it, so
-                    // `items.last` is the newest.
-                    let newestBefore = items.last?.id
+                    // this only reloads; whether anything for THIS session
+                    // arrived is decided by `rows.last?.id` below, which the
+                    // reload feeds. Scrolling on the bare event here yanked
+                    // the reader to the bottom on somebody else's push.
                     load()
-                    guard items.last?.id != newestBefore else { return }
-                    withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
+                }
+                // **One rule for every arrival.** The newest DRAWN row changed
+                // — a push for this session, the local record of a reply just
+                // sent, a streamed event — so pull to the bottom. Keyed on the
+                // merged rows rather than on `items`, because two of the three
+                // routes never touch `items`: a streamed event lands in
+                // `eventStore`, and before this the reply you had just typed
+                // sat below the fold until you scrolled to find it (seen on
+                // device). Same one-hop deferral as the initial scroll, for
+                // the same reason: the row must be laid out before its offset
+                // exists.
+                .onChange(of: rows.last?.id) { _, newest in
+                    guard didInitialScroll, newest != nil else { return }
+                    DispatchQueue.main.async {
+                        withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
+                    }
                 }
                 .onChange(of: composerFocused) { _, focused in
                     if focused { withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) } }
@@ -338,6 +343,21 @@ struct SessionConversationView: View {
                     .lineLimit(1 ... 6)
                     .textFieldStyle(.plain)
                     .focused($composerFocused)
+                    // A vertical-axis field treats Return as a newline, which
+                    // is right for the on-screen keyboard (it has a separate
+                    // send button and no Shift worth speaking of) and wrong
+                    // for a hardware one — under iPhone Mirroring, Return
+                    // did nothing but add a line. Return sends; Shift+Return
+                    // keeps the newline, so a multi-line reply is still
+                    // typeable from a real keyboard.
+                    .onKeyPress(keys: [.return], phases: .down) { press in
+                        if press.modifiers.contains(.shift) { return .ignored }
+                        guard !sending,
+                              !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        else { return .handled }
+                        Task { await send() }
+                        return .handled
+                    }
                 Button {
                     Task { await send() }
                 } label: {

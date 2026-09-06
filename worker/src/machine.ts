@@ -41,6 +41,20 @@ export class MachineDO extends DurableObject {
       this.ctx.storage.sql.exec(
         `CREATE INDEX IF NOT EXISTS event_by_session ON event (session_id, seq)`
       );
+      // What the ring buffer has thrown away, per session. Without it a
+      // watcher cannot tell a dropped event from a seq that belonged to a
+      // different session, because `seq` above is global to this Mac and a
+      // single session's numbers are therefore not consecutive. See
+      // `EventsResponse.evictedThrough`.
+      //
+      // Deliberately its own table rather than a column on `event`: the
+      // case it has to survive is a session whose rows are ALL gone.
+      this.ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS eviction (
+           session_id TEXT PRIMARY KEY,
+           through    INTEGER NOT NULL
+         )`
+      );
     });
   }
 
@@ -67,6 +81,11 @@ export class MachineDO extends DurableObject {
   /** How many sessions keep a buffer at all. The least recently written one
    *  is dropped whole. */
   static readonly maxSessions = 20;
+  /** How many sessions keep an eviction mark. Ten times `maxSessions`, so a
+   *  session that has fallen out of the buffer keeps its mark for a long
+   *  while after — a row is a session id and an integer, and the whole table
+   *  at this size is a few kilobytes. */
+  static readonly maxEvictionMarks = 200;
   /** Ceiling on one event's text, in CODE POINTS. Canopy caps its own in
    *  UTF-8 bytes; this is the relay refusing to take Canopy's word for it,
    *  and the two units differ on purpose — this one only has to be a bound,
@@ -132,13 +151,34 @@ export class MachineDO extends DurableObject {
   }
 
   /** Drop whatever is over the caps. Runs on every write, so the buffer can
-   *  never be more than one event past either limit. */
+   *  never be more than one event past either limit.
+   *
+   *  **Every delete is recorded before it happens.** A watcher's only way to
+   *  know it has lost something is `evictedThrough`, so a deletion that does
+   *  not raise the mark is a hole nothing will ever admit to. The two
+   *  branches record separately because they lose different things: the
+   *  first drops a session's oldest events, the second drops whole sessions.
+   */
   private trim(sessionId: string): void {
+    this.noteEvictions(
+      `SELECT session_id, MAX(seq) AS through FROM event
+        WHERE session_id = ? AND seq NOT IN (
+          SELECT seq FROM event WHERE session_id = ? ORDER BY seq DESC LIMIT ?
+        ) GROUP BY session_id`,
+      sessionId, sessionId, MachineDO.maxEventsPerSession
+    );
     this.ctx.storage.sql.exec(
       `DELETE FROM event WHERE session_id = ? AND seq NOT IN (
          SELECT seq FROM event WHERE session_id = ? ORDER BY seq DESC LIMIT ?
        )`,
       sessionId, sessionId, MachineDO.maxEventsPerSession
+    );
+    this.noteEvictions(
+      `SELECT session_id, MAX(seq) AS through FROM event
+        WHERE session_id NOT IN (
+          SELECT session_id FROM event GROUP BY session_id ORDER BY MAX(seq) DESC LIMIT ?
+        ) GROUP BY session_id`,
+      MachineDO.maxSessions
     );
     this.ctx.storage.sql.exec(
       `DELETE FROM event WHERE session_id NOT IN (
@@ -146,12 +186,52 @@ export class MachineDO extends DurableObject {
        )`,
       MachineDO.maxSessions
     );
+    this.trimEvictionMarks();
   }
 
-  /** Everything after `after` for one session, plus the oldest seq still held.
+  /** Raise each named session's eviction mark to cover what `query` selects.
    *
-   *  See `EventsResponse.oldestSeq` for why that number ships with every
-   *  answer rather than only when something is missing. */
+   *  `MAX(through, excluded.through)` rather than a plain assignment: marks
+   *  only ever move forward. A later trim of a session that has since been
+   *  re-seeded selects lower seqs, and letting it overwrite would retire a
+   *  mark that is still true. */
+  private noteEvictions(query: string, ...bindings: unknown[]): void {
+    const doomed = this.ctx.storage.sql
+      .exec<{ session_id: string; through: number | null }>(query, ...bindings)
+      .toArray();
+    for (const row of doomed) {
+      if (typeof row.through !== "number") continue;
+      this.ctx.storage.sql.exec(
+        `INSERT INTO eviction (session_id, through) VALUES (?, ?)
+         ON CONFLICT(session_id) DO UPDATE SET through = MAX(through, excluded.through)`,
+        row.session_id, row.through
+      );
+    }
+  }
+
+  /** Keep the mark table bounded.
+   *
+   *  It holds a row per session ever evicted, including sessions with no
+   *  events left, so nothing else prunes it. Dropping the lowest marks first
+   *  means what is lost is the oldest history, and losing a mark degrades to
+   *  reporting NO gap — the same silence as before this existed, and only
+   *  for a session that fell out of the buffer `maxEvictionMarks` sessions
+   *  ago. Under-reporting is the safe direction; the alternative is claiming
+   *  a hole in a conversation that never had one. */
+  private trimEvictionMarks(): void {
+    this.ctx.storage.sql.exec(
+      `DELETE FROM eviction WHERE session_id NOT IN (
+         SELECT session_id FROM eviction ORDER BY through DESC LIMIT ?
+       )`,
+      MachineDO.maxEvictionMarks
+    );
+  }
+
+  /** Everything after `after` for one session, plus what it takes to know
+   *  whether anything in that range was dropped.
+   *
+   *  See `EventsResponse` for why the verdict rides on `evictedThrough` and
+   *  `since` rather than on `oldestSeq`, which cannot answer it. */
   eventsSince(sessionId: string, after: number): EventsResponse {
     const rows = this.ctx.storage.sql
       .exec<{
@@ -168,10 +248,17 @@ export class MachineDO extends DurableObject {
         `SELECT MIN(seq) AS seq FROM event WHERE session_id = ?`, sessionId
       )
       .toArray();
+    const evicted = this.ctx.storage.sql
+      .exec<{ through: number | null }>(
+        `SELECT through FROM eviction WHERE session_id = ?`, sessionId
+      )
+      .toArray();
     return {
       type: "events",
       sessionId,
       oldestSeq: oldest[0]?.seq ?? 0,
+      since: after,
+      evictedThrough: evicted[0]?.through ?? 0,
       events: rows.map((r) => ({
         type: "event" as const,
         seq: r.seq,

@@ -309,15 +309,100 @@ describe("session event ring buffer", () => {
     });
   });
 
-  it("reports an oldest seq the phone can read a gap from", async () => {
+  it("reports what it evicted so the phone can read a gap from it", async () => {
     const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-gap"));
     await runInDurableObject<MachineDO, void>(stub, async (instance) => {
       for (let i = 0; i < MachineDO.maxEventsPerSession + 5; i++) {
         instance.appendEvent(ev("s1", `t${i}`));
       }
-      // Asked from the very beginning, but the oldest still held is later —
-      // everything in between is gone and the phone must be able to see that.
-      expect(instance.eventsSince("s1", 0).oldestSeq).toBeGreaterThan(1);
+      // Asked from the very beginning, and five of this session's own events
+      // are gone. `evictedThrough > since` is the whole verdict.
+      const page = instance.eventsSince("s1", 0);
+      expect(page.since).toBe(0);
+      expect(page.evictedThrough).toBeGreaterThan(0);
+    });
+  });
+
+  // **The bug the eviction mark exists to kill, and it shipped once.**
+  // `seq` is one counter for the whole Mac, so a session's numbers are not
+  // consecutive. Judging continuity by comparing `oldestSeq` against what
+  // was asked for therefore reports a gap on a session that merely started
+  // late — which is nearly every session, since only the first one on a Mac
+  // begins at seq 1. Caught in review before it reached a phone.
+  it("reports no eviction for a session that merely started late", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-late-start"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      for (let i = 0; i < 9; i++) instance.appendEvent(ev("busy", `x${i}`));
+      instance.appendEvent(ev("late", "first"));
+      const page = instance.eventsSince("late", 0);
+      // The signal that used to be read as a gap, and is not one.
+      expect(page.oldestSeq).toBeGreaterThan(1);
+      // The signal that answers the question.
+      expect(page.evictedThrough).toBe(0);
+      expect(page.events.length).toBe(1);
+    });
+  });
+
+  it("reports no eviction once the phone has caught up past what was dropped", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-caught-up"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      for (let i = 0; i < MachineDO.maxEventsPerSession + 5; i++) {
+        instance.appendEvent(ev("s1", `t${i}`));
+      }
+      const dropped = instance.eventsSince("s1", 0).evictedThrough;
+      // A phone holding everything up to the last dropped event has lost
+      // nothing, however much the relay threw away before that point.
+      expect(instance.eventsSince("s1", dropped).evictedThrough).toBe(dropped);
+      expect(instance.eventsSince("s1", dropped).since).toBe(dropped);
+    });
+  });
+
+  // The state `oldestSeq` could not express at all: a session with no rows
+  // left reported 0, which is also what a session that never spoke reports.
+  it("records a mark for a session evicted in full", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-whole-session"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      const over = MachineDO.maxSessions + 1;
+      for (let i = 0; i < over; i++) instance.appendEvent(ev(`s${i}`, "x"));
+      const page = instance.eventsSince("s0", 0);
+      expect(page.events.length).toBe(0);
+      expect(page.oldestSeq).toBe(0);
+      expect(page.evictedThrough).toBeGreaterThan(0);
+    });
+  });
+
+  // A mark that could move backwards would retire a fact that is still true.
+  //
+  // **This pins the property, not the `MAX(...)` that expresses it — swapping
+  // that for a plain assignment leaves this green, measured.** Every delete
+  // takes a session's oldest rows, so a later mark is always the higher one
+  // and no fixture can separate the two implementations. Said here rather
+  // than left to read as coverage it does not provide.
+  it("never lowers an eviction mark", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-monotonic"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      for (let i = 0; i < MachineDO.maxEventsPerSession + 5; i++) {
+        instance.appendEvent(ev("s1", `t${i}`));
+      }
+      const first = instance.eventsSince("s1", 0).evictedThrough;
+      for (let i = 0; i < 3; i++) instance.appendEvent(ev("s1", `more${i}`));
+      expect(instance.eventsSince("s1", 0).evictedThrough).toBeGreaterThanOrEqual(first);
+    });
+  });
+
+  // The mark table holds a row per session ever evicted, including ones with
+  // no events left, so nothing else prunes it. Losing the oldest marks
+  // degrades to reporting no gap, which is the safe direction.
+  it("bounds the eviction mark table, dropping the oldest marks first", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-mark-cap"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      const total = MachineDO.maxEvictionMarks + MachineDO.maxSessions + 10;
+      for (let i = 0; i < total; i++) instance.appendEvent(ev(`s${i}`, "x"));
+      // Evicted earliest, so its mark is the first to go.
+      expect(instance.eventsSince("s0", 0).evictedThrough).toBe(0);
+      // Evicted too, but recently enough that its mark is still held.
+      const recent = total - MachineDO.maxSessions - 1;
+      expect(instance.eventsSince(`s${recent}`, 0).evictedThrough).toBeGreaterThan(0);
     });
   });
 

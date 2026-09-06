@@ -102,8 +102,15 @@ struct SessionConversationView: View {
     /// render time rather than handed a pre-filtered slice, so an event that
     /// arrives while this view is open lands without a re-plumb.
     let eventStore: SessionEventStore
-    /// Ask the relay for what this store is missing. Called once when the view
+    /// Ask the relay for what this store is missing. Called when the view
     /// appears; the socket answers on its own connection.
+    ///
+    /// Not the only caller of that request any more — since
+    /// Canopy-Mobile#24 the app re-asks whenever a socket opens under an
+    /// open conversation, because this one runs before a cold start has a
+    /// socket to deliver it. Which is why this view keeps no record of what
+    /// it asked for: it sees only its own ask, and the answer carries the
+    /// question back with it.
     let onRequestBackfill: (String, Int) -> Void
 
     @State private var items: [NotificationHistoryItem] = []
@@ -191,6 +198,26 @@ struct SessionConversationView: View {
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.top, 40)
+                        }
+                        // The relay's ring buffer had already dropped part of
+                        // what was asked for, so what follows is not the
+                        // start of this conversation. Without this the
+                        // partial range splices onto whatever was already
+                        // held and renders as continuous prose — a hole in
+                        // the transcript that nothing on screen admits to.
+                        //
+                        // Above the rows, not between them: the missing span
+                        // has no position among the rows that survived, and
+                        // placing it at a seam would claim to know where it
+                        // was.
+                        if eventStore.hasGap(sessionId: sessionId, machine: machine) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "ellipsis.circle")
+                                Text("Earlier events are no longer available")
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
                         }
                         ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                             if shouldShowDaySeparator(in: rows, at: index) {
@@ -536,6 +563,24 @@ private struct SessionEventBlock: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         case .turnStart, .turnEnd:
             EmptyView()
+        case .other(let raw):
+            // A kind this build does not know — the ordinary state after a
+            // Mac update, since Canopy ships first. Drawn as the same thin
+            // line a tool gets, with its own glyph and its raw name: the
+            // text is real and worth showing, but nothing here knows who
+            // said it, so it must not borrow the assistant card and put
+            // words in Canopy's mouth. Drawing nothing was the alternative
+            // and is the silent drop this whole fix exists to stop, only
+            // one row at a time instead of a whole page.
+            HStack(spacing: 6) {
+                Image(systemName: "circle.dashed")
+                    .font(.caption2)
+                Text("\(raw): \(event.text)")
+                    .font(.caption)
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
         case .assistant, .user:
             // The same card as a notification: header, then body, through the
             // same two shared views. The first version drew the body alone,

@@ -108,48 +108,94 @@ struct SessionEventStoreTests {
         #expect(store.lastSeq(sessionId: "live-process") == 4)
     }
 
-    @Test("A backfill that starts later than asked reports a gap")
+    @Test("An answer saying something in range was evicted reports a gap")
     func reportsAGap() {
         let store = SessionEventStore()
-        store.apply(backfill: [rec(10), rec(11)], oldestSeq: 10, sessionId: "s1", machine: mac)
-        #expect(store.hasGap(sessionId: "s1", machine: mac, requestedFrom: 0))
+        store.apply(backfill: [rec(10)], since: 0, evictedThrough: 4,
+                    sessionId: "s1", machine: mac)
+        #expect(store.hasGap(sessionId: "s1", machine: mac))
     }
 
-    @Test("A complete backfill reports no gap")
+    @Test("An answer saying nothing in range was evicted reports no gap")
     func reportsNoGap() {
         let store = SessionEventStore()
-        store.apply(backfill: [rec(1), rec(2)], oldestSeq: 1, sessionId: "s1", machine: mac)
-        #expect(!store.hasGap(sessionId: "s1", machine: mac, requestedFrom: 0))
+        store.apply(backfill: [rec(1), rec(2)], since: 0, evictedThrough: 0,
+                    sessionId: "s1", machine: mac)
+        #expect(!store.hasGap(sessionId: "s1", machine: mac))
     }
 
-    // The boundary, asserted from both sides. `events_since N` returns what
-    // comes AFTER N, so an oldest of exactly N+1 is complete and N+2 is not.
-    // Comparing against N instead of N+1 reports a gap on every first
-    // connection — which is how the off-by-one was found.
-    @Test("The gap boundary sits at requested + 1")
+    // **The category error this comparison replaced, kept as a fixture.**
+    // `seq` is one counter for the whole Mac, so a session that merely
+    // started after another one holds an oldest seq far above what was asked
+    // for while having lost nothing. The verdict must come from what the
+    // relay says it DELETED, never from where this session's numbers begin —
+    // the version that inferred it from adjacency would have told nearly
+    // every session its history was missing.
+    @Test("A session that merely started late reports no gap")
+    func lateStartingSessionIsNotAGap() {
+        let store = SessionEventStore()
+        // Asked from nothing, first event at seq 10, and the relay has
+        // deleted none of this session's events.
+        store.apply(backfill: [rec(10), rec(11)], since: 0, evictedThrough: 0,
+                    sessionId: "s1", machine: mac)
+        #expect(!store.hasGap(sessionId: "s1", machine: mac))
+    }
+
+    // The boundary, from both sides. An eviction that stops exactly at what
+    // was asked for took nothing the phone still wanted; one seq past it did.
+    @Test("The gap boundary sits at since")
     func gapBoundary() {
-        let flush = SessionEventStore()
-        flush.apply(backfill: [rec(6)], oldestSeq: 6, sessionId: "s1", machine: mac)
-        #expect(!flush.hasGap(sessionId: "s1", machine: mac, requestedFrom: 5))
-
-        let missing = SessionEventStore()
-        missing.apply(backfill: [rec(7)], oldestSeq: 7, sessionId: "s1", machine: mac)
-        #expect(missing.hasGap(sessionId: "s1", machine: mac, requestedFrom: 5))
+        #expect(!SessionEventStore.isGap(evictedThrough: 5, since: 5))
+        #expect(SessionEventStore.isGap(evictedThrough: 6, since: 5))
     }
 
-    // Never having asked is not the same as having been told nothing is
-    // missing. A store with no answer yet must not claim a hole.
+    // A relay deployed before it could answer this sends neither number.
+    // Silence is the only honest rendering, and it is what the phone did
+    // before the fields existed.
+    @Test("A relay that cannot answer reports no gap")
+    func missingFieldsMeanNoGapClaim() {
+        #expect(!SessionEventStore.isGap(evictedThrough: nil, since: 0))
+        #expect(!SessionEventStore.isGap(evictedThrough: 9, since: nil))
+    }
+
+    // Never having been answered is not the same as having been told nothing
+    // is missing. A live `event` frame is not an answer.
     @Test("A session that has had no backfill answer reports no gap")
     func noAnswerMeansNoGapClaim() {
         let store = SessionEventStore()
         store.apply(rec(9), machine: mac)
-        #expect(!store.hasGap(sessionId: "s1", machine: mac, requestedFrom: 0))
+        #expect(!store.hasGap(sessionId: "s1", machine: mac))
+    }
+
+    // The verdict is per machine as well as per session, for the reason
+    // every other number here is: seq is minted per Durable Object.
+    @Test("A verdict recorded for one Mac does not answer for another")
+    func verdictsAreScopedToTheirMachine() {
+        let store = SessionEventStore()
+        store.apply(backfill: [rec(10)], since: 0, evictedThrough: 4,
+                    sessionId: "s1", machine: mac)
+        #expect(store.hasGap(sessionId: "s1", machine: mac))
+        #expect(!store.hasGap(sessionId: "s1", machine: "other-mac"))
+    }
+
+    // A later answer replaces the earlier verdict rather than accumulating
+    // with it: the phone has since caught up past what was dropped, and a
+    // gap it can no longer be missing must stop being reported.
+    @Test("A later answer replaces the earlier verdict")
+    func laterAnswerReplacesTheVerdict() {
+        let store = SessionEventStore()
+        store.apply(backfill: [rec(10)], since: 0, evictedThrough: 4,
+                    sessionId: "s1", machine: mac)
+        store.apply(backfill: [rec(11)], since: 10, evictedThrough: 4,
+                    sessionId: "s1", machine: mac)
+        #expect(!store.hasGap(sessionId: "s1", machine: mac))
     }
 
     @Test("A backfill's own records land in the store")
     func backfillIsStored() {
         let store = SessionEventStore()
-        store.apply(backfill: [rec(1), rec(2)], oldestSeq: 1, sessionId: "s1", machine: mac)
+        store.apply(backfill: [rec(1), rec(2)], since: 0, evictedThrough: 0,
+                    sessionId: "s1", machine: mac)
         #expect(store.events(sessionId: "s1", resumeId: nil).count == 2)
         #expect(store.lastSeq(sessionId: "s1") == 2)
     }
@@ -203,6 +249,69 @@ struct SessionEventStoreTests {
         #expect(record.text == "Bash: npm test")
         #expect(record.resumeId == nil)
     }
+
+    @Test("A kind this build does not know decodes rather than throwing")
+    func unknownKindDecodes() throws {
+        let json = """
+        {"type":"event","seq":4,"eventId":"abc","sessionId":"s1","resumeId":null,
+         "kind":"reasoning","text":"...","at":0}
+        """
+        let record = try JSONDecoder().decode(SessionEventRecord.self, from: Data(json.utf8))
+        #expect(record.kind == .other("reasoning"))
+        // The text survives, which is what makes the row worth drawing at
+        // all rather than dropping.
+        #expect(record.text == "...")
+    }
+
+    // **The defect the tolerant decode exists for, at its real scale.** A
+    // backfill answer decodes as an array, so under the strict enum one
+    // unrecognised kind threw and took every sibling event with it — the
+    // phone drew a conversation missing the whole page the relay had just
+    // sent. Asserting the single-record case alone would not have caught
+    // that: it is the array that turns one row into two hundred.
+    @Test("One unknown kind does not discard the rest of the page")
+    func unknownKindDoesNotVoidThePage() throws {
+        let json = """
+        [{"seq":1,"eventId":"e1","sessionId":"s1","resumeId":null,
+          "kind":"assistant","text":"one","at":0},
+         {"seq":2,"eventId":"e2","sessionId":"s1","resumeId":null,
+          "kind":"reasoning","text":"two","at":0},
+         {"seq":3,"eventId":"e3","sessionId":"s1","resumeId":null,
+          "kind":"tool","text":"three","at":0}]
+        """
+        let page = try JSONDecoder().decode([SessionEventRecord].self, from: Data(json.utf8))
+        #expect(page.count == 3)
+        #expect(page.map(\.kind) == [.assistant, .other("reasoning"), .tool])
+    }
+
+    // Encoding is the half nothing on the wire exercises, so it is the half
+    // that can rot unnoticed: an `.other` that encoded as its case name
+    // rather than its raw value would round-trip into a DIFFERENT unknown
+    // kind and nothing would report it.
+    @Test("An unknown kind round-trips under its own name")
+    func unknownKindRoundTrips() throws {
+        let original = SessionEventRecord(seq: 1, eventId: "e", sessionId: "s1", resumeId: nil,
+                                          kind: .other("reasoning"), text: "t",
+                                          at: Date(timeIntervalSince1970: 0))
+        let back = try JSONDecoder().decode(SessionEventRecord.self,
+                                            from: try JSONEncoder().encode(original))
+        #expect(back == original)
+        #expect(back.kind == .other("reasoning"))
+    }
+
+    // The five known spellings are the wire contract, not an internal
+    // detail: renaming a case silently reclassifies every event of that kind
+    // as `.other`, which still decodes and still draws — just wrongly, and
+    // with no error anywhere. Pinned as raw strings on purpose.
+    @Test("The known kinds keep their wire spellings")
+    func knownKindSpellings() {
+        let spellings = ["assistant", "user", "tool", "turnStart", "turnEnd"]
+        for spelling in spellings {
+            let kind = SessionEventRecord.Kind(rawValue: spelling)
+            #expect(kind.rawValue == spelling)
+            if case .other = kind { Issue.record("\(spelling) fell through to .other") }
+        }
+    }
 }
 
 /// The classifier is where a snapshot and an event could be confused, and the
@@ -248,6 +357,45 @@ struct RosterSocketFrameTests {
         }
         #expect(page.oldestSeq == 5)
         #expect(page.events.count == 1)
+        // A relay that predates the eviction fields sends neither, and the
+        // page must still decode — a required field here would drop every
+        // backfill until the relay was redeployed.
+        #expect(page.since == nil)
+        #expect(page.evictedThrough == nil)
+    }
+
+    @Test("A backfill page carries the relay's eviction verdict when it has one")
+    func backfillCarriesTheVerdict() {
+        let json = """
+        {"type":"events","sessionId":"s1","oldestSeq":30,"since":4,"evictedThrough":29,
+         "events":[]}
+        """
+        guard case .backfill(let page)? = RosterSocket.decode(data(json)) else {
+            Issue.record("expected a backfill page"); return
+        }
+        #expect(page.since == 4)
+        #expect(page.evictedThrough == 29)
+        #expect(SessionEventStore.isGap(evictedThrough: page.evictedThrough, since: page.since))
+    }
+
+    // The same tolerance, asserted where production actually decodes. This
+    // is `try?` — a throw here does not surface as a bad page, it returns
+    // nil and the frame is dropped whole, which on the strict enum meant an
+    // unknown kind anywhere in a page silently cost the entire backfill.
+    @Test("A page carrying an unknown kind still classifies as a backfill")
+    func backfillSurvivesAnUnknownKind() {
+        let json = """
+        {"type":"events","sessionId":"s1","oldestSeq":5,"events":[
+          {"seq":5,"eventId":"e5","sessionId":"s1","resumeId":null,
+           "kind":"user","text":"go","at":0},
+          {"seq":6,"eventId":"e6","sessionId":"s1","resumeId":null,
+           "kind":"reasoning","text":"hmm","at":0}]}
+        """
+        guard case .backfill(let page)? = RosterSocket.decode(data(json)) else {
+            Issue.record("expected a backfill page"); return
+        }
+        #expect(page.events.count == 2)
+        #expect(page.events[1].kind == .other("reasoning"))
     }
 
     // The relay may grow a message this build has never heard of. Forcing it

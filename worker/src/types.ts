@@ -190,15 +190,43 @@ export interface StoredSessionEvent extends SessionEventMessage {
 
 /** The answer to a watcher's backfill request.
  *
- *  **`oldestSeq` is the load-bearing field.** It is the oldest seq the relay
- *  still holds for that session; when it is greater than what the watcher
- *  asked for, everything between is gone for good. Returning the events
- *  without it would let the phone splice a partial range onto what it has as
- *  if the two were contiguous. */
+ *  **`evictedThrough` and `since` are the pair that answers "did anything I
+ *  asked for get dropped".** Everything else here is the payload.
+ *
+ *  The obvious signal — compare `oldestSeq` against what was asked for — is
+ *  WRONG, and shipped once before a reviewer caught it. `seq` is one
+ *  autoincrementing key shared by every session on the Mac, while a backfill
+ *  filters to a single session, so one session's events are not consecutive:
+ *  a session whose first event landed at seq 10 because other sessions used
+ *  1–9 reports `oldestSeq: 10` against a request from 0 and looks exactly
+ *  like a session that lost nine events. Nothing about per-session
+ *  continuity can be inferred from a global counter's adjacency, so the
+ *  relay states the fact instead. */
 export interface EventsResponse {
   type: "events";
   sessionId: string;
+  /** The oldest seq still held for this session, or 0 when none is.
+   *
+   *  **Kept for older phone builds, which require the field to decode, and
+   *  no longer used to decide anything.** See above for why it cannot. */
   oldestSeq: number;
+  /** Echo of the `seq` the watcher asked from.
+   *
+   *  Here so a verdict cannot be assembled from two different exchanges. The
+   *  phone used to hold this number itself, which let a mark recorded for a
+   *  request that never went out be compared against an older answer — a
+   *  known gap silently hidden. A mark that travels with its own answer
+   *  cannot be mispaired. */
+  since: number;
+  /** The highest seq of this session that the relay has deleted, or 0 if it
+   *  has never deleted any.
+   *
+   *  A gap is exactly `evictedThrough > since`: that event belonged to this
+   *  session, sat inside the range asked for, and is gone. It also covers a
+   *  session evicted in full by the session cap, which the `oldestSeq`
+   *  comparison could not express at all — a session with no rows left
+   *  reported 0, indistinguishable from one that had never spoken. */
+  evictedThrough: number;
   events: StoredSessionEvent[];
 }
 

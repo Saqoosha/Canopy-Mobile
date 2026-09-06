@@ -20,8 +20,60 @@ struct SessionEventRecord: Codable, Identifiable, Hashable, Sendable {
 
     var id: String { eventId }
 
-    enum Kind: String, Codable, Sendable {
+    /// What the event is.
+    ///
+    /// **Decoding is deliberately total: an unrecognised value becomes
+    /// `.other` rather than throwing.** A backfill answer decodes as an
+    /// ARRAY, so a strict enum turned one unknown kind into the loss of the
+    /// whole page — up to `maxEventsPerSession` events — and the phone drew
+    /// a conversation missing everything the relay had just sent. The blast
+    /// radius was wildly out of proportion to the cause, and the cause is
+    /// the ordinary one: Canopy ships before this app does, so a kind this
+    /// build has never heard of is the expected steady state after a Mac
+    /// update, not a corruption.
+    ///
+    /// The relay is deliberately NOT the place this is handled. It is a
+    /// pipe; validating there would make a relay deploy a prerequisite for
+    /// Canopy emitting anything new, which is the wrong way round — the Mac
+    /// is what ships first. See Canopy-Mobile#25.
+    enum Kind: Codable, Sendable, Hashable {
         case assistant, user, tool, turnStart, turnEnd
+        /// A kind this build does not know, carried verbatim. It still has
+        /// `text`, so it can be drawn as a neutral one-liner; what it must
+        /// never do is borrow another kind's presentation and claim the Mac
+        /// said something it did not.
+        case other(String)
+
+        var rawValue: String {
+            switch self {
+            case .assistant: return "assistant"
+            case .user: return "user"
+            case .tool: return "tool"
+            case .turnStart: return "turnStart"
+            case .turnEnd: return "turnEnd"
+            case .other(let raw): return raw
+            }
+        }
+
+        init(rawValue: String) {
+            switch rawValue {
+            case "assistant": self = .assistant
+            case "user": self = .user
+            case "tool": self = .tool
+            case "turnStart": self = .turnStart
+            case "turnEnd": self = .turnEnd
+            default: self = .other(rawValue)
+            }
+        }
+
+        init(from decoder: Decoder) throws {
+            self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            try container.encode(rawValue)
+        }
     }
 }
 
@@ -47,8 +99,15 @@ final class SessionEventStore {
         /// Keyed by `seq`, so a record arriving twice cannot appear twice.
         /// The backfill after a reconnect and the live fan-out overlap.
         var bySeq: [Int: SessionEventRecord] = [:]
-        /// The oldest seq the relay reported holding, per session.
-        var oldestHeld: [String: Int] = [:]
+        /// Whether the last backfill answer for that session said something
+        /// inside the asked-for range had been thrown away.
+        ///
+        /// **A verdict, not the numbers behind it.** The relay decides this
+        /// from facts only it has, and both halves arrive in the same
+        /// message, so there is nothing here to pair up wrongly — an earlier
+        /// design kept the "asked from" mark on this side and could compare
+        /// it against a different exchange's answer.
+        var gapReported: [String: Bool] = [:]
         // **No per-Mac high-water mark lives here on purpose.** There was
         // one, and it is the exact notion `lastSeq(sessionId:)` replaced: the
         // relay resumes per session, so a Mac-wide maximum asks one session
@@ -106,29 +165,52 @@ final class SessionEventStore {
         byMachine[machine] = slice
     }
 
-    func apply(backfill: [SessionEventRecord], oldestSeq: Int, sessionId: String, machine: String) {
+    /// Take a backfill answer: its records, and the relay's verdict on
+    /// whether anything inside the asked-for range was thrown away.
+    ///
+    /// `since` and `evictedThrough` are optional because a relay deployed
+    /// before they existed sends neither; two nils record no gap, which is
+    /// the behaviour that preceded them.
+    func apply(backfill: [SessionEventRecord], since: Int?, evictedThrough: Int?,
+               sessionId: String, machine: String) {
         var slice = byMachine[machine] ?? MachineEvents()
-        slice.oldestHeld[sessionId] = oldestSeq
+        slice.gapReported[sessionId] = Self.isGap(evictedThrough: evictedThrough, since: since)
         byMachine[machine] = slice
         for record in backfill { apply(record, machine: machine) }
     }
 
-    /// Whether everything between what was asked for and what came back is
-    /// gone for good.
+    /// Whether the relay has told this store that part of what it asked for
+    /// is gone for good.
     ///
     /// **Splicing a partial range on silently is the failure this exists to
     /// prevent** — the phone would render a conversation with a hole in it as
-    /// though it were continuous. A store that has never received a backfill
-    /// answer reports no gap: it has not asked, so it has not been told.
+    /// though it were continuous. A store that has received no backfill
+    /// answer for the session reports no gap: it has not been told.
+    func hasGap(sessionId: String, machine: String) -> Bool {
+        byMachine[machine]?.gapReported[sessionId] ?? false
+    }
+
+    /// The verdict, from the two numbers the relay sends with every answer.
     ///
-    /// The comparison is against `requested + 1`, not `requested`, and the
-    /// off-by-one is the whole content of this function: `events_since N`
-    /// means "everything AFTER N", so an oldest held seq of exactly `N + 1`
-    /// is a complete answer with nothing missing. Comparing against
-    /// `requested` reports a gap on every first connection.
-    func hasGap(sessionId: String, machine: String, requestedFrom requested: Int) -> Bool {
-        guard let oldest = byMachine[machine]?.oldestHeld[sessionId], oldest > 0 else { return false }
-        return oldest > requested + 1
+    /// **`evictedThrough` is the highest seq of THIS SESSION the relay has
+    /// deleted, so `> since` is exact rather than inferred**: that event
+    /// belonged to this session, sat inside the range asked for, and is
+    /// gone. The comparison this replaced comes with a cautionary tale — it
+    /// used the oldest seq still held and asked whether it exceeded
+    /// `since + 1`, which reads as an off-by-one puzzle and is really a
+    /// category error. `seq` is one counter for the whole Mac, so a
+    /// session's own events are not consecutive, and a session that merely
+    /// started after another one reports an oldest seq well above what was
+    /// asked for while having lost nothing. Nearly every session would have
+    /// been told its history was missing. Caught in review before it
+    /// reached a phone; the relay states the fact now instead.
+    ///
+    /// Either number missing means the relay predates the fact and cannot
+    /// answer, which is not the same as answering no — but silence is the
+    /// only honest rendering, and it is what the phone did before.
+    static func isGap(evictedThrough: Int?, since: Int?) -> Bool {
+        guard let evictedThrough, let since else { return false }
+        return evictedThrough > since
     }
 
     /// One session's events in relay order.

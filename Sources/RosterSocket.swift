@@ -85,14 +85,24 @@ final class RosterSocket {
                     decoded = Self.decode(data)
                 }
                 Task { @MainActor in
+                    // **Same identity check the failure branch makes, and for
+                    // a reason that got sharper with the stream.** A frame
+                    // read from a task this object has already replaced is
+                    // from a socket nobody asked for: with only snapshots it
+                    // meant a stale roster, and now it also means events and
+                    // a whole backfill page landing in the store under a
+                    // machine whose live socket is somewhere else. Worse, the
+                    // loop re-armed on the OLD task, so a discarded socket
+                    // kept receiving forever. Found by review.
+                    guard let self, self.task === task else { return }
                     switch decoded {
                     case .snapshot(let snapshot): onSnapshot(snapshot)
                     case .event(let record): onEvent(record)
                     case .backfill(let page): onBackfill(page.events, page.oldestSeq, page.sessionId)
                     case nil: break
                     }
-                    self?.receive(on: task, onSnapshot: onSnapshot, onEvent: onEvent,
-                                  onBackfill: onBackfill, onFailure: onFailure)
+                    self.receive(on: task, onSnapshot: onSnapshot, onEvent: onEvent,
+                                 onBackfill: onBackfill, onFailure: onFailure)
                 }
             case .failure(let error):
                 Task { @MainActor in

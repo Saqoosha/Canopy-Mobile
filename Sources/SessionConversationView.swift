@@ -123,7 +123,16 @@ struct SessionConversationView: View {
     @State private var didInitialScroll = false
 
     var body: some View {
-        ScrollViewReader { proxy in
+        // **Bound once per pass, not read as a computed property.** `rows`
+        // merges the notifications with `eventStore.events(...)`, which
+        // flat-maps every event of every session on every Mac and then
+        // sorts twice. Reading it from the `ForEach`, from
+        // `shouldShowDaySeparator` once per row, from `rows.isEmpty` and
+        // from two `onChange` keys made that N+4 full evaluations per body
+        // pass, in a deliberately non-lazy `VStack` where every row is built
+        // every time. The version this replaced indexed a stored array.
+        let rows = self.rows
+        return ScrollViewReader { proxy in
                 ScrollView {
                     // **`VStack`, not `LazyVStack`, and that is the fix.**
                     // A lazy stack estimates the height of rows it has not
@@ -222,7 +231,7 @@ struct SessionConversationView: View {
                     // with a Mac-wide mark — which is what the first version
                     // did — returns nothing for any session whose events all
                     // sit below whatever the busiest session reached.
-                    onRequestBackfill(sessionId, eventStore.lastSeq(sessionId: sessionId, resumeId: resumeId))
+                    onRequestBackfill(sessionId, eventStore.lastSeq(sessionId: sessionId))
                 }
                 // **The anchor alone is not enough, and the comment above
                 // says why without following it through.** It resolves during

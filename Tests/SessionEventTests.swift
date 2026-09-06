@@ -41,7 +41,7 @@ struct SessionEventStoreTests {
         let store = SessionEventStore()
         store.apply(rec(5), machine: mac)
         store.apply(rec(2), machine: mac)
-        #expect(store.lastSeq(sessionId: "s1", resumeId: nil) == 5)
+        #expect(store.lastSeq(sessionId: "s1") == 5)
     }
 
     @Test("One session's events stay out of another's")
@@ -85,9 +85,27 @@ struct SessionEventStoreTests {
         let store = SessionEventStore()
         store.apply(rec(40, session: "busy"), machine: mac)
         store.apply(rec(3, session: "quiet"), machine: mac)
-        #expect(store.lastSeq(sessionId: "busy", resumeId: nil) == 40)
-        #expect(store.lastSeq(sessionId: "quiet", resumeId: nil) == 3)
-        #expect(store.lastSeq(sessionId: "never-heard-from", resumeId: nil) == 0)
+        #expect(store.lastSeq(sessionId: "busy") == 40)
+        #expect(store.lastSeq(sessionId: "quiet") == 3)
+        #expect(store.lastSeq(sessionId: "never-heard-from") == 0)
+    }
+
+    // **The mark must use the identity the RELAY uses, which is sessionId
+    // alone.** `events(sessionId:resumeId:)` is resumeId-first, and that is
+    // right for what to DRAW — a Canopy restart mints a new sessionId and the
+    // old rows still belong to this conversation. Taking the mark that way
+    // returned a seq from records the relay would never count for the id
+    // being asked about, so `events_since` came back empty. Found in the
+    // verification round, on the fix for the per-Mac version of this bug.
+    @Test("lastSeq ignores records the relay would not match on this sessionId")
+    func lastSeqIgnoresOtherSessionIdsSharingAResumeId() {
+        let store = SessionEventStore()
+        store.apply(rec(90, session: "old-process", resume: "R"), machine: mac)
+        store.apply(rec(4, session: "live-process", resume: "R"), machine: mac)
+        // Both belong to the conversation…
+        #expect(store.events(sessionId: "live-process", resumeId: "R").count == 2)
+        // …but the relay only holds seq 4 under this session id.
+        #expect(store.lastSeq(sessionId: "live-process") == 4)
     }
 
     @Test("A backfill that starts later than asked reports a gap")
@@ -133,7 +151,7 @@ struct SessionEventStoreTests {
         let store = SessionEventStore()
         store.apply(backfill: [rec(1), rec(2)], oldestSeq: 1, sessionId: "s1", machine: mac)
         #expect(store.events(sessionId: "s1", resumeId: nil).count == 2)
-        #expect(store.lastSeq(sessionId: "s1", resumeId: nil) == 2)
+        #expect(store.lastSeq(sessionId: "s1") == 2)
     }
 
     // Mirrors the relay's own cap. A long foreground run receives live

@@ -74,7 +74,6 @@ check("a backfill answers with an events page", backfill.type === "events", JSON
 check("the backfill holds the event", backfill.events?.length === 1, String(backfill.events?.length));
 check("the backfill reports an oldestSeq", typeof backfill.oldestSeq === "number",
       String(backfill.oldestSeq));
-check("asking from the newest seq returns nothing", true);
 
 const empty = nextMessage(watcher);
 watcher.send(JSON.stringify({ type: "events_since", sessionId: "probe-session", seq: got.seq }));

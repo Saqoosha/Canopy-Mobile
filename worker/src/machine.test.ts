@@ -349,6 +349,25 @@ describe("session event ring buffer", () => {
     });
   });
 
+  // **The ASCII fixture above cannot fail for the safeSlice fix**: at 8192
+  // ASCII characters `.slice` and `safeSlice` return the same string, so
+  // reverting to `.slice` leaves it green. This one cuts inside a run of
+  // astral-plane characters, where `.slice` counts UTF-16 units and leaves a
+  // lone surrogate that the phone's JSON decode rejects — taking the whole
+  // backfill page with it.
+  it("does not split a surrogate pair when capping", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-surrogate"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      instance.appendEvent({ ...ev("s1", "x"), text: "🍎".repeat(9000) });
+      const stored = instance.eventsSince("s1", 0).events[0].text;
+      // No unpaired surrogate anywhere in the stored text.
+      expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(stored))
+        .toBe(false);
+      // And it is cut by code point, so every kept character is whole.
+      expect(Array.from(stored).length).toBe(MachineDO.maxEventTextLength);
+    });
+  });
+
   it("keeps a Swift reference-date timestamp intact", async () => {
     const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-time"));
     await runInDurableObject<MachineDO, void>(stub, async (instance) => {

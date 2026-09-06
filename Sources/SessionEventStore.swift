@@ -49,8 +49,13 @@ final class SessionEventStore {
         var bySeq: [Int: SessionEventRecord] = [:]
         /// The oldest seq the relay reported holding, per session.
         var oldestHeld: [String: Int] = [:]
-        /// The highest seq seen from this Mac.
-        var lastSeq: Int = 0
+        // **No per-Mac high-water mark lives here on purpose.** There was
+        // one, and it is the exact notion `lastSeq(sessionId:)` replaced: the
+        // relay resumes per session, so a Mac-wide maximum asks one session
+        // to resume from another session's progress. A correctly-maintained
+        // field of that shape is a loaded gun — the next reader finds it,
+        // uses it, and reintroduces the bug with a comment vouching for it.
+        // Two reviewers said so independently.
     }
 
     /// How many events one session keeps on the phone. Mirrors the relay's
@@ -71,8 +76,23 @@ final class SessionEventStore {
     /// ?`, so a session whose events all sit below that mark comes back
     /// empty and its history never arrives. Found by three reviewers on the
     /// first version, which did exactly that.
-    func lastSeq(sessionId: String, resumeId: String?) -> Int {
-        events(sessionId: sessionId, resumeId: resumeId).last?.seq ?? 0
+    ///
+    /// **And matched on `sessionId` EXACTLY — deliberately not through
+    /// `events(sessionId:resumeId:)`.** That reader is resumeId-first, which
+    /// is right for deciding what to DRAW (a Canopy restart mints a new
+    /// sessionId and the old rows still belong to this conversation) and
+    /// wrong for deciding what to ASK, because the relay answers
+    /// `WHERE session_id = ? AND seq > ?` and knows nothing about resumeId.
+    /// Taking the mark across both ids returned a seq the relay would never
+    /// have counted for the id being asked about, so the request came back
+    /// empty. Found in the verification round, on the fix for the per-Mac
+    /// version of this same mismatch.
+    func lastSeq(sessionId: String, resumeId _: String? = nil) -> Int {
+        byMachine.values
+            .flatMap { $0.bySeq.values }
+            .filter { $0.sessionId == sessionId }
+            .map(\.seq)
+            .max() ?? 0
     }
 
     func apply(_ record: SessionEventRecord, machine: String) {
@@ -83,7 +103,6 @@ final class SessionEventStore {
             slice.bySeq[record.seq] = record
             Self.trim(&slice, sessionId: record.sessionId)
         }
-        slice.lastSeq = max(slice.lastSeq, record.seq)
         byMachine[machine] = slice
     }
 

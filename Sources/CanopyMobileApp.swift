@@ -173,6 +173,13 @@ struct CanopyMobileApp: App {
                 }
             }
             .task {
+                // BEFORE the refresh, not after: a tap that arrived while this
+                // scene did not exist yet is the whole reason `pendingTap`
+                // exists, and making it wait on a network round trip would put
+                // the roster on screen first and navigate out from under the
+                // user a second later. `handleReplyRequested` no longer needs a
+                // snapshot to open a conversation.
+                consumePendingNotificationTap()
                 await refresh()
                 // The live app is fed by the roster socket, so it never polls.
                 // The fixtures have no socket; re-publishing every 30 s is
@@ -186,13 +193,31 @@ struct CanopyMobileApp: App {
             }
             .onReceive(NotificationCenter.default.publisher(for: .canopyMobileReplyRequested)) { notification in
                 guard let machine = notification.userInfo?["machine"] as? String,
-                      let sessionId = notification.userInfo?["sessionId"] as? String else { return }
+                      let sessionId = notification.userInfo?["sessionId"] as? String
+                else {
+                    // Says the same thing `consumePendingNotificationTap` says
+                    // for the same payload arriving the other way. The two
+                    // routes read identical fields; they should fail alike.
+                    NSLog("Notification tap discarded: no machine/sessionId in the posted payload")
+                    return
+                }
+                // Acted on here, so the held copy must not be acted on again.
+                PushRegistrar.pendingTap = nil
                 handleReplyRequested(machine: machine, sessionId: sessionId,
+                                      resumeId: notification.userInfo?["resumeId"] as? String,
                                       requestId: notification.userInfo?["requestId"] as? String)
             }
             .onChange(of: scenePhase, initial: true) { _, phase in
                 switch phase {
                 case .active:
+                    // Both this and `.task` consume; whichever runs first
+                    // clears `pendingTap` and the other finds nil, so the
+                    // ordering between them does not have to be known. What
+                    // this one adds is coverage for an activation with no
+                    // fresh `.task` — a scene disconnected and reconnected
+                    // inside a living process — and it costs nothing on every
+                    // ordinary activation, where `pendingTap` is already nil.
+                    consumePendingNotificationTap()
                     reconnect()
                 default:
                     // Cancel before disconnecting: a `connectAll()` still
@@ -391,32 +416,98 @@ struct CanopyMobileApp: App {
         socket?.requestEvents(sessionId: sessionId, since: seq)
     }
 
-    /// A notification tap carries only `machine` + `sessionId` (see
-    /// `PushRegistrar`) — no title, no project, nothing to render a sheet
-    /// with. The matching `PaneRow` is looked up from whatever snapshot is
-    /// already in memory. If that machine hasn't been fetched yet, or the
-    /// pane closed between the push firing and the tap landing, there is
-    /// A tap on a push lands on that session's conversation, whatever the
-    /// push was and whichever tab was frontmost. There is nothing to branch
-    /// on any more: an unanswered permission ask renders its own Allow/Deny
-    /// inline in that stream, so the tap does not have to decide in advance
-    /// whether the user came to answer or to reply.
+    /// Acts on a notification tap that had nowhere to go when it arrived.
     ///
-    /// The title prefers the live roster pane and falls back to the history
-    /// item, because a notification can name a session the roster has not
-    /// listed yet (a pane opened between polls) — and landing on the right
-    /// conversation with a plain title beats declining to open at all, which
-    /// is what the pane-only lookup used to do.
-    private func handleReplyRequested(machine: String, sessionId: String, requestId: String?) {
-        let pane = snapshots[machine]?.panes.first { $0.sessionId == sessionId }
-        let item = (try? HistoryStore.loadAll())?.first {
-            $0.machine == machine && $0.sessionId == sessionId
+    /// See `PushRegistrar.pendingTap` for what drops the tap in the first
+    /// place. This reads the same fields `.onReceive` reads, because it is the
+    /// same payload taking a different route in.
+    private func consumePendingNotificationTap() {
+        guard let info = PushRegistrar.pendingTap else { return }
+        PushRegistrar.pendingTap = nil
+        guard let machine = info["machine"] as? String,
+              let sessionId = info["sessionId"] as? String
+        else {
+            NSLog("Pending notification tap discarded: no machine/sessionId in the held payload")
+            return
         }
-        guard let title = pane?.title ?? item?.title else { return }
+        handleReplyRequested(machine: machine, sessionId: sessionId,
+                             resumeId: info["resumeId"] as? String,
+                             requestId: info["requestId"] as? String)
+    }
+
+    /// A notification tap carries `machine` and `sessionId`, plus `resumeId`
+    /// and `requestId` when the push had them (see `PushRegistrar`) — no
+    /// title, no project, nothing to name the session with. Those come from
+    /// the roster snapshot already in memory, or failing that from the stored
+    /// history entry.
+    ///
+    /// A tap lands on that session's conversation, whatever the push was and
+    /// wherever the user was. There is nothing to branch on: an unanswered
+    /// permission ask renders its own Allow/Deny inline in that stream, so the
+    /// tap does not have to decide in advance whether the user came to answer
+    /// or to reply.
+    private func handleReplyRequested(machine: String, sessionId: String,
+                                      resumeId: String?, requestId: String?) {
+        let pane = snapshots[machine]?.panes.first { $0.sessionId == sessionId }
+        // Read with a `catch`, not `try?`. A `try?` folds
+        // `containerUnavailable` and every decode failure into the same nil an
+        // absent entry produces, and the line below then reports "no history
+        // entry" — a diagnosis this code never made. "The store would not
+        // open" and "this session has not notified" want different responses,
+        // and the first means every push since has been lost.
+        var item: NotificationHistoryItem?
+        do {
+            item = try HistoryStore.loadAll().first {
+                $0.machine == machine && $0.sessionId == sessionId
+            }
+        } catch {
+            NSLog("Notification tap: history unreadable for machine=%@ session=%@: %@",
+                  machine, sessionId, String(describing: error))
+        }
+        // **A tap ALWAYS navigates.** The version this replaced bailed out
+        // when neither lookup produced a title, which left `path` holding
+        // whatever conversation was already on screen — so the tap looked
+        // like it had opened the wrong session, and nothing anywhere said
+        // otherwise. Both lookups can legitimately miss: `snapshots` is empty
+        // until the first directory fetch lands (a cold start driven by the
+        // tap is exactly that window), and the history entry is absent when
+        // the extension's append failed or the entry has been pruned past
+        // `maxItems`. Landing on the right session with a placeholder title
+        // beats landing on somebody else's session with a correct one.
+        let title = pane?.title ?? item?.title ?? "Session"
+        if pane == nil, item == nil {
+            // Surfaced, never swallowed: this is the state that used to be
+            // indistinguishable from "the tap did nothing".
+            NSLog("Notification tap: no roster pane and no history entry for machine=\(machine) session=\(sessionId) — opening with a placeholder title")
+        }
+        // **Already here? Then stay.** A second push for the session on
+        // screen used to re-assign `path` with a target that legitimately
+        // differed — the first tap may have opened under the placeholder with
+        // the machine id as its subtitle, the second carries the roster's
+        // title and project. `Route` is `Hashable` and
+        // `navigationDestination(for:)` keys on the value, so a changed value
+        // at the same depth is a teardown and rebuild: the new view's
+        // `onAppear` sets `viewedSession`, then the old view's `onDisappear`
+        // finds a matching `sessionId` and clears it, leaving `connectAll`'s
+        // `onOpen` with no session to re-ask a backfill for while that
+        // conversation is on screen. That is Canopy-Mobile#24's silent gap,
+        // reintroduced by a navigation that had nothing to do.
+        //
+        // Compared on identity alone, not on the whole target: the title and
+        // subtitle are what differ between two taps for one session, and they
+        // are exactly what must not count as a different destination.
+        if case .conversation(let current)? = path.last,
+           current.machine == machine, current.sessionId == sessionId {
+            return
+        }
         path = [.conversation(ConversationTarget(
             machine: machine,
             sessionId: sessionId,
-            resumeId: pane?.resumeId ?? item?.resumeId,
+            // The push's own `resumeId` is the last fallback rather than the
+            // first choice: the roster and the history both carry the id this
+            // phone has been grouping under, and the payload is only better
+            // than nothing when neither of them answered.
+            resumeId: pane?.resumeId ?? item?.resumeId ?? resumeId,
             title: title,
             subtitle: pane?.project ?? machine
         ))]
@@ -452,7 +543,14 @@ struct CanopyMobileApp: App {
     private func sendDecision(item: NotificationHistoryItem, decision: String,
                               answers: [String: String]? = nil,
                               recordAs: String? = nil) {
-        guard let requestId = item.requestId else { return }
+        guard let requestId = item.requestId else {
+            // Surfaced, never swallowed. Returning quietly here left the
+            // buttons on screen and the ask answerable again, with the tap
+            // having done nothing at all — indistinguishable from a button
+            // that had not been pressed.
+            NSLog("Permission decision skipped: history entry \(item.id) carries no requestId")
+            return
+        }
         // Answering in demo mode moves the fixture rather than the relay, so
         // the roster row flips to "working" the way it would after a real one.
         if CanopyDemo.isEnabled {
@@ -470,17 +568,17 @@ struct CanopyMobileApp: App {
                                                    answers: answers)
                     delivered = true
                 } catch {
-                    print("Permission decision POST failed: \(error.localizedDescription)")
+                    NSLog("Permission decision POST failed: %@", String(describing: error))
                 }
             } else {
-                print("Permission decision skipped: relay not configured")
+                NSLog("Permission decision skipped: relay not configured")
             }
             do {
                 try HistoryStore.updateDecision(requestId: requestId,
                                                  decision: recordAs ?? decision,
                                                  decidedAt: decidedAt, delivered: delivered)
             } catch {
-                print("HistoryStore.updateDecision failed: \(error.localizedDescription)")
+                NSLog("HistoryStore.updateDecision failed for requestId=%@: %@", requestId, String(describing: error))
             }
         }
     }
@@ -499,13 +597,25 @@ struct CanopyMobileApp: App {
         }
     }
 
-    @ViewBuilder
     private func conversation(_ target: ConversationTarget) -> some View {
-        SessionConversationView(
+        // Resolved once and used twice, for the header's title as well as its
+        // dot. Both are the same question — what does the roster say about
+        // this session right now — and looking it up separately invited them
+        // to answer it differently.
+        let pane = livePane(for: target)
+        return SessionConversationView(
             machine: target.machine,
             sessionId: target.sessionId,
             resumeId: target.resumeId,
-            title: target.title,
+            // **The roster's title wins over the one frozen into the route.**
+            // A tap that beats the first directory fetch has no title to name
+            // the session with and opens under a placeholder (see
+            // `handleReplyRequested`); the roster lands a moment later, and
+            // before this the header went on reading "Session" for the rest of
+            // that navigation while the subtitle beside it updated. The dot
+            // was already resolved per render for exactly this reason — the
+            // title was the one field left frozen.
+            title: pane?.title ?? target.title,
             subtitle: target.subtitle,
             // Looked up on every re-render rather than captured into the
             // target, so the header tracks the roster instead of freezing at
@@ -514,7 +624,7 @@ struct CanopyMobileApp: App {
             // frozen dot would still say "asking". nil when the roster does
             // not list this session — the header then shows no dot at all,
             // because grey means idle here and "we don't know" is not idle.
-            pane: livePane(for: target),
+            pane: pane,
             onDecision: { item, decision in sendDecision(item: item, decision: decision) },
             // An answered form is an allow carrying the picked labels. Same
             // method, same single wire path as Allow/Deny — see
@@ -549,6 +659,20 @@ struct CanopyMobileApp: App {
             viewedSession.current = ViewedSession(machine: target.machine,
                                                   sessionId: target.sessionId)
         }
+        // **No `.id(target)` here, deliberately.** One was tried, to force a
+        // rebuild when `path` is replaced. It is redundant: `Route` is
+        // `Hashable` and `navigationDestination(for:)` already keys the
+        // destination on the route value, so a changed value at this depth is
+        // already a teardown and rebuild — which is what the note above
+        // records observing. And it is not free, because `ConversationTarget`
+        // hashes `title` and `subtitle`: it turns every cosmetic difference
+        // into a new identity, and this guard compares `sessionId` alone, so
+        // the rebuilt view's `onAppear` sets the session and the outgoing
+        // one's `onDisappear` immediately clears it.
+        //
+        // That second half is a hazard of the route value, not of `.id`, so
+        // removing `.id` did not close it — `handleReplyRequested` returning
+        // early on a route that already names this session is what closes it.
         .onDisappear {
             if viewedSession.current?.sessionId == target.sessionId {
                 viewedSession.current = nil

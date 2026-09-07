@@ -3,8 +3,9 @@ import UserNotifications
 
 extension Notification.Name {
     /// Posted when the user taps a push notification, carrying `machine` and
-    /// `sessionId` (both `String`) in `userInfo` — the same two fields the
-    /// relay's `/notify` payload puts at the top level (see `worker/src/index.ts`).
+    /// `sessionId` (both `String`) in `userInfo`, plus `resumeId` and
+    /// `requestId` when the push carried them — the same fields the relay's
+    /// `/notify` payload puts at the top level (see `worker/src/index.ts`).
     /// `CanopyMobileApp` turns this into the same conversation push a row tap makes,
     /// so a notification tap and a row tap open the identical sheet.
     static let canopyMobileReplyRequested = Notification.Name("CanopyMobileReplyRequested")
@@ -13,7 +14,8 @@ extension Notification.Name {
 /// Identifiers for the permission-ask notification category. The action
 /// identifiers ARE the decision values `RosterClient.sendDecision` posts to
 /// `/decide` — no separate translation table to keep in sync with the
-/// relay's contract (which refuses anything but exactly `"allow"`/`"deny"`).
+/// relay's contract (which accepts exactly `"allow"`, `"deny"` and
+/// `"allowAlways"`, and refuses everything else).
 enum CanopyPermissionAction {
     static let categoryIdentifier = "CANOPY_PERMISSION"
     /// A second category, identical but for the extra action. iOS resolves a
@@ -39,8 +41,15 @@ enum CanopyPermissionAction {
 /// `didFailToRegisterForRemoteNotificationsWithError` path: a bad secret,
 /// a malformed token, or the relay being unreachable must all leave a log
 /// line, or this file repeats the exact silent-failure shape it exists to
-/// prevent. Never log the token or the secret — status code and
-/// `localizedDescription` only.
+/// prevent. Never log the token or the secret — status code and error
+/// description only.
+///
+/// **`NSLog`, never `print`.** Every failure this file reports happens in a
+/// process the user launched: from the home screen, from a notification tap,
+/// or on the lock screen with the app not running at all. `print` writes to
+/// stdout, which in those processes is connected to nothing and cannot be
+/// recovered afterwards. `NSLog` reaches the unified log at default level, so
+/// `log stream` and a sysdiagnose can still see it.
 @MainActor
 final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication,
@@ -137,16 +146,26 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         }
 
         // A tap (no registered action — `UNNotificationDefaultActionIdentifier`)
-        // opens the reply composer, EXCEPT on a permission ask nobody has
-        // answered, where `CanopyMobileApp` opens the ask itself. The
-        // `requestId` is the only thing that tells the two apart, so it rides
-        // along whenever the push carried one — without it the tap lands in
-        // the composer, and a reply typed there is refused by the shim after
-        // the sheet has already dismissed as success.
+        // opens that session's conversation, whatever the push was: an
+        // unanswered ask renders its own Allow/Deny inline there, so there is
+        // nothing to branch on. This paragraph used to describe such a branch
+        // — composer for a reply, the ask for an unanswered one — and
+        // `requestId` was what chose between them. That branch is gone;
+        // `handleReplyRequested` still takes the id and does not read it.
         if let machine = userInfo["machine"] as? String,
            let sessionId = userInfo["sessionId"] as? String {
             var info: [String: Any] = ["machine": machine, "sessionId": sessionId]
+            // Forwarded because the push carries it and the app has a use for
+            // it: `resumeId` is what groups a conversation across a Canopy
+            // restart, and the tap handler's other two sources for it (the
+            // roster snapshot, the stored history entry) can both be missing
+            // exactly when the tap arrives — a cold start has no snapshot yet.
+            // Dropping it here left that case with no id at all.
+            if let resumeId = userInfo["resumeId"] as? String { info["resumeId"] = resumeId }
             if let requestId = userInfo["requestId"] as? String { info["requestId"] = requestId }
+            // **Held as well as posted, and the held copy is the one that
+            // works on a cold launch.** See `pendingTap`.
+            PushRegistrar.pendingTap = info
             NotificationCenter.default.post(
                 name: .canopyMobileReplyRequested,
                 object: nil,
@@ -155,6 +174,24 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         }
         completionHandler()
     }
+
+    /// The most recent notification tap no scene has acted on yet, or nil.
+    ///
+    /// **A tap can land before anything is listening, and the post is then
+    /// simply gone.** On a cold launch this type is installed as the
+    /// `UNUserNotificationCenter` delegate inside
+    /// `didFinishLaunchingWithOptions`, and iOS delivers the waiting response
+    /// as soon as that happens — which can be before SwiftUI has evaluated the
+    /// `WindowGroup` body and installed the `.onReceive` that turns the post
+    /// into navigation. `NotificationCenter` does not queue for absent
+    /// observers, so the tap vanishes and the app opens on the roster: the
+    /// user taps a notification and gets the session list, with nothing
+    /// anywhere reporting a dropped tap. Reported from the device.
+    ///
+    /// The scene collects this when it comes up (and again whenever it becomes
+    /// active), so the delivery no longer has to win a race. Cleared by
+    /// whoever acts on it, so one tap opens one conversation.
+    static var pendingTap: [String: Any]?
 
     /// Show the banner even while Canopy Mobile is FRONTMOST. Without this
     /// iOS suppresses a foreground push entirely — no banner, no sound, no
@@ -200,7 +237,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
               let sessionId = userInfo["sessionId"] as? String,
               let requestId = userInfo["requestId"] as? String
         else {
-            print("Permission decision action fired with missing machine/sessionId/requestId")
+            NSLog("Permission decision action fired with missing machine/sessionId/requestId")
             completionHandler()
             return
         }
@@ -211,7 +248,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         let app = UIApplication.shared
         let bgState = BackgroundDecisionState()
         bgState.bgTaskId = app.beginBackgroundTask(withName: "CanopySendDecision") {
-            print("CanopySendDecision background task expired before the POST finished")
+            NSLog("CanopySendDecision background task expired before the POST finished")
             bgState.endIfActive(app: app)
         }
         completionHandler()
@@ -226,7 +263,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
                 try HistoryStore.updateDecision(requestId: requestId, decision: decision,
                                                  decidedAt: decidedAt, delivered: delivered)
             } catch {
-                print("HistoryStore.updateDecision failed: \(error.localizedDescription)")
+                NSLog("HistoryStore.updateDecision failed for requestId=%@: %@", requestId, String(describing: error))
             }
             await MainActor.run { bgState.endIfActive(app: app) }
         }
@@ -248,7 +285,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
               let secret = KeychainHelper.load(key: "rosterSecret"),
               !secret.isEmpty
         else {
-            print("Permission decision skipped: relay not configured (relayURL or secret is nil)")
+            NSLog("Permission decision skipped: relay not configured (relayURL or secret is nil)")
             return false
         }
         do {
@@ -256,7 +293,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
                 .sendDecision(machine: machine, sessionId: sessionId, requestId: requestId, decision: decision)
             return true
         } catch {
-            print("Permission decision POST failed: \(error.localizedDescription)")
+            NSLog("Permission decision POST failed: %@", String(describing: error))
             return false
         }
     }
@@ -271,7 +308,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
                      didFailToRegisterForRemoteNotificationsWithError error: Error) {
         // Surfaced, never swallowed: without a token every push is dropped
         // by APNs with no signal on this side.
-        print("APNs registration failed: \(error.localizedDescription)")
+        NSLog("APNs registration failed: %@", String(describing: error))
     }
 
     private static func upload(token: String) async {
@@ -294,7 +331,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
             // configured yet or lost the cold-launch race against Settings
             // populating the statics, and silently dropping the token is
             // exactly the invisible failure this file exists to prevent.
-            print("Push token upload skipped: relay not configured (relayURL or secret is nil)")
+            NSLog("Push token upload skipped: relay not configured (relayURL or secret is nil)")
             return
         }
         var request = URLRequest(url: base.appendingPathComponent("register"))
@@ -305,10 +342,10 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                print("Push token upload rejected by relay: HTTP \(http.statusCode)")
+                NSLog("Push token upload rejected by relay: HTTP %d", http.statusCode)
             }
         } catch {
-            print("Push token upload failed: \(error.localizedDescription)")
+            NSLog("Push token upload failed: %@", String(describing: error))
         }
     }
 }

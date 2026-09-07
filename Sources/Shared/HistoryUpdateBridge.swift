@@ -14,7 +14,37 @@ enum HistoryUpdateBridge {
     static let didUpdate = Notification.Name("CanopyMobileHistoryDidUpdate")
 
     /// Posts the Darwin notification so any process subscribed to
-    /// `HistoryUpdateBridge.darwinName` is woken.
+    /// `HistoryUpdateBridge.darwinName` is woken, and re-posts `didUpdate`
+    /// locally so THIS process is woken too.
+    ///
+    /// **The local re-post is not redundant belt-and-braces — it is the only
+    /// thing that guarantees the writing process sees its own write.**
+    /// `updateDecision` runs only in the host app, from
+    /// `CanopyMobileApp.sendDecision` and from `PushRegistrar`'s lock-screen
+    /// handler, and neither reloads on its own the way the send path does
+    /// (`append`, the writer that runs in both processes, is followed by an
+    /// explicit `load()` at its in-app call site). Whether `notifyd` loops a
+    /// Darwin notification back to the process that posted it is an
+    /// implementation detail of libnotify that this app must not depend on,
+    /// and the failure when it does not is silent and specific: the answered
+    /// ask keeps rendering its buttons, because `SessionConversationView` has
+    /// no other reload trigger while it stays on screen.
+    ///
+    /// **The loopback is the normal case, not the exception.** A Darwin
+    /// `notify_post` is a system-wide broadcast, and the posting process's own
+    /// registered observers receive it. So `didUpdate` fires twice per in-app
+    /// write and the list reloads twice. `load()` is a pure re-read, so the
+    /// duplicate pass changes nothing; what it costs is a second `loadAll()`,
+    /// a directory listing plus up to `maxItems` synchronous decodes. That is
+    /// the accepted price of not resting on the loopback. If it ever shows up
+    /// as a stutter, suppress the duplicate rather than delete this post.
+    ///
+    /// In the Notification Service Extension this local post is a no-op,
+    /// because the only `didUpdate` observers are two SwiftUI `.onReceive`
+    /// handlers and the extension has no views. **Not** because it skips
+    /// `startBridge()` — that registers a DARWIN observer which POSTS
+    /// `didUpdate`; it never observes it. Calling it there would add a second
+    /// Darwin observer and still deliver nothing.
     static func postDarwinUpdate() {
         let name = darwinName as CFString
         CFNotificationCenterPostNotification(
@@ -24,6 +54,13 @@ enum HistoryUpdateBridge {
             nil,
             true
         )
+        // `NotificationCenter` delivers synchronously on the calling thread,
+        // and the observers are SwiftUI `.onReceive` handlers, so hop to main
+        // rather than reloading a view's state from whatever queue the write
+        // finished on.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: didUpdate, object: nil)
+        }
     }
 
     /// Subscribes the current process to the Darwin notification and

@@ -44,6 +44,18 @@ enum HistoryStore {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID)
     }
 
+    /// The App Group directory the entries live in.
+    ///
+    /// **Every operation below also has a form that takes its directory, and
+    /// that is the seam.** `containerURL()` asks the system for a container
+    /// this process is entitled to, which a host-less test bundle is not — so
+    /// without the pair, none of this file could be reached from a test at
+    /// all. The one bug these functions have had (`updateDecision` stopping at
+    /// the first unreadable duplicate) was found by reading the code and
+    /// confirmed on a device, which is the slowest place there is to find one.
+    ///
+    /// The no-argument forms are the whole app: nothing outside tests passes a
+    /// directory, so there is no second configuration to keep working.
     static func historyDirectory() throws -> URL {
         guard let container = containerURL() else {
             throw StoreError.containerUnavailable
@@ -102,7 +114,11 @@ enum HistoryStore {
 
     /// Called by the Notification Service Extension when a push arrives.
     static func append(_ item: NotificationHistoryItem) throws {
-        let dir = try historyDirectory()
+        try append(item, in: historyDirectory())
+    }
+
+    /// - Parameter dir: an existing directory. See `historyDirectory()`.
+    static func append(_ item: NotificationHistoryItem, in dir: URL) throws {
         let url = dir.appendingPathComponent(filename(for: item))
         let data = try encoder().encode(item)
         try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
@@ -117,7 +133,11 @@ enum HistoryStore {
 
     /// Loads all history entries, newest first.
     static func loadAll() throws -> [NotificationHistoryItem] {
-        let dir = try historyDirectory()
+        try loadAll(in: historyDirectory())
+    }
+
+    /// - Parameter dir: an existing directory. See `historyDirectory()`.
+    static func loadAll(in dir: URL) throws -> [NotificationHistoryItem] {
         let files = try FileManager.default.contentsOfDirectory(
             at: dir,
             includingPropertiesForKeys: nil
@@ -138,11 +158,20 @@ enum HistoryStore {
     }
 
     static func item(withId id: String) throws -> NotificationHistoryItem? {
-        try loadAll().first(where: { $0.id == id })
+        try item(withId: id, in: historyDirectory())
+    }
+
+    /// - Parameter dir: an existing directory. See `historyDirectory()`.
+    static func item(withId id: String, in dir: URL) throws -> NotificationHistoryItem? {
+        try loadAll(in: dir).first(where: { $0.id == id })
     }
 
     static func delete(id: String) throws {
-        let dir = try historyDirectory()
+        try delete(id: id, in: historyDirectory())
+    }
+
+    /// - Parameter dir: an existing directory. See `historyDirectory()`.
+    static func delete(id: String, in dir: URL) throws {
         let files = try FileManager.default.contentsOfDirectory(
             at: dir,
             includingPropertiesForKeys: nil
@@ -153,7 +182,11 @@ enum HistoryStore {
     }
 
     static func deleteAll() throws {
-        let dir = try historyDirectory()
+        try deleteAll(in: historyDirectory())
+    }
+
+    /// - Parameter dir: an existing directory. See `historyDirectory()`.
+    static func deleteAll(in dir: URL) throws {
         let files = try FileManager.default.contentsOfDirectory(
             at: dir,
             includingPropertiesForKeys: nil
@@ -182,10 +215,16 @@ enum HistoryStore {
     /// neither is silent, because both leave the ask drawn as unanswered.
     static func updateDecision(requestId: String, decision: String, decidedAt: Date,
                                delivered: Bool) throws {
+        try updateDecision(requestId: requestId, decision: decision, decidedAt: decidedAt,
+                           delivered: delivered, in: historyDirectory())
+    }
+
+    /// - Parameter dir: an existing directory. See `historyDirectory()`.
+    static func updateDecision(requestId: String, decision: String, decidedAt: Date,
+                               delivered: Bool, in dir: URL) throws {
         // Look up the file by id rather than recomputing the filename from
         // the loaded item — that would require preserving receivedAt at full
         // precision through JSON and filesystem round-trips.
-        let dir = try historyDirectory()
         let files = try FileManager.default.contentsOfDirectory(
             at: dir,
             includingPropertiesForKeys: nil

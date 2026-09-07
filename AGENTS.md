@@ -252,7 +252,7 @@ webview→CLI 側に publish を張る必要は**無い**。`stampUser`（phone 
 
 | | |
 |---|---|
-| Swift テスト | 111 |
+| Swift テスト | 125 |
 | worker テスト | 108 |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 
@@ -264,7 +264,6 @@ webview→CLI 側に publish を張る必要は**無い**。`stampUser`（phone 
 - **decision の失敗がカードに戻れない（#28）。** `onDecision` / `onAnswer` が `-> Void` なので、`updateDecision` の throw も部分失敗も UI に届かない。`AskFormView` は `sent` を戻す経路が無く、失敗すると「Sending…」で永久に固まる
 - **`append` の upsert 化（#29）。** 重複ファイルを源で消せば、`ForEach` の id 衝突も同時に閉じる
 - **タップが本当に落ちる場所にログが無い（#30）。** `didReceive` の `if let` に `else` が無い
-- **`HistoryStore` にテストの seam が無い（#31）。** `containerURL()` が App Group を直に引くので host-less テストバンドルから触れない
 - **LLM 分岐の条件にテストが無い。** `worker/src/index.ts` の `body.kind === "completed"` を `"asking"` に変えると、ask のツール入力が `api.anthropic.com` に飛ぶ。コメントが明示的に守ろうとしている不変条件なのに無防備。`/notify` を `worker.fetch` で叩くハーネスができたので `expect(sent).not.toContain("anthropic")` 1 行で pin できる
 - **relay と Swift が同じ join を別実装。** `plainBanner`（`worker/src/llm.ts`）と `listDisplayBody`（`NotificationHistoryItem.swift`）はどちらも `" · "` で連結するが、blank フィルタ・空白畳み込み・cap がすべて違う。同じ push がロック画面と History 行で違う文字列になりうる
 - **Canopy 側: appcast が公開されていないファイルに署名している（Canopy#188）。** `update_appcast.sh` の `strip_sh_xattrs` が DMG を作り直し、それに署名する。GitHub に上がるのは `release.sh` が作った元の DMG。Sparkle は検証に落ちた item を**黙って飛ばして**次に古い版を「最新」として出す。2.26.1 から続く

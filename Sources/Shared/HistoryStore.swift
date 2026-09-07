@@ -199,12 +199,7 @@ enum HistoryStore {
         // this function's throw exists to make visible, arriving by a route
         // where nothing throws because one file WAS found. `contentsOfDirectory`
         // promises no order, so which copy won was not even stable.
-        //
-        // (An earlier draft blamed the relay's throttle retry for the second
-        // delivery. `worker/src/apns.ts` says outright that retry cannot
-        // double-deliver — a 429 is a rejection. The loop does not need a
-        // named cause: "append does not deduplicate" is the whole argument,
-        // and it cannot rot.)
+
         let matches = files.filter { $0.lastPathComponent.hasSuffix("-\(requestId).json") }
         guard !matches.isEmpty else {
             throw StoreError.entryNotFound(requestId: requestId)
@@ -234,8 +229,18 @@ enum HistoryStore {
                       url.lastPathComponent, requestId, String(describing: error))
             }
         }
-        // Broadcast before rethrowing: a write that landed and was never
-        // announced is indistinguishable on screen from one that did not.
+        // Announce whatever landed; throw only when nothing did. `matches` is
+        // non-empty, and each pass either counts or records, so `updated == 0`
+        // guarantees a `firstFailure` — the throw cannot fall through.
+        //
+        // **A PARTIAL failure returns normally, and the caller is not told.**
+        // The two conditions below are mutually exclusive, so there is no path
+        // that both announces and throws. With two duplicates where one write
+        // fails, the survivor keeps `decision == nil`, still decodes, and is
+        // still drawn as an unanswered ask — this function's own symptom,
+        // reached without an error. It is logged per file above and nowhere
+        // else. Reporting it needs a case carrying the counts, which is a
+        // contract change for both callers.
         if updated > 0 { HistoryUpdateBridge.postDarwinUpdate() }
         if updated == 0, let firstFailure { throw firstFailure }
     }

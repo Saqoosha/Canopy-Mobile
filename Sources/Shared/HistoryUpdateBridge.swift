@@ -39,8 +39,12 @@ enum HistoryUpdateBridge {
     /// the accepted price of not resting on the loopback. If it ever shows up
     /// as a stutter, suppress the duplicate rather than delete this post.
     ///
-    /// In the Notification Service Extension this local post is a no-op —
-    /// nothing there calls `startBridge()`, so there is no observer.
+    /// In the Notification Service Extension this local post is a no-op,
+    /// because the only `didUpdate` observers are two SwiftUI `.onReceive`
+    /// handlers and the extension has no views. **Not** because it skips
+    /// `startBridge()` — that registers a DARWIN observer which POSTS
+    /// `didUpdate`; it never observes it. Calling it there would add a second
+    /// Darwin observer and still deliver nothing.
     static func postDarwinUpdate() {
         let name = darwinName as CFString
         CFNotificationCenterPostNotification(

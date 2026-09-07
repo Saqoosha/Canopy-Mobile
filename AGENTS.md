@@ -253,7 +253,7 @@ webview→CLI 側に publish を張る必要は**無い**。`stampUser`（phone 
 | | |
 |---|---|
 | Swift テスト | 109 |
-| worker テスト | 88 |
+| worker テスト | 108 |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 
 床は `.github/workflows/ci.yml` の `EXPECTED_TESTS` / `EXPECTED_SWIFT_TESTS`。**exit code だけでは足りない** — 0 件走っても exit 0 になる経路が両方にある。

@@ -1,8 +1,8 @@
 // worker/src/index.test.ts
-import { SELF } from "cloudflare:test";
-import { describe, it, expect } from "vitest";
-import { fallbackBanner, questionBanner, safeSlice } from "./llm";
-import { fitPushPayload } from "./index";
+import { SELF, env } from "cloudflare:test";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { plainBanner, safeSlice } from "./llm";
+import worker, { fitPushPayload } from "./index";
 
 // Must match the SHARED_SECRET binding in vitest.config.ts. Spelled as a
 // literal rather than read back out of `env` — an expectation derived from
@@ -388,86 +388,125 @@ describe("AskUserQuestion form", () => {
   });
 });
 
-describe("questionBanner", () => {
-  it("joins the questions an ask poses", () => {
+describe("plainBanner", () => {
+  // The reported bug: stripMarkdown empties a fenced block, so fallbackBanner
+  // falls back to slicing the raw JSON.
+  const askJson = '```json\n{\n  "questions" : [\n    { "question" : "Which database?" }\n  ]\n}\n```';
+
+  it("banners an ask by its questions", () => {
+    expect(plainBanner([{ question: "Which database?" }], askJson, 100)).toBe("Which database?");
+  });
+
+  it("joins several questions", () => {
     expect(
-      questionBanner([{ question: "Which database?" }, { question: "Which region?" }]),
+      plainBanner([{ question: "Which database?" }, { question: "Which region?" }], askJson, 100),
     ).toBe("Which database? · Which region?");
   });
 
-  it("is null for a push with no form, so the relay's own banner stands", () => {
-    expect(questionBanner(undefined)).toBeNull();
-    expect(questionBanner([])).toBeNull();
+  it("keeps the relay's own banner when there is no form", () => {
+    expect(plainBanner(undefined, "Run the migration?", 100)).toBe("Run the migration?");
+    expect(plainBanner([], "Run the migration?", 100)).toBe("Run the migration?");
   });
 
-  // A blank banner is worse than the JSON it replaces: a notification with a
-  // title and no body reads as no notification at all.
-  it("is null when every question is blank", () => {
-    expect(questionBanner([{ question: "   " }, { question: "" }])).toBeNull();
+  it("keeps it when every question is blank", () => {
+    expect(plainBanner([{ question: "  " }, { question: "" }], "Run it?", 100)).toBe("Run it?");
   });
 
-  it("keeps the questions that are real and drops the rest", () => {
-    expect(questionBanner([{ question: "  " }, { question: "Which region?" }])).toBe(
+  it("drops the blank questions and keeps the real ones", () => {
+    expect(plainBanner([{ question: " " }, { question: "Which region?" }], askJson, 100)).toBe(
       "Which region?",
     );
   });
 
   it("refuses anything that is not a list of question-bearing objects", () => {
-    expect(questionBanner("questions")).toBeNull();
-    expect(questionBanner([null, 42, { header: "no question here" }])).toBeNull();
+    expect(plainBanner("questions", "fallback", 100)).toBe("fallback");
+    expect(plainBanner([null, 42, { header: "no question" }], "fallback", 100)).toBe("fallback");
+  });
+
+  // stripMarkdown would eat both of these. Questions are prose.
+  it("leaves markdown-looking question text alone", () => {
+    expect(plainBanner([{ question: "Delete *.log or *.tmp?" }], askJson, 100)).toBe(
+      "Delete *.log or *.tmp?",
+    );
+    expect(plainBanner([{ question: "Which shell: bash | zsh?" }], askJson, 100)).toBe(
+      "Which shell: bash | zsh?",
+    );
+  });
+
+  it("does not pair fence markers that came from two different questions", () => {
+    const banner = plainBanner(
+      [{ question: "Use ```json" }, { question: "middle question" }, { question: "or ```yaml" }],
+      askJson,
+      200,
+    );
+    expect(banner).toContain("middle question");
+  });
+
+  it("caps at the limit", () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({ question: `Question number ${i}` }));
+    expect(Array.from(plainBanner(many, askJson, 100)).length).toBe(100);
+  });
+
+  it("collapses newlines so a question cannot break the banner across lines", () => {
+    expect(plainBanner([{ question: "Line one\nline two?" }], askJson, 100)).toBe(
+      "Line one line two?",
+    );
   });
 });
 
-describe("the banner an asking push actually ships", () => {
-  // The reported bug. `stripMarkdown` deletes the fenced block wholesale, so
-  // `fallbackBanner` finds nothing left and falls back to the raw JSON.
-  const askJson = '```json\n{\n  "questions" : [\n    {\n      "question" : "Which database?"\n    }\n  ]\n}\n```';
+// The one test that reads the production banner expression rather than a copy
+// of it. Deleting `plainBanner(...)` from the /notify route leaves every other
+// test in this file green — measured — so without this the fix is unguarded.
+describe("/notify puts the banner it builds into the push", () => {
+  afterEach(() => vi.restoreAllMocks());
 
-  it("was the raw JSON before questionBanner existed", () => {
-    const before = fallbackBanner(askJson, 100);
-    expect(before).toContain("json");
-    expect(before).toContain("{");
-  });
-
-  it("is the questions once the form is present", () => {
-    const after = fallbackBanner(
-      questionBanner([{ question: "Which database?" }]) ?? askJson,
-      100,
+  async function bannerSentFor(body: unknown): Promise<string> {
+    // A throwaway P-256 key: `sendPush` signs a JWT before it calls APNs, and
+    // that has to succeed for the request we want to inspect to be made.
+    const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+      "sign",
+    ])) as CryptoKeyPair;
+    const pkcs8 = new Uint8Array(
+      (await crypto.subtle.exportKey("pkcs8", pair.privateKey)) as ArrayBuffer,
     );
-    expect(after).toBe("Which database?");
-    expect(after).not.toContain("{");
+    const pem = `-----BEGIN PRIVATE KEY-----\n${btoa(String.fromCharCode(...pkcs8))}\n-----END PRIVATE KEY-----`;
+    await env.MACHINES.put("device_token", "abcdef01");
+
+    let sent = "";
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      sent = String((init as RequestInit).body);
+      return new Response("", { status: 200 });
+    });
+
+    await worker.fetch(
+      new Request("https://x/notify", {
+        method: "POST",
+        headers: { ...auth, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      { ...env, APNS_KEY_ID: "K", APNS_TEAM_ID: "T", APNS_BUNDLE_ID: "B", APNS_AUTH_KEY: pem } as never,
+    );
+    return JSON.parse(sent).aps.alert.body;
+  }
+
+  const askJson = '```json\n{\n  "questions" : [\n    { "question" : "Which database?" }\n  ]\n}\n```';
+
+  it("sends the questions for an ask that carries a form", async () => {
+    expect(
+      await bannerSentFor({
+        machine: "m1", sessionId: "s1", title: "Canopy — AskUserQuestion",
+        body: askJson, kind: "asking", requestId: "r1", answerable: false,
+        choices: [{ question: "Which database?", options: [{ label: "pg" }], multiSelect: false }],
+      }),
+    ).toBe("Which database?");
   });
 
-  it("stays capped at BANNER_MAX", () => {
-    const long = Array.from({ length: 10 }, (_, i) => ({ question: `Question number ${i} with padding` }));
-    const banner = fallbackBanner(questionBanner(long) ?? "", 100);
-    expect(Array.from(banner).length).toBeLessThanOrEqual(100);
-  });
-
-  // The case the phone-side fix could not reach: `fitPushPayload` drops
-  // `choices` to fit 4 KB, so a phone reconstructing the questions from the
-  // payload has nothing to work with. The banner is computed before that.
-  it("survives the payload shrink that drops choices", () => {
-    // A form big enough that emptying `bodyFull` is not enough — the only
-    // condition under which `fitPushPayload` drops `choices`, and reachable
-    // exactly for the asks whose JSON banner is worst.
-    const choices = Array.from({ length: 40 }, (_, i) => ({
-      question: `Question ${i}`,
-      options: Array.from({ length: 6 }, (_, j) => ({
-        label: `Option ${j}`,
-        description: "padding".repeat(12),
-      })),
-    }));
-    const banner = fallbackBanner(questionBanner(choices) ?? askJson, 100);
-    const fitted = fitPushPayload(
-      { aps: { alert: { body: banner } }, bodyFull: "x".repeat(2000), choices } as never,
-      4096,
-    ) as { aps: { alert: { body: string } }; choices?: unknown };
-    // The form is gone, so a phone reading the payload cannot rebuild the
-    // questions. The banner computed before the shrink still carries them.
-    expect(fitted.choices).toBeUndefined();
-    expect(fitted.aps.alert.body).toBe(banner);
-    expect(fitted.aps.alert.body).toContain("Question 0");
-    expect(fitted.aps.alert.body).not.toContain("{");
+  it("sends the relay's own banner for an ask with no form", async () => {
+    expect(
+      await bannerSentFor({
+        machine: "m1", sessionId: "s1", title: "Canopy — Bash",
+        body: "rm -rf build", kind: "asking", requestId: "r1",
+      }),
+    ).toBe("rm -rf build");
   });
 });

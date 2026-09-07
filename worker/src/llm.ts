@@ -46,33 +46,28 @@ export function safeSlice(text: string, maxChars: number): string {
   return Array.from(text).slice(0, maxChars).join("");
 }
 
-/// The questions an `AskUserQuestion` poses, as one line — or null when the
-/// push carries no form.
-///
-/// **This exists because the banner for an ask is the tool's input, and for
-/// this one tool that input is a fenced JSON block.** `stripMarkdown` deletes
-/// a fenced block wholesale, so `fallbackBanner` finds nothing left, falls
-/// back to the raw text, and the lock screen reads "```json / { / "questions"
-/// : [ / {…". Reported from a device 2026-09-07.
-///
-/// **Answered here rather than on the phone, and the difference is the case
-/// that matters most.** `fitPushPayload` drops `choices` wholesale when the
-/// payload will not fit 4 KB — so the phone cannot reconstruct the questions
-/// for exactly the largest asks, which are both the most likely to overflow
-/// and the ones whose JSON banner is least readable. This runs before that
-/// drop. It also needs no LLM, so it does not touch the rule that an ask's
-/// input is never sent to one, and it reaches phones running an older build.
-export function questionBanner(choices: unknown): string | null {
-  if (!Array.isArray(choices) || choices.length === 0) return null;
-  const questions = choices
+/**
+ * The banner for a push that skips the LLM: an ask's questions when it carries
+ * a form, else the text itself.
+ *
+ * Questions bypass `stripMarkdown` — they are prose, and stripping eats globs
+ * (`Delete *.log?` ships as `Delete .log?`) and pairs fence markers that came
+ * from two different questions, swallowing everything between them.
+ *
+ * Here rather than on the phone because `fitPushPayload` drops `choices` when
+ * the payload will not fit, so the phone cannot rebuild the questions for the
+ * largest asks. Exported so tests read the same expression `/notify` does.
+ */
+export function plainBanner(choices: unknown, fullText: string, maxChars: number): string {
+  const questions = (Array.isArray(choices) ? choices : [])
     .map((c) =>
       c !== null && typeof c === "object" ? (c as { question?: unknown }).question : undefined,
     )
     .filter((q): q is string => typeof q === "string" && q.trim().length > 0);
-  // Every question blank is not a form worth showing: a banner of "" or " · "
-  // is strictly worse than the JSON it would replace, because a bodyless
-  // notification is indistinguishable from no notification.
-  return questions.length > 0 ? questions.join(" · ") : null;
+  // No questions worth showing: keep the relay's own banner. An empty one
+  // carries less than the JSON it would replace.
+  if (questions.length === 0) return fallbackBanner(fullText, maxChars);
+  return safeSlice(questions.join(" · ").replace(/\s+/g, " ").trim(), maxChars);
 }
 
 export function fallbackBanner(text: string, maxChars: number): string {

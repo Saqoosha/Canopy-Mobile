@@ -5,9 +5,8 @@
 CanopyMobile.xcodeproj/
 Sources/CanopyMobile.entitlements
 Sources/CanopyMobileNotificationService.entitlements
-build-device/
-build-generic/
-build-test/
-build/
+# Any derivedDataPath, whatever it is called this time. The named list this
+# replaced let `build-icon/` through and 2844 build artefacts reached main.
+build*/
 node_modules/
 worker/.dev.vars

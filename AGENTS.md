@@ -175,11 +175,34 @@ gitignore された生成物なので、worktree を切っただけではビル�
 
 **重複配送の原因は特定できていない。** relay のスロットルリトライではない — `worker/src/apns.ts` が「429 は拒否であって、配送してから文句を言うわけではない」と明記している。ループの根拠は「`append` が重複排除しない」だけで足りる。
 
-### テストファイルを足したら `xcodegen generate`
+### `.xcodeproj` が古いと、ビルドは通るのに中身が違う
 
-`.xcodeproj` は gitignore された生成物なので、`Tests/` に新しい `.swift` を置いてもターゲットに入らない。`xcodebuild test` は**緑のまま、テスト数も変わらない**。足したはずのテストが 1 件も走っていないのに成功して見える。
+`.xcodeproj` は gitignore された生成物。**ブランチを移動しても、`project.yml` が変わっても、自動では追従しない。** そして古いまま使うと `xcodebuild` は exit 0 で成功する。
 
-`xcodegen generate` してから走らせる。**CI は捕まえない** — ワークフローが自分で `xcodegen generate` を走らせるので、CI では常に全部見える。ローカルでだけ起きて、ローカルでだけ気づける。テスト数が増えていなければ入っていない、という目視が唯一の検出。
+2026-09-07 に 2 通りの形で踏んだ。
+
+- `Tests/` に置いた新しい `.swift` がターゲットに入らず、**緑のまま、テスト数も変わらない**。足したテストが 1 件も走っていないのに成功して見える
+- アイコンを含む main に移った直後のビルドで、アプリ本体に**通知拡張の `Info.plist` が刺さった**。`GENERATE_INFOPLIST_FILE` が生むキーが丸ごと消え、アイコンも表示名も落ちる。`CompileAssetCatalog` は走るのに `Assets.car` が無い
+
+後者の機構: xcodegen はターゲットの source path 配下を走査して `Info.plist` を見つけると `INFOPLIST_FILE` に自動設定する。`excludes:` はこの走査を止めない。`project.yml` の `INFOPLIST_FILE: ""` がその対策で、pbxproj が古いとそれが反映されていない。
+
+**ブランチを切り替えたら `xcodegen generate`。** 生成できたかは pbxproj で見る。
+
+```bash
+grep -c "Assets.xcassets" CanopyMobile.xcodeproj/project.pbxproj   # 4。0 なら失敗
+grep -n 'INFOPLIST_FILE = ""' CanopyMobile.xcodeproj/project.pbxproj
+```
+
+**ビルド結果はファイルの有無で判定しない。** 増分ビルドは古い成果物を消さないので、`AppIcon60x60@2x.png` があってもそれは前のビルドの残骸でありうる（実際にそれで「アイコンは入っている」と誤判定した）。`Info.plist` のキーを見る。
+
+```bash
+plutil -p <app>/Info.plist | grep -E "CFBundleIconName|CFBundleDisplayName|NSExtension"
+# CFBundleIconName => AppIcon / CFBundleDisplayName => Canopy / NSExtension は出ない
+```
+
+疑わしいときは `-derivedDataPath` を新しいディレクトリにする。アイコン周りの罠は `docs/app-icon.md` にもある（`Contents.json` の `size` を落とすと actool が黙って何も出さない、など）。
+
+**CI は捕まえない** — ワークフローが自分で `xcodegen generate` を走らせるので、CI では常に正しく見える。ローカルでだけ起きて、ローカルでだけ気づける。
 
 ### vitest が 1Password のロックで空振りする
 

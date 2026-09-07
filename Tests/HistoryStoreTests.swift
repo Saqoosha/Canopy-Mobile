@@ -38,6 +38,20 @@ struct HistoryStoreTests {
         try Data("not json".utf8).write(to: dir.appendingPathComponent("\(millis)-\(id).json"))
     }
 
+    /// Write an entry straight to a chosen filename, bypassing `append`.
+    ///
+    /// **`append` upserts, so it can no longer produce the duplicate files
+    /// these tests are about.** History written before it did is still on
+    /// disk, and `updateDecision` and `delete` still have to handle it — this
+    /// is how that state gets built now.
+    private func writeLegacyDuplicate(_ item: NotificationHistoryItem,
+                                      at millis: Int64, in dir: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(item)
+            .write(to: dir.appendingPathComponent("\(millis)-\(item.id).json"))
+    }
+
     @Test("An appended item comes back")
     func appendRoundTrips() throws {
         let dir = try makeDir()
@@ -83,12 +97,12 @@ struct HistoryStoreTests {
         #expect(try HistoryStore.item(withId: "nope", in: dir) == nil)
     }
 
-    // `append` does not deduplicate, so one id can be two files.
+    // Legacy state: two files for one id, from before `append` upserted.
     @Test("Delete removes every file carrying the id")
     func deleteRemovesEveryCopy() throws {
         let dir = try makeDir()
         try HistoryStore.append(item(id: "dup", at: 10), in: dir)
-        try HistoryStore.append(item(id: "dup", at: 20), in: dir)
+        try writeLegacyDuplicate(item(id: "dup", at: 20), at: 1_700_000_020_000, in: dir)
         try HistoryStore.append(item(id: "other"), in: dir)
         #expect(try HistoryStore.loadAll(in: dir).count == 3)
         try HistoryStore.delete(id: "dup", in: dir)
@@ -124,7 +138,7 @@ struct HistoryStoreTests {
     func updatesEveryDuplicate() throws {
         let dir = try makeDir()
         try HistoryStore.append(item(id: "r1", at: 10), in: dir)
-        try HistoryStore.append(item(id: "r1", at: 20), in: dir)
+        try writeLegacyDuplicate(item(id: "r1", at: 20), at: 1_700_000_020_000, in: dir)
         try HistoryStore.updateDecision(requestId: "r1", decision: "Deny",
                                         decidedAt: Date(timeIntervalSince1970: 1_700_000_100),
                                         delivered: false, in: dir)
@@ -201,5 +215,91 @@ struct HistoryStoreTests {
         // The newest survives and the oldest `overflow` are gone.
         #expect(loaded.first?.id == String(format: "i%03d", HistoryStore.maxItems + overflow - 1))
         #expect(loaded.last?.id == String(format: "i%03d", overflow))
+    }
+
+    // MARK: - Upsert
+
+    // One ask delivered twice used to become two files: a decision written to
+    // one left the other drawn as unanswered, and two rows carrying the same
+    // `ConversationRow.id` collide in the `ForEach` that renders them.
+    @Test("Appending the same id twice leaves one entry")
+    func appendUpsertsById() throws {
+        let dir = try makeDir()
+        try HistoryStore.append(item(id: "r1", at: 10), in: dir)
+        try HistoryStore.append(item(id: "r1", at: 20), in: dir)
+        #expect(try HistoryStore.files(for: "r1", in: dir).count == 1)
+        #expect(try HistoryStore.loadAll(in: dir).count == 1)
+    }
+
+    // The first arrival is the one kept, and this is why: overwriting would
+    // clear a decision already recorded here, redrawing an answered ask as
+    // unanswered — the symptom the upsert exists to remove, by its own route.
+    @Test("A recorded decision survives a re-delivery")
+    func redeliveryDoesNotClearADecision() throws {
+        let dir = try makeDir()
+        try HistoryStore.append(item(id: "r1", at: 10), in: dir)
+        try HistoryStore.updateDecision(requestId: "r1", decision: "Allow",
+                                        decidedAt: Date(timeIntervalSince1970: 1_700_000_100),
+                                        delivered: true, in: dir)
+        try HistoryStore.append(item(id: "r1", at: 20), in: dir)
+        let stored = try #require(try HistoryStore.item(withId: "r1", in: dir))
+        #expect(stored.decision == "Allow")
+        #expect(stored.decisionDelivered == true)
+    }
+
+    @Test("The first arrival's time is the one kept")
+    func keepsTheFirstArrivalTime() throws {
+        let dir = try makeDir()
+        try HistoryStore.append(item(id: "r1", at: 10), in: dir)
+        try HistoryStore.append(item(id: "r1", at: 20), in: dir)
+        #expect(try HistoryStore.item(withId: "r1", in: dir)?.receivedAt
+            == Date(timeIntervalSince1970: 1_700_000_010))
+    }
+
+    // Closes the id collision for history already on disk. A delivery is the
+    // only moment anything looks at those files.
+    @Test("A delivery collapses duplicates left by an older build")
+    func collapsesLegacyDuplicates() throws {
+        let dir = try makeDir()
+        try HistoryStore.append(item(id: "r1", at: 10), in: dir)
+        try writeLegacyDuplicate(item(id: "r1", at: 20), at: 1_700_000_020_000, in: dir)
+        try writeLegacyDuplicate(item(id: "r1", at: 30), at: 1_700_000_030_000, in: dir)
+        #expect(try HistoryStore.files(for: "r1", in: dir).count == 3)
+
+        try HistoryStore.append(item(id: "r1", at: 40), in: dir)
+        let remaining = try HistoryStore.files(for: "r1", in: dir)
+        #expect(remaining.count == 1)
+        // The oldest is the survivor.
+        #expect(remaining.first?.lastPathComponent == "1700000010000-r1.json")
+    }
+
+    // An entry nothing can read is not an entry: `loadAll` skips it forever.
+    // A delivery is a chance to put a readable one back.
+    @Test("A delivery repairs an entry that cannot be decoded")
+    func repairsAnUnreadableEntry() throws {
+        let dir = try makeDir()
+        try writeCorrupt(id: "r1", at: 1_700_000_010_000, in: dir)
+        #expect(try HistoryStore.loadAll(in: dir).isEmpty)
+        try HistoryStore.append(item(id: "r1", at: 10), in: dir)
+        #expect(try HistoryStore.loadAll(in: dir).map(\.id) == ["r1"])
+        #expect(try HistoryStore.files(for: "r1", in: dir).count == 1)
+    }
+
+    @Test("Different ids still get their own entries")
+    func distinctIdsAreNotCollapsed() throws {
+        let dir = try makeDir()
+        try HistoryStore.append(item(id: "a"), in: dir)
+        try HistoryStore.append(item(id: "b"), in: dir)
+        #expect(try HistoryStore.loadAll(in: dir).count == 2)
+    }
+
+    // A suffix match, not a substring one: `-r1.json` must not take `-xr1.json`.
+    @Test("An id that ends with another id is a different entry")
+    func doesNotMatchOnASuffixOfTheId() throws {
+        let dir = try makeDir()
+        try HistoryStore.append(item(id: "r1", at: 10), in: dir)
+        try HistoryStore.append(item(id: "xr1", at: 20), in: dir)
+        #expect(try HistoryStore.files(for: "r1", in: dir).count == 1)
+        #expect(try HistoryStore.loadAll(in: dir).count == 2)
     }
 }

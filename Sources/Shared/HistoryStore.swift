@@ -117,11 +117,58 @@ enum HistoryStore {
         try append(item, in: historyDirectory())
     }
 
+    /// The files holding `id`, oldest first.
+    ///
+    /// `filename(for:)` is `<millis>-<id>.json`, so lexicographic order is
+    /// arrival order. Plural because entries written before `append` upserted
+    /// are still on disk.
+    static func files(for id: String, in dir: URL) throws -> [URL] {
+        try FileManager.default
+            .contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasSuffix("-\(id).json") }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
     /// - Parameter dir: an existing directory. See `historyDirectory()`.
     static func append(_ item: NotificationHistoryItem, in dir: URL) throws {
-        let url = dir.appendingPathComponent(filename(for: item))
-        let data = try encoder().encode(item)
-        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        // **One id is one file, and the FIRST arrival is the one kept.**
+        //
+        // This used to write unconditionally, so one ask delivered twice
+        // became two files with the same `requestId`. That cost twice: a
+        // decision written to one of them left the other drawn as an
+        // unanswered ask, and two rows with the same `ConversationRow.id`
+        // collide in the `ForEach` that renders them.
+        //
+        // Keeping the existing entry rather than overwriting it is what makes
+        // this safe. A re-delivery carries the same push, so there is nothing
+        // to refresh — and overwriting would clear a `decision` already
+        // recorded here, redrawing an answered ask as unanswered. That is the
+        // same symptom, arriving by the fix for it.
+        let existing = try files(for: item.id, in: dir)
+        var wrote = false
+
+        if let canonical = existing.first {
+            // Extra copies are legacy, from before this collapsed them. Taking
+            // them now is what closes the id collision for history already on
+            // disk; a delivery is the only moment anything looks at them.
+            for extra in existing.dropFirst() {
+                try? FileManager.default.removeItem(at: extra)
+                wrote = true
+            }
+            // An entry that cannot be decoded is not an entry. Repairing it
+            // from the delivery beats keeping a file that nothing can read and
+            // that `loadAll` skips forever.
+            if (try? decoder().decode(NotificationHistoryItem.self,
+                                      from: Data(contentsOf: canonical))) == nil {
+                try write(item, to: canonical)
+                wrote = true
+            }
+        } else {
+            try write(item, to: dir.appendingPathComponent(filename(for: item)))
+            wrote = true
+        }
+
+        guard wrote else { return }
         // Pruning is best-effort: a failure here must not mask the successful write.
         do {
             try pruneOldFiles(in: dir)
@@ -129,6 +176,11 @@ enum HistoryStore {
             NSLog("HistoryStore: pruneOldFiles failed: \(error)")
         }
         HistoryUpdateBridge.postDarwinUpdate()
+    }
+
+    private static func write(_ item: NotificationHistoryItem, to url: URL) throws {
+        let data = try encoder().encode(item)
+        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
     /// Loads all history entries, newest first.
@@ -172,11 +224,9 @@ enum HistoryStore {
 
     /// - Parameter dir: an existing directory. See `historyDirectory()`.
     static func delete(id: String, in dir: URL) throws {
-        let files = try FileManager.default.contentsOfDirectory(
-            at: dir,
-            includingPropertiesForKeys: nil
-        )
-        for file in files where file.lastPathComponent.hasSuffix("-\(id).json") {
+        // Still plural. `append` collapses duplicates as it meets them, so
+        // history written before that can hold more than one.
+        for file in try files(for: id, in: dir) {
             try FileManager.default.removeItem(at: file)
         }
     }
@@ -225,21 +275,15 @@ enum HistoryStore {
         // Look up the file by id rather than recomputing the filename from
         // the loaded item — that would require preserving receivedAt at full
         // precision through JSON and filesystem round-trips.
-        let files = try FileManager.default.contentsOfDirectory(
-            at: dir,
-            includingPropertiesForKeys: nil
-        )
-        // **Every match, not the first one.** `append` writes
-        // `<millis>-<id>.json` and does not deduplicate, so nothing guarantees
-        // one file per `requestId` — two deliveries of one ask are two files
-        // with the same suffix and different millis. Updating only the first
-        // left the other at `decision == nil`, which `MessageBlock` draws as
-        // an unanswered ask: the exact "I answered it and it is still asking"
-        // this function's throw exists to make visible, arriving by a route
-        // where nothing throws because one file WAS found. `contentsOfDirectory`
-        // promises no order, so which copy won was not even stable.
-
-        let matches = files.filter { $0.lastPathComponent.hasSuffix("-\(requestId).json") }
+        // **Every match, not the first one — still.** `append` now keeps one
+        // file per id, so a duplicate can no longer be created here; but
+        // history written before that is on disk and reachable, and updating
+        // only the first left the other at `decision == nil`, which
+        // `MessageBlock` draws as an unanswered ask. That is the exact "I
+        // answered it and it is still asking" this function's throw exists to
+        // make visible, arriving by a route where nothing throws because one
+        // file WAS found.
+        let matches = try files(for: requestId, in: dir)
         guard !matches.isEmpty else {
             throw StoreError.entryNotFound(requestId: requestId)
         }

@@ -511,11 +511,35 @@ struct ListDisplayBodyTests {
             machine: "m", sessionId: "s", kind: "asking", requestId: "r", answerable: false, choices: choices)
     }
 
-    @Test("An ask with a form previews its questions, not the JSON fence")
-    func askPreviewsQuestions() {
+    // What the notification service extension actually writes for an ask with
+    // a form: `bodyShort` is the banner, and for this push the relay built
+    // that banner out of the questions.
+    @Test("An ask with a form previews the line the relay banners it with")
+    func askPreviewsTheRelaysLine() {
         let form = [AskChoice(question: "Which database?", options: ["a"]),
                     AskChoice(question: "Which features?", options: ["b"])]
-        #expect(item(choices: form).listDisplayBody == "Which database? · Which features?")
+        #expect(item(choices: form, bodyShort: "Which database? · Which features?")
+            .listDisplayBody == "Which database? · Which features?")
+    }
+
+    // The pin. Re-deriving from `choices` is the second expression of a rule
+    // the relay already applied, and the two disagreed — on blank questions,
+    // on whitespace, and on length.
+    @Test("The questions are not re-derived from the form")
+    func doesNotRederiveFromChoices() {
+        let form = [AskChoice(question: "  ", options: ["a"]),
+                    AskChoice(question: "Line one\nline  two?", options: ["b"])]
+        #expect(item(choices: form, bodyShort: "Line one line two?")
+            .listDisplayBody == "Line one line two?")
+    }
+
+    // `fitPushPayload` drops `choices` wholesale when the payload will not fit
+    // 4 KB, so for the largest asks there is no form here at all. The banner
+    // is computed before that drop, which is why this row is not empty.
+    @Test("An ask whose form was dropped to fit still previews its questions")
+    func previewsWhenTheFormWasDropped() {
+        #expect(item(choices: nil, bodyShort: "Question 0? · Question 1?")
+            .listDisplayBody == "Question 0? · Question 1?")
     }
 
     @Test("Without a form the preview is the body as before")

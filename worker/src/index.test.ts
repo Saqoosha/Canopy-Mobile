@@ -543,6 +543,16 @@ describe("/notify puts the banner it builds into the push", () => {
     expect(lastPayload.choices).toBeUndefined();
   });
 
+  it("ignores choices on a completed push, whatever its length", async () => {
+    const choices = [{ question: "Which database?", options: [{ label: "pg" }], multiSelect: false }];
+    expect(
+      await bannerSentFor({
+        machine: "m1", sessionId: "s1", title: "Canopy", body: "All tests passed.",
+        kind: "completed", choices,
+      }),
+    ).toBe("All tests passed.");
+  });
+
   it("sends the relay's own banner for an ask with no form", async () => {
     expect(
       await bannerSentFor({

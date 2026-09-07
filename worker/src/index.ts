@@ -173,11 +173,14 @@ export default {
       // chosen. Truncation loses nothing here either, since the full text is
       // in `bodyFull` and a JSON blob summarises badly.
       // A form banners as its questions; everything else keeps the old
-      // behaviour. See `plainBanner`.
+      // behaviour. See `plainBanner`. Gated on `asking` because `/notify` does
+      // not refuse `completed` + `choices`, and without the gate a completion
+      // banners as questions when its body is short and as its own text when
+      // it is long — the same payload rendering two ways on length alone.
       const banner =
         body.kind === "completed" && fullText.length > BANNER_MAX
           ? await shortenWithLLM(env, fullText, BANNER_MAX)
-          : plainBanner(body.choices, fullText, BANNER_MAX);
+          : plainBanner(body.kind === "asking" ? body.choices : undefined, fullText, BANNER_MAX);
       const payload = {
         aps: {
           alert: { title: body.title, body: banner },

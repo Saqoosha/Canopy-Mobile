@@ -92,8 +92,10 @@ struct SessionConversationView: View {
     /// "asking". A nil pane draws no dot — grey means idle in this palette,
     /// and "the roster doesn't list it" is not idle.
     let pane: PaneRow?
-    let onDecision: (NotificationHistoryItem, String) -> Void
-    let onAnswer: (NotificationHistoryItem, [String: String]) -> Void
+    /// Throwing, because a decision that was not recorded has to reach the
+    /// card that offered it. See `MessageBlock.decide`.
+    let onDecision: (NotificationHistoryItem, String) async throws -> Void
+    let onAnswer: (NotificationHistoryItem, [String: String]) async throws -> Void
     /// Text, then the id this view stored its local copy under. The id is
     /// minted HERE, before the request leaves, so the local record and the
     /// echo the Mac stamps can never disagree about it.
@@ -701,13 +703,42 @@ private struct SlashCommandBlock: View {
     }
 }
 
+/// Why a decision did not land, under the controls that offered it.
+///
+/// Nothing when there is nothing to say, so it costs no space on the ordinary
+/// path. Orange rather than red, matching the composer's own send failure —
+/// the decision may well have reached the Mac; what failed is the record of it.
+private struct DecisionFailure: View {
+    let message: String?
+
+    var body: some View {
+        if let message {
+            Text(message)
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
 /// One notification in the stream. A permission ask nobody has answered gets
 /// Allow/Deny right here rather than behind another tap — the whole point of
 /// the push was that the session is blocked.
 private struct MessageBlock: View {
     let item: NotificationHistoryItem
-    let onDecision: (NotificationHistoryItem, String) -> Void
-    let onAnswer: (NotificationHistoryItem, [String: String]) -> Void
+    let onDecision: (NotificationHistoryItem, String) async throws -> Void
+    let onAnswer: (NotificationHistoryItem, [String: String]) async throws -> Void
+
+    /// In flight, so the buttons cannot be pressed twice, and the failure of
+    /// the last attempt if there was one.
+    ///
+    /// **A decision that fails must come back here.** Both callbacks used to
+    /// return `Void`, so `updateDecision` throwing — and, before it was
+    /// reported at all, a partial write — reached a log line and nothing else.
+    /// The ask stayed on screen looking unanswered, which is also what it
+    /// looks like when nobody has pressed anything.
+    @State private var deciding = false
+    @State private var failure: String?
 
     /// An ask Allow/Deny can resolve. `answerable == false` is an
     /// AskUserQuestion, which is answered by picking an option instead —
@@ -731,6 +762,25 @@ private struct MessageBlock: View {
         }
     }
 
+    /// Send one Allow/Deny and put the failure back on the card.
+    ///
+    /// On success `deciding` stays true: the recorded decision is what stops
+    /// this branch rendering, and releasing the buttons first would offer a
+    /// second press of something already answered.
+    private func decide(_ decision: String) {
+        guard !deciding else { return }
+        deciding = true
+        failure = nil
+        Task {
+            do {
+                try await onDecision(item, decision)
+            } catch {
+                failure = error.localizedDescription
+                deciding = false
+            }
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ConversationHeader(icon: icon, title: item.title, at: item.receivedAt)
@@ -744,7 +794,7 @@ private struct MessageBlock: View {
 
             if isUnansweredAsk {
                 HStack(spacing: 12) {
-                    Button("Allow") { onDecision(item, "allow") }
+                    Button("Allow") { decide("allow") }
                         .buttonStyle(.borderedProminent)
                         .buttonBorderShape(.capsule)
                         .controlSize(.large)
@@ -753,18 +803,20 @@ private struct MessageBlock: View {
                     // one, so with nothing proposed there is nothing this
                     // button could write and it must not appear.
                     if item.allowAlways == true {
-                        Button("Always") { onDecision(item, "allowAlways") }
+                        Button("Always") { decide("allowAlways") }
                             .buttonStyle(.bordered)
                             .buttonBorderShape(.capsule)
                             .controlSize(.large)
                     }
-                    Button("Deny", role: .destructive) { onDecision(item, "deny") }
+                    Button("Deny", role: .destructive) { decide("deny") }
                         .buttonStyle(.bordered)
                         .buttonBorderShape(.capsule)
                         .controlSize(.large)
                 }
+                .disabled(deciding)
+                DecisionFailure(message: failure)
             } else if let form = unansweredForm {
-                AskFormView(form: form) { answers in onAnswer(item, answers) }
+                AskFormView(form: form) { answers in try await onAnswer(item, answers) }
             } else if let decision = item.decision {
                 // An answered form keeps its questions on screen: the record
                 // below is a bare list of labels, and without the questions
@@ -840,10 +892,17 @@ private struct AskQuestionHeading: View {
 
 private struct AskFormView: View {
     let form: [AskChoice]
-    let onSend: ([String: String]) -> Void
+    let onSend: ([String: String]) async throws -> Void
 
     @State private var picked: [String: Set<String>] = [:]
     @State private var sent = false
+    /// Why the last attempt did not land.
+    ///
+    /// **Without this the button had no way out of "Sending…".** `sent` was
+    /// set on the tap and never cleared, so a failed send left the form
+    /// disabled forever — on a card whose whole reason for existing is that
+    /// the Mac is stopped, waiting for this answer.
+    @State private var failure: String?
 
     private var complete: Bool { AskChoice.isComplete(form: form, picked: picked) }
     private var answers: [String: String] { AskChoice.answers(for: form, picked: picked) }
@@ -902,8 +961,7 @@ private struct AskFormView: View {
                 }
             }
             Button {
-                sent = true
-                onSend(answers)
+                send()
             } label: {
                 Text(sent ? "Sending…" : "Send answer")
                     .frame(maxWidth: .infinity)
@@ -912,8 +970,28 @@ private struct AskFormView: View {
             .buttonBorderShape(.capsule)
             .controlSize(.large)
             .disabled(!complete || sent)
+            DecisionFailure(message: failure)
         }
         .padding(.top, 2)
+    }
+
+    /// On success `sent` stays true: the recorded answer is what stops this
+    /// form rendering. On failure it is cleared, which is the whole point —
+    /// the selections are still there and the button says "Send answer"
+    /// again.
+    private func send() {
+        guard !sent else { return }
+        sent = true
+        failure = nil
+        let answers = answers
+        Task {
+            do {
+                try await onSend(answers)
+            } catch {
+                failure = error.localizedDescription
+                sent = false
+            }
+        }
     }
 
     private func symbol(for option: String, in choice: AskChoice) -> String {

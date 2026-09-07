@@ -104,6 +104,8 @@ struct HistoryView: View {
             // considered here too.
             case .entryNotFound(let requestId):
                 return "That answer could not be recorded — no history entry for \(requestId)."
+            case .partialUpdate(let written, let failed):
+                return "That answer reached \(written) of \(written + failed) copies of the entry; \(failed) could not be written."
             }
         }
         return error.localizedDescription

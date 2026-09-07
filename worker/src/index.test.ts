@@ -551,6 +551,10 @@ describe("/notify puts the banner it builds into the push", () => {
         kind: "completed", choices,
       }),
     ).toBe("All tests passed.");
+    // And the form does not ride along either. The phone's History row
+    // previews questions whenever they are present, whatever the kind, so
+    // leaving them in the payload puts the same substitution one surface down.
+    expect(lastPayload.choices).toBeUndefined();
   });
 
   it("sends the relay's own banner for an ask with no form", async () => {

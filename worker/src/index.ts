@@ -179,6 +179,16 @@ export default {
       // phone, whose History row previews questions whenever they are present
       // regardless of kind. Same substitution, two surfaces. One gate.
       const form = body.kind === "asking" ? body.choices : undefined;
+      // A form present means Allow/Deny cannot resolve this ask — that is what
+      // a form IS. Canopy derives both from one expression
+      // (`toolName == "AskUserQuestion"`) and so cannot send them apart; but
+      // `/notify` is a route any holder of the shared secret can post to, and
+      // the same argument was already settled that way when `choices` was
+      // gated on `kind`. Sent apart, the pair put Allow and Deny on the lock
+      // screen for an AskUserQuestion — buttons that resolve the request by
+      // echoing the question back as the tool's input — while the card fell
+      // back to rendering that input as raw JSON.
+      const unanswerable = body.answerable === false || (form?.length ?? 0) > 0;
       const banner =
         body.kind === "completed" && fullText.length > BANNER_MAX
           ? await shortenWithLLM(env, fullText, BANNER_MAX)
@@ -196,7 +206,7 @@ export default {
           // An unanswerable ask gets the plain category: two lock-screen
           // buttons that cannot resolve it are worse than none.
           category:
-            body.kind === "asking" && body.answerable !== false
+            body.kind === "asking" && !unanswerable
               ? body.allowAlways
                 ? "CANOPY_PERMISSION_ALWAYS"
                 : "CANOPY_PERMISSION"
@@ -221,7 +231,7 @@ export default {
         // plain Allow would tell the user they had made a standing decision
         // they had not.
         ...(body.allowAlways ? { allowAlways: true } : {}),
-        ...(body.answerable === false ? { answerable: false } : {}),
+        ...(unanswerable ? { answerable: false } : {}),
         // Only for an ask that Allow/Deny cannot resolve. The phone draws its
         // buttons from these; without them it rendered the tool input as raw
         // JSON with a plain text field under it — legible and unanswerable.

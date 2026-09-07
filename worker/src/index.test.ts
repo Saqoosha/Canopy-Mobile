@@ -489,7 +489,17 @@ describe("/notify puts the banner it builds into the push", () => {
     await env.MACHINES.put("device_token", "abcdef01");
 
     let sent = "";
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+    fetched = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const target = url instanceof Request ? url.url : String(url);
+      fetched.push(target);
+      // Answer the shortener in its own shape. The blanket 200 below reaches
+      // it as a JSON parse failure, which `shortenWithLLM` catches and turns
+      // into the fallback banner — so without this branch a test cannot tell
+      // the two sides of the LLM gate apart.
+      if (target.startsWith("https://api.anthropic.com/")) {
+        return Response.json({ type: "message", content: [{ type: "text", text: "LLM said this" }] });
+      }
       sent = String((init as RequestInit).body);
       return new Response("", { status: 200 });
     });
@@ -507,7 +517,15 @@ describe("/notify puts the banner it builds into the push", () => {
     return lastPayload.aps.alert.body;
   }
 
-  let lastPayload: { aps: { alert: { body: string } }; choices?: unknown };
+  let lastPayload: {
+    aps: { alert: { body: string }; category?: string };
+    choices?: unknown;
+    answerable?: boolean;
+  };
+  // Every URL the route fetched, in order. The banner branch is the only
+  // thing that can put api.anthropic.com in here.
+  let fetched: string[] = [];
+  const reachedTheLLM = () => fetched.some((u) => u.startsWith("https://api.anthropic.com/"));
 
   const askJson = '```json\n{\n  "questions" : [\n    { "question" : "Which database?" }\n  ]\n}\n```';
 
@@ -555,6 +573,84 @@ describe("/notify puts the banner it builds into the push", () => {
     // previews questions whenever they are present, whatever the kind, so
     // leaving them in the payload puts the same substitution one surface down.
     expect(lastPayload.choices).toBeUndefined();
+  });
+
+  // The one line that decides what reaches an LLM at all, and nothing pinned
+  // either side of it: flipping `completed` to `asking` there sends an ask's
+  // tool input to api.anthropic.com and leaves every other test green.
+  it("shortens a long completed push with the LLM", async () => {
+    const banner = await bannerSentFor({
+      machine: "m1", sessionId: "s1", title: "Canopy",
+      body: "a detailed completion report. ".repeat(30), kind: "completed",
+    });
+    expect(reachedTheLLM()).toBe(true);
+    expect(banner).toBe("LLM said this");
+  });
+
+  // An ask's body is the tool's raw input — a command line, a file path,
+  // whatever was pasted into an edit. Length must not change that.
+  it("never sends an ask to the LLM, however long its body", async () => {
+    await bannerSentFor({
+      machine: "m1", sessionId: "s1", title: "Canopy — Bash",
+      body: "rm -rf /very/long/path ".repeat(30), kind: "asking", requestId: "r1",
+    });
+    expect(reachedTheLLM()).toBe(false);
+  });
+
+  it("leaves a completed push under the cap alone", async () => {
+    const banner = await bannerSentFor({
+      machine: "m1", sessionId: "s1", title: "Canopy", body: "All tests passed.",
+      kind: "completed",
+    });
+    expect(reachedTheLLM()).toBe(false);
+    expect(banner).toBe("All tests passed.");
+  });
+
+  // `choices` present IS "Allow/Deny cannot resolve this", so the relay
+  // derives the pair rather than trusting a client to send both halves. Sent
+  // apart, the lock screen offered two buttons that answer an AskUserQuestion
+  // by echoing its question back as the tool's input.
+  it("treats an ask carrying a form as unanswerable without being told", async () => {
+    await bannerSentFor({
+      machine: "m1", sessionId: "s1", title: "Canopy — AskUserQuestion",
+      body: askJson, kind: "asking", requestId: "r1",
+      choices: [{ question: "Which database?", options: [{ label: "pg" }], multiSelect: false }],
+    });
+    expect(lastPayload.aps.category).toBe("CANOPY_SESSION");
+    expect(lastPayload.answerable).toBe(false);
+  });
+
+  // `allowAlways` is the other door into the permission categories.
+  it("keeps a form unanswerable even when the ask proposed a rule", async () => {
+    await bannerSentFor({
+      machine: "m1", sessionId: "s1", title: "Canopy — AskUserQuestion",
+      body: askJson, kind: "asking", requestId: "r1", allowAlways: true,
+      choices: [{ question: "Which database?", options: [{ label: "pg" }], multiSelect: false }],
+    });
+    expect(lastPayload.aps.category).toBe("CANOPY_SESSION");
+  });
+
+  // The derivation must not swallow the ordinary ask, which is the only thing
+  // Allow and Deny exist for.
+  it("still offers Allow/Deny for an ask with no form", async () => {
+    await bannerSentFor({
+      machine: "m1", sessionId: "s1", title: "Canopy — Bash",
+      body: "rm -rf /tmp/x", kind: "asking", requestId: "r1",
+    });
+    expect(lastPayload.aps.category).toBe("CANOPY_PERMISSION");
+    expect(lastPayload.answerable).toBeUndefined();
+  });
+
+  // An AskUserQuestion whose form did not fit the 4 KB budget, or that came
+  // from a build predating `choices`. The flag is all there is, and it still
+  // has to work on its own.
+  it("honours an explicit answerable:false with no form", async () => {
+    await bannerSentFor({
+      machine: "m1", sessionId: "s1", title: "Canopy — AskUserQuestion",
+      body: askJson, kind: "asking", requestId: "r1", answerable: false,
+    });
+    expect(lastPayload.aps.category).toBe("CANOPY_SESSION");
+    expect(lastPayload.answerable).toBe(false);
   });
 
   it("sends the relay's own banner for an ask with no form", async () => {

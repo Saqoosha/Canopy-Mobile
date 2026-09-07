@@ -129,10 +129,6 @@ cd worker && npx wrangler kv key delete --binding MACHINES --remote "machine:PRO
 
 DO が再起動するので publisher も watcher も落ちる。Canopy 側は ping 駆動で復帰する（数十秒）。**デプロイ直後にストリームが死んで見えても、それは復帰待ち。**
 
-### git worktree に `.xcodeproj` が無い
-
-gitignore された生成物なので、worktree を切っただけではビルドできない。`xcodegen generate` を先に走らせる。症状は `xcodebuild: error: 'CanopyMobile.xcodeproj' does not exist.`
-
 ### バックフィルの実機テストは push タップで無効になる
 
 前面復帰を**通知タップ**でやると、アプリが会話画面を積み直して `onAppear` が発火する。修正前のコードでもバックフィルを要求してしまう。**App スイッチャーかホーム画面のアイコンから戻す。**
@@ -177,9 +173,9 @@ gitignore された生成物なので、worktree を切っただけではビル�
 
 ### `.xcodeproj` が古いと、ビルドは通るのに中身が違う
 
-`.xcodeproj` は gitignore された生成物。**ブランチを移動しても、`project.yml` が変わっても、自動では追従しない。** そして古いまま使うと `xcodebuild` は exit 0 で成功する。
+`.xcodeproj` は gitignore された生成物。**worktree を切っても、ブランチを移動しても、`project.yml` が変わっても、自動では追従しない。**
 
-2026-09-07 に 2 通りの形で踏んだ。
+無い場合は素直に落ちる（`xcodebuild: error: 'CanopyMobile.xcodeproj' does not exist.`）。**古い場合が厄介で、exit 0 で成功する。** 2 通りの形で踏んだ。
 
 - `Tests/` に置いた新しい `.swift` がターゲットに入らず、**緑のまま、テスト数も変わらない**。足したテストが 1 件も走っていないのに成功して見える
 - アイコンを含む main に移った直後のビルドで、アプリ本体に**通知拡張の `Info.plist` が刺さった**。`GENERATE_INFOPLIST_FILE` が生むキーが丸ごと消え、アイコンも表示名も落ちる。`CompileAssetCatalog` は走るのに `Assets.car` が無い
@@ -203,6 +199,30 @@ plutil -p <app>/Info.plist | grep -E "CFBundleIconName|CFBundleDisplayName|NSExt
 疑わしいときは `-derivedDataPath` を新しいディレクトリにする。アイコン周りの罠は `docs/app-icon.md` にもある（`Contents.json` の `size` を落とすと actool が黙って何も出さない、など）。
 
 **CI は捕まえない** — ワークフローが自分で `xcodegen generate` を走らせるので、CI では常に正しく見える。ローカルでだけ起きて、ローカルでだけ気づける。
+
+### 配送済みの通知は、配送時点のアイコンと名前のまま
+
+**症状**: アプリのアイコンを直したのに、ロック画面の通知だけデフォルトアイコンのまま。ホーム画面は正しい。
+
+**原因**: iOS は配送済みの通知を遡って描き直さない。修正前に届いた通知は、消すまで永久に古いアイコンで表示される。**キャッシュですらない。**
+
+**切り分け**: Mac の通知ミラーリングで正しいアイコンが出るなら、データは iPhone のバンドルに正しく入っている。`xcrun devicectl device info apps` の表示名が正しければ LaunchServices も更新済み。その 2 つが揃っていて iOS のロック画面だけ古いなら、見ているのは古い通知そのもの。
+
+**確認手順はこの順で。**
+
+1. **ロック画面と通知センターの通知を全部消して、新しいのを 1 通出す。** 無料・非破壊で、これが一番あり得る
+2. 端末の再起動（非破壊）
+3. 削除 + 再インストール。**最後の手段** — `HistoryStore` は App Group を直に引くので、**通知履歴が全部消える**
+
+1 を飛ばして 3 を 2 回やって履歴を飛ばした。
+
+### アイコンを実機で検証するときの落とし穴
+
+**ファイルの有無で判定しない。** 増分ビルドは古い成果物を消さないので、`AppIcon60x60@2x.png` があってもそれは前のビルドの残骸でありうる。実際それで「アイコンは入っている」と誤判定した。`Info.plist` のキーを見る。
+
+`Contents.json` は **1024 の `universal` 1 枚が正**（`docs/app-icon.md`）。20/29/40/60pt を宣言して同じ 1024 PNG を指すと、actool は寸法不一致で**全レンディションを拒否し、アイコンが 1 枚も出なくなる**。警告は出るがビルドは成功する。iOS には Android の small icon に相当する通知専用アセットが無く、通知はホーム画面と同じアイコンを引くので、**カタログに足すものは無い**。
+
+`strings` は Swift の文字列リテラルを拾わないことがある。シンボルを見るなら `nm`、デマングルは `swift demangle`。Xcode 16+ の Debug ビルドは実コードを `<App>.debug.dylib` に置き、メイン実行ファイルは 90KB 程度の launcher なので、**バイナリを検証するならそちらを見る**。
 
 ### vitest が 1Password のロックで空振りする
 
@@ -229,6 +249,10 @@ webview→CLI 側に publish を張る必要は**無い**。`stampUser`（phone 
 ## 残タスク
 
 - **Studio を 2.28.0 に上げる。** MBP は 2026-09-07 に上げてストリーム到達を確認済み。Studio はまだ 2.27.0 で、イベントを 1 件も送っていない。イベントストリーム（`04ab152`）は 2.27.0 の**次**のコミットなので、2.27.0 にも 2.26.1 にも入っていない
-- **decision の失敗がカードに戻れない。** `onDecision` / `onAnswer` が `-> Void` なので、`updateDecision` の throw も部分失敗も UI に届かない。`AskFormView` は `sent` を戻す経路が無く、失敗すると「Sending…」で永久に固まる（Mac が止まって待っているカードで）。3 レビュアーが一致して指摘。`StoreError.partialUpdate(written:failed:)` の追加とセットで直すべき
-- **`append` の upsert 化。** 重複ファイルを源で消せば、`ForEach` の id 衝突（同じ `requestId` の item が 2 つ = 同じ `ConversationRow.id`）も同時に閉じる
-- **`HistoryStore` にテストが無い。** `containerURL()` が App Group を直に引くので host-less テストバンドルから触れない。ディレクトリ注入の seam が要る。2026-09-07 に 4 レビュアーが一致で見つけたループのバグは、テストがあれば実機の前に捕まった
+- **decision の失敗がカードに戻れない（#28）。** `onDecision` / `onAnswer` が `-> Void` なので、`updateDecision` の throw も部分失敗も UI に届かない。`AskFormView` は `sent` を戻す経路が無く、失敗すると「Sending…」で永久に固まる
+- **`append` の upsert 化（#29）。** 重複ファイルを源で消せば、`ForEach` の id 衝突も同時に閉じる
+- **タップが本当に落ちる場所にログが無い（#30）。** `didReceive` の `if let` に `else` が無い
+- **`HistoryStore` にテストの seam が無い（#31）。** `containerURL()` が App Group を直に引くので host-less テストバンドルから触れない
+- **LLM 分岐の条件にテストが無い。** `worker/src/index.ts` の `body.kind === "completed"` を `"asking"` に変えると、ask のツール入力が `api.anthropic.com` に飛ぶ。コメントが明示的に守ろうとしている不変条件なのに無防備。`/notify` を `worker.fetch` で叩くハーネスができたので `expect(sent).not.toContain("anthropic")` 1 行で pin できる
+- **relay と Swift が同じ join を別実装。** `plainBanner`（`worker/src/llm.ts`）と `listDisplayBody`（`NotificationHistoryItem.swift`）はどちらも `" · "` で連結するが、blank フィルタ・空白畳み込み・cap がすべて違う。同じ push がロック画面と History 行で違う文字列になりうる
+- **Canopy 側: appcast が公開されていないファイルに署名している（Canopy#188）。** `update_appcast.sh` の `strip_sh_xattrs` が DMG を作り直し、それに署名する。GitHub に上がるのは `release.sh` が作った元の DMG。Sparkle は検証に落ちた item を**黙って飛ばして**次に古い版を「最新」として出す。2.26.1 から続く

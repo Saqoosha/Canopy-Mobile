@@ -175,6 +175,12 @@ gitignore された生成物なので、worktree を切っただけではビル�
 
 **重複配送の原因は特定できていない。** relay のスロットルリトライではない — `worker/src/apns.ts` が「429 は拒否であって、配送してから文句を言うわけではない」と明記している。ループの根拠は「`append` が重複排除しない」だけで足りる。
 
+### テストファイルを足したら `xcodegen generate`
+
+`.xcodeproj` は gitignore された生成物なので、`Tests/` に新しい `.swift` を置いてもターゲットに入らない。`xcodebuild test` は**緑のまま、テスト数も変わらない**。足したはずのテストが 1 件も走っていないのに成功して見える。
+
+`xcodegen generate` してから走らせる。**CI は捕まえない** — ワークフローが自分で `xcodegen generate` を走らせるので、CI では常に全部見える。ローカルでだけ起きて、ローカルでだけ気づける。テスト数が増えていなければ入っていない、という目視が唯一の検出。
+
 ### vitest が 1Password のロックで空振りする
 
 `worker/.dev.vars` は 1Password の mount（FIFO）へのシンボリックリンク。1Password がロックされていると open でブロックし、vitest-pool-workers がタイムアウトして **exit 0 で "no tests"** を出す。緑に見える。テスト数の床（下記）がこれを捕まえる。
@@ -192,7 +198,7 @@ webview→CLI 側に publish を張る必要は**無い**。`stampUser`（phone 
 | | |
 |---|---|
 | Swift テスト | 95 |
-| worker テスト | 65 |
+| worker テスト | 81 |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 
 床は `.github/workflows/ci.yml` の `EXPECTED_TESTS` / `EXPECTED_SWIFT_TESTS`。**exit code だけでは足りない** — 0 件走っても exit 0 になる経路が両方にある。

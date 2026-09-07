@@ -1,6 +1,6 @@
 import { MachineDO } from "./machine";
 import { sendPush, type ApnsEnv } from "./apns";
-import { shortenWithLLM, fallbackBanner, safeSlice, type LlmEnv } from "./llm";
+import { plainBanner, safeSlice, shortenWithLLM, type LlmEnv } from "./llm";
 import type { DecisionBody, NotifyBody, ReplyBody } from "./types";
 export { MachineDO };
 
@@ -172,10 +172,17 @@ export default {
       // doc argues nowhere; it was inherited by the banner path rather than
       // chosen. Truncation loses nothing here either, since the full text is
       // in `bodyFull` and a JSON blob summarises badly.
+      // **A form belongs to an ask.** `/notify` does not refuse `completed` +
+      // `choices`, and both readers below would otherwise take it: the banner
+      // would render the questions when the body is short and the body's own
+      // text when it is long, and the payload would carry the form to the
+      // phone, whose History row previews questions whenever they are present
+      // regardless of kind. Same substitution, two surfaces. One gate.
+      const form = body.kind === "asking" ? body.choices : undefined;
       const banner =
         body.kind === "completed" && fullText.length > BANNER_MAX
           ? await shortenWithLLM(env, fullText, BANNER_MAX)
-          : fallbackBanner(fullText, BANNER_MAX);
+          : plainBanner(form, fullText, BANNER_MAX);
       const payload = {
         aps: {
           alert: { title: body.title, body: banner },
@@ -218,7 +225,7 @@ export default {
         // Only for an ask that Allow/Deny cannot resolve. The phone draws its
         // buttons from these; without them it rendered the tool input as raw
         // JSON with a plain text field under it — legible and unanswerable.
-        ...(body.choices?.length ? { choices: body.choices } : {}),
+        ...(form?.length ? { choices: form } : {}),
       };
       // APNs rejects a payload over 4 KB outright, and this is the only
       // place the whole thing exists — Canopy caps its own text in bytes, but

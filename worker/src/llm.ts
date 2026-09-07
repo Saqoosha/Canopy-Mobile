@@ -46,6 +46,30 @@ export function safeSlice(text: string, maxChars: number): string {
   return Array.from(text).slice(0, maxChars).join("");
 }
 
+/**
+ * The banner for a push that skips the LLM: an ask's questions when it carries
+ * a form, else the text itself.
+ *
+ * Questions bypass `stripMarkdown` — they are prose, and stripping eats globs
+ * (`Delete *.log?` ships as `Delete .log?`) and pairs fence markers that came
+ * from two different questions, swallowing everything between them.
+ *
+ * Here rather than on the phone because `fitPushPayload` drops `choices` when
+ * the payload will not fit, so the phone cannot rebuild the questions for the
+ * largest asks. Exported so tests read the same expression `/notify` does.
+ */
+export function plainBanner(choices: unknown, fullText: string, maxChars: number): string {
+  const questions = (Array.isArray(choices) ? choices : [])
+    .map((c) =>
+      c !== null && typeof c === "object" ? (c as { question?: unknown }).question : undefined,
+    )
+    .filter((q): q is string => typeof q === "string" && q.trim().length > 0);
+  // No questions worth showing: keep the relay's own banner. An empty one
+  // carries less than the JSON it would replace.
+  if (questions.length === 0) return fallbackBanner(fullText, maxChars);
+  return safeSlice(questions.join(" · ").replace(/\s+/g, " ").trim(), maxChars);
+}
+
 export function fallbackBanner(text: string, maxChars: number): string {
   const stripped = stripMarkdown(text);
   return safeSlice(stripped.length > 0 ? stripped : text, maxChars);

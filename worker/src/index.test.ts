@@ -1,8 +1,8 @@
 // worker/src/index.test.ts
-import { SELF } from "cloudflare:test";
-import { describe, it, expect } from "vitest";
-import { safeSlice } from "./llm";
-import { fitPushPayload } from "./index";
+import { SELF, env } from "cloudflare:test";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { plainBanner, safeSlice } from "./llm";
+import worker, { fitPushPayload } from "./index";
 
 // Must match the SHARED_SECRET binding in vitest.config.ts. Spelled as a
 // literal rather than read back out of `env` — an expectation derived from
@@ -385,5 +385,184 @@ describe("AskUserQuestion form", () => {
   it("leaves a payload that already fits completely alone", () => {
     const payload = { title: "t", body: "b", bodyFull: "short", choices: form };
     expect(fitPushPayload(payload, 4096)).toEqual(payload);
+  });
+});
+
+describe("plainBanner", () => {
+  // The reported bug: stripMarkdown empties a fenced block, so fallbackBanner
+  // falls back to slicing the raw JSON.
+  const askJson = '```json\n{\n  "questions" : [\n    { "question" : "Which database?" }\n  ]\n}\n```';
+
+  it("banners an ask by its questions", () => {
+    expect(plainBanner([{ question: "Which database?" }], askJson, 100)).toBe("Which database?");
+  });
+
+  it("joins several questions", () => {
+    expect(
+      plainBanner([{ question: "Which database?" }, { question: "Which region?" }], askJson, 100),
+    ).toBe("Which database? · Which region?");
+  });
+
+  it("keeps the relay's own banner when there is no form", () => {
+    expect(plainBanner(undefined, "Run the migration?", 100)).toBe("Run the migration?");
+    expect(plainBanner([], "Run the migration?", 100)).toBe("Run the migration?");
+  });
+
+  it("keeps it when every question is blank", () => {
+    expect(plainBanner([{ question: "  " }, { question: "" }], "Run it?", 100)).toBe("Run it?");
+  });
+
+  it("drops the blank questions and keeps the real ones", () => {
+    expect(plainBanner([{ question: " " }, { question: "Which region?" }], askJson, 100)).toBe(
+      "Which region?",
+    );
+  });
+
+  it("refuses anything that is not a list of question-bearing objects", () => {
+    expect(plainBanner("questions", "fallback", 100)).toBe("fallback");
+    expect(plainBanner([null, 42, { header: "no question" }], "fallback", 100)).toBe("fallback");
+  });
+
+  // stripMarkdown would eat both of these. Questions are prose.
+  it("leaves markdown-looking question text alone", () => {
+    expect(plainBanner([{ question: "Delete *.log or *.tmp?" }], askJson, 100)).toBe(
+      "Delete *.log or *.tmp?",
+    );
+    expect(plainBanner([{ question: "Which shell: bash | zsh?" }], askJson, 100)).toBe(
+      "Which shell: bash | zsh?",
+    );
+  });
+
+  it("does not pair fence markers that came from two different questions", () => {
+    const banner = plainBanner(
+      [{ question: "Use ```json" }, { question: "middle question" }, { question: "or ```yaml" }],
+      askJson,
+      200,
+    );
+    expect(banner).toBe("Use ```json · middle question · or ```yaml");
+  });
+
+  it("caps at the limit", () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({ question: `Question number ${i}` }));
+    expect(Array.from(plainBanner(many, askJson, 100)).length).toBe(100);
+  });
+
+  it("cuts on code points, so a cap cannot split an emoji", () => {
+    expect(plainBanner([{ question: "\u{1F680}".repeat(200) }], "fallback", 100)).toBe(
+      "\u{1F680}".repeat(100),
+    );
+  });
+
+  it("trims a question that has content and padding", () => {
+    expect(plainBanner([{ question: "  Which region?  " }], "fallback", 100)).toBe("Which region?");
+  });
+
+  it("collapses newlines so a question cannot break the banner across lines", () => {
+    expect(plainBanner([{ question: "Line one\nline two?" }], askJson, 100)).toBe(
+      "Line one line two?",
+    );
+  });
+});
+
+// The one test that reads the production banner expression rather than a copy
+// of it. Deleting `plainBanner(...)` from the /notify route leaves every other
+// test in this file green — measured — so without this the fix is unguarded.
+describe("/notify puts the banner it builds into the push", () => {
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    // Storage is not rolled back per test under vitest-pool-workers 0.22, so
+    // these outlive the block. Measured: a probe appended below read both back.
+    await env.MACHINES.delete("device_token");
+    await env.MACHINES.delete("apns_env:abcdef01");
+  });
+
+  async function bannerSentFor(body: unknown): Promise<string> {
+    // A throwaway P-256 key: `sendPush` signs a JWT before it calls APNs, and
+    // that has to succeed for the request we want to inspect to be made.
+    const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+      "sign",
+    ])) as CryptoKeyPair;
+    const pkcs8 = new Uint8Array(
+      (await crypto.subtle.exportKey("pkcs8", pair.privateKey)) as ArrayBuffer,
+    );
+    const pem = `-----BEGIN PRIVATE KEY-----\n${btoa(String.fromCharCode(...pkcs8))}\n-----END PRIVATE KEY-----`;
+    await env.MACHINES.put("device_token", "abcdef01");
+
+    let sent = "";
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      sent = String((init as RequestInit).body);
+      return new Response("", { status: 200 });
+    });
+
+    const res = await worker.fetch(
+      new Request("https://x/notify", {
+        method: "POST",
+        headers: { ...auth, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      { ...env, APNS_KEY_ID: "K", APNS_TEAM_ID: "T", APNS_BUNDLE_ID: "B", APNS_AUTH_KEY: pem } as never,
+    );
+    expect(res.ok, `/notify returned ${res.status}`).toBe(true);
+    lastPayload = JSON.parse(sent);
+    return lastPayload.aps.alert.body;
+  }
+
+  let lastPayload: { aps: { alert: { body: string } }; choices?: unknown };
+
+  const askJson = '```json\n{\n  "questions" : [\n    { "question" : "Which database?" }\n  ]\n}\n```';
+
+  it("sends the questions for an ask that carries a form", async () => {
+    expect(
+      await bannerSentFor({
+        machine: "m1", sessionId: "s1", title: "Canopy — AskUserQuestion",
+        body: askJson, kind: "asking", requestId: "r1", answerable: false,
+        choices: [{ question: "Which database?", options: [{ label: "pg" }], multiSelect: false }],
+      }),
+    ).toBe("Which database?");
+  });
+
+  // The whole argument for computing the banner here: `fitPushPayload` drops
+  // `choices` when the payload will not fit, so a phone could not rebuild the
+  // questions for the largest asks. Breaks if the banner ever moves after the
+  // shrink in `index.ts`.
+  it("keeps the questions even when the form is dropped to fit APNs", async () => {
+    const choices = Array.from({ length: 40 }, (_, i) => ({
+      question: `Question ${i}`,
+      options: Array.from({ length: 6 }, (_, j) => ({
+        label: `Option ${j}`,
+        description: "padding".repeat(12),
+      })),
+      multiSelect: false,
+    }));
+    const banner = await bannerSentFor({
+      machine: "m1", sessionId: "s1", title: "Canopy — AskUserQuestion",
+      body: askJson, kind: "asking", requestId: "r1", answerable: false, choices,
+    });
+    expect(banner).toContain("Question 0");
+    expect(banner).not.toContain("{");
+    expect(lastPayload.choices).toBeUndefined();
+  });
+
+  it("ignores choices on a completed push, whatever its length", async () => {
+    const choices = [{ question: "Which database?", options: [{ label: "pg" }], multiSelect: false }];
+    expect(
+      await bannerSentFor({
+        machine: "m1", sessionId: "s1", title: "Canopy", body: "All tests passed.",
+        kind: "completed", choices,
+      }),
+    ).toBe("All tests passed.");
+    // And the form does not ride along either. The phone's History row
+    // previews questions whenever they are present, whatever the kind, so
+    // leaving them in the payload puts the same substitution one surface down.
+    expect(lastPayload.choices).toBeUndefined();
+  });
+
+  it("sends the relay's own banner for an ask with no form", async () => {
+    expect(
+      await bannerSentFor({
+        machine: "m1", sessionId: "s1", title: "Canopy — Bash",
+        body: "rm -rf build", kind: "asking", requestId: "r1",
+      }),
+    ).toBe("rm -rf build");
   });
 });

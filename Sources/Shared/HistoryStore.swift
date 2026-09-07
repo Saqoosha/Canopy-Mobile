@@ -5,6 +5,8 @@ import Foundation
 ///
 /// Writers:
 /// - The Notification Service Extension calls `append` when a push arrives.
+/// - The main app calls `append` too, for the local record of a reply typed
+///   on this phone (`SessionConversationView`).
 /// - The main app calls `updateDecision` when the user acts on Allow/Deny.
 /// These two writers never target the same file (append creates a new file,
 /// updateDecision overwrites an existing one), so writes don't collide.
@@ -163,8 +165,12 @@ enum HistoryStore {
     /// Updates `decision` / `decidedAt` for the entry with a matching requestId.
     /// Called after the user acts on Allow or Deny — from the app's detail
     /// view, or from `PushRegistrar` when the action came off the lock screen.
-    /// Those two are the only decisions the relay accepts; Pager's third,
-    /// "Allow Always", is out of scope and no caller can produce it.
+    /// `decision` is `allow`, `deny` or `allowAlways` — the notification
+    /// action identifiers, unchanged, so there is no translation table to
+    /// keep in step with the relay's contract. (An earlier version of this
+    /// line said `allowAlways` was out of scope and unproducible; both the
+    /// Always button and the lock-screen action produce it, and
+    /// `worker/src/index.ts` accepts it.)
     ///
     /// Throws `StoreError.entryNotFound` when nothing matches — which is what
     /// a pruned entry looks like, and also what a genuine id mismatch looks
@@ -180,16 +186,29 @@ enum HistoryStore {
             at: dir,
             includingPropertiesForKeys: nil
         )
-        guard let url = files.first(where: { $0.lastPathComponent.hasSuffix("-\(requestId).json") }) else {
+        // **Every match, not the first one.** `append` writes
+        // `<millis>-<id>.json` and does not deduplicate, so one `requestId`
+        // delivered twice is TWO files — and APNs redelivery is not
+        // hypothetical here, the relay retries a throttled push on purpose.
+        // Updating one of them left the other with `decision == nil`, which
+        // `MessageBlock` draws as an unanswered ask: the exact "I answered it
+        // and it is still asking" this function's throw was added to make
+        // visible, arriving by a route where nothing throws because one file
+        // WAS found. `contentsOfDirectory` promises no order, so which copy
+        // won was not even stable. Found by review.
+        let matches = files.filter { $0.lastPathComponent.hasSuffix("-\(requestId).json") }
+        guard !matches.isEmpty else {
             throw StoreError.entryNotFound(requestId: requestId)
         }
-        let data = try Data(contentsOf: url)
-        var item = try decoder().decode(NotificationHistoryItem.self, from: data)
-        item.decision = decision
-        item.decidedAt = decidedAt
-        item.decisionDelivered = delivered
-        let newData = try encoder().encode(item)
-        try newData.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        for url in matches {
+            let data = try Data(contentsOf: url)
+            var item = try decoder().decode(NotificationHistoryItem.self, from: data)
+            item.decision = decision
+            item.decidedAt = decidedAt
+            item.decisionDelivered = delivered
+            let newData = try encoder().encode(item)
+            try newData.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        }
         HistoryUpdateBridge.postDarwinUpdate()
     }
 

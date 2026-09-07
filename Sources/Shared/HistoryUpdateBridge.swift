@@ -21,17 +21,22 @@ enum HistoryUpdateBridge {
     /// thing that guarantees the writing process sees its own write.** Both
     /// writers now run in the host app as well as in the extension:
     /// `updateDecision` is called from `CanopyMobileApp.sendDecision` and from
-    /// `PushRegistrar`'s lock-screen handler, both in-process. Whether
-    /// `notifyd` loops a Darwin notification back to the process that posted
-    /// it is an implementation detail of libnotify that this app must not
-    /// depend on, and the failure when it does not is silent and specific: the
-    /// answered ask keeps rendering its buttons, because `SessionConversationView`
-    /// only reloads on `didUpdate`.
+    /// `PushRegistrar`'s lock-screen handler, neither of which reloads on its
+    /// own the way the send path does. Whether `notifyd` loops a Darwin
+    /// notification back to the process that posted it is an implementation
+    /// detail of libnotify that this app must not depend on, and the failure
+    /// when it does not is silent and specific: the answered ask keeps
+    /// rendering its buttons, because `SessionConversationView` has no other
+    /// reload trigger while it stays on screen.
     ///
-    /// If the loopback DOES happen, `didUpdate` fires twice and the list
-    /// reloads twice. `load()` is a pure re-read, so that costs a duplicate
-    /// pass and changes nothing — the right trade against an answer that
-    /// silently never appears.
+    /// **The loopback is the normal case, not the exception** — two reviewers
+    /// said so independently, and an earlier draft of this note had the odds
+    /// backwards. So `didUpdate` does fire twice per in-app write, and the
+    /// list reloads twice. `load()` is a pure re-read, so the duplicate pass
+    /// changes nothing; what it costs is a second `loadAll()`, which is a
+    /// directory listing plus up to `maxItems` synchronous decodes. That is
+    /// the accepted price of not resting on the loopback. If it ever shows up
+    /// as a stutter, suppress the duplicate rather than delete this post.
     static func postDarwinUpdate() {
         let name = darwinName as CFString
         CFNotificationCenterPostNotification(

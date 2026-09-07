@@ -138,12 +138,12 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         }
 
         // A tap (no registered action — `UNNotificationDefaultActionIdentifier`)
-        // opens the reply composer, EXCEPT on a permission ask nobody has
-        // answered, where `CanopyMobileApp` opens the ask itself. The
-        // `requestId` is the only thing that tells the two apart, so it rides
-        // along whenever the push carried one — without it the tap lands in
-        // the composer, and a reply typed there is refused by the shim after
-        // the sheet has already dismissed as success.
+        // opens that session's conversation, whatever the push was: an
+        // unanswered ask renders its own Allow/Deny inline there, so there is
+        // nothing to branch on. This paragraph used to describe such a branch
+        // — composer for a reply, the ask for an unanswered one — and
+        // `requestId` was what chose between them. That branch is gone;
+        // `handleReplyRequested` still takes the id and does not read it.
         if let machine = userInfo["machine"] as? String,
            let sessionId = userInfo["sessionId"] as? String {
             var info: [String: Any] = ["machine": machine, "sessionId": sessionId]

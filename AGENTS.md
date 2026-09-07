@@ -258,7 +258,7 @@ webview→CLI 側に publish を張る必要は**無い**。`stampUser`（phone 
 
 | | |
 |---|---|
-| Swift テスト | 132 |
+| Swift テスト | 136 |
 | worker テスト | 108 |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 
@@ -267,7 +267,4 @@ webview→CLI 側に publish を張る必要は**無い**。`stampUser`（phone 
 ## 残タスク
 
 - **Studio を 2.28.0 に上げる。** MBP は 2026-09-07 に上げてストリーム到達を確認済み。Studio はまだ 2.27.0 で、イベントを 1 件も送っていない。イベントストリーム（`04ab152`）は 2.27.0 の**次**のコミットなので、2.27.0 にも 2.26.1 にも入っていない
-- **タップが本当に落ちる場所にログが無い（#30）。** `didReceive` の `if let` に `else` が無い
-- **LLM 分岐の条件にテストが無い。** `worker/src/index.ts` の `body.kind === "completed"` を `"asking"` に変えると、ask のツール入力が `api.anthropic.com` に飛ぶ。コメントが明示的に守ろうとしている不変条件なのに無防備。`/notify` を `worker.fetch` で叩くハーネスができたので `expect(sent).not.toContain("anthropic")` 1 行で pin できる
-- **relay と Swift が同じ join を別実装。** `plainBanner`（`worker/src/llm.ts`）と `listDisplayBody`（`NotificationHistoryItem.swift`）はどちらも `" · "` で連結するが、blank フィルタ・空白畳み込み・cap がすべて違う。同じ push がロック画面と History 行で違う文字列になりうる
 - **Canopy 側: appcast が公開されていないファイルに署名している（Canopy#188）。** `update_appcast.sh` の `strip_sh_xattrs` が DMG を作り直し、それに署名する。GitHub に上がるのは `release.sh` が作った元の DMG。Sparkle は検証に落ちた item を**黙って飛ばして**次に古い版を「最新」として出す。2.26.1 から続く

@@ -14,7 +14,8 @@ extension Notification.Name {
 /// Identifiers for the permission-ask notification category. The action
 /// identifiers ARE the decision values `RosterClient.sendDecision` posts to
 /// `/decide` — no separate translation table to keep in sync with the
-/// relay's contract (which refuses anything but exactly `"allow"`/`"deny"`).
+/// relay's contract (which accepts exactly `"allow"`, `"deny"` and
+/// `"allowAlways"`, and refuses everything else).
 enum CanopyPermissionAction {
     static let categoryIdentifier = "CANOPY_PERMISSION"
     /// A second category, identical but for the extra action. iOS resolves a
@@ -40,8 +41,15 @@ enum CanopyPermissionAction {
 /// `didFailToRegisterForRemoteNotificationsWithError` path: a bad secret,
 /// a malformed token, or the relay being unreachable must all leave a log
 /// line, or this file repeats the exact silent-failure shape it exists to
-/// prevent. Never log the token or the secret — status code and
-/// `localizedDescription` only.
+/// prevent. Never log the token or the secret — status code and error
+/// description only.
+///
+/// **`NSLog`, never `print`.** Every failure this file reports happens in a
+/// process the user launched: from the home screen, from a notification tap,
+/// or on the lock screen with the app not running at all. `print` writes to
+/// stdout, which in those processes is connected to nothing and cannot be
+/// recovered afterwards. `NSLog` reaches the unified log at default level, so
+/// `log stream` and a sysdiagnose can still see it.
 @MainActor
 final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication,
@@ -229,7 +237,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
               let sessionId = userInfo["sessionId"] as? String,
               let requestId = userInfo["requestId"] as? String
         else {
-            print("Permission decision action fired with missing machine/sessionId/requestId")
+            NSLog("Permission decision action fired with missing machine/sessionId/requestId")
             completionHandler()
             return
         }
@@ -240,7 +248,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         let app = UIApplication.shared
         let bgState = BackgroundDecisionState()
         bgState.bgTaskId = app.beginBackgroundTask(withName: "CanopySendDecision") {
-            print("CanopySendDecision background task expired before the POST finished")
+            NSLog("CanopySendDecision background task expired before the POST finished")
             bgState.endIfActive(app: app)
         }
         completionHandler()
@@ -255,7 +263,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
                 try HistoryStore.updateDecision(requestId: requestId, decision: decision,
                                                  decidedAt: decidedAt, delivered: delivered)
             } catch {
-                print("HistoryStore.updateDecision failed: \(error.localizedDescription)")
+                NSLog("HistoryStore.updateDecision failed for requestId=%@: %@", requestId, String(describing: error))
             }
             await MainActor.run { bgState.endIfActive(app: app) }
         }
@@ -277,7 +285,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
               let secret = KeychainHelper.load(key: "rosterSecret"),
               !secret.isEmpty
         else {
-            print("Permission decision skipped: relay not configured (relayURL or secret is nil)")
+            NSLog("Permission decision skipped: relay not configured (relayURL or secret is nil)")
             return false
         }
         do {
@@ -285,7 +293,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
                 .sendDecision(machine: machine, sessionId: sessionId, requestId: requestId, decision: decision)
             return true
         } catch {
-            print("Permission decision POST failed: \(error.localizedDescription)")
+            NSLog("Permission decision POST failed: %@", String(describing: error))
             return false
         }
     }
@@ -300,7 +308,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
                      didFailToRegisterForRemoteNotificationsWithError error: Error) {
         // Surfaced, never swallowed: without a token every push is dropped
         // by APNs with no signal on this side.
-        print("APNs registration failed: \(error.localizedDescription)")
+        NSLog("APNs registration failed: %@", String(describing: error))
     }
 
     private static func upload(token: String) async {
@@ -323,7 +331,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
             // configured yet or lost the cold-launch race against Settings
             // populating the statics, and silently dropping the token is
             // exactly the invisible failure this file exists to prevent.
-            print("Push token upload skipped: relay not configured (relayURL or secret is nil)")
+            NSLog("Push token upload skipped: relay not configured (relayURL or secret is nil)")
             return
         }
         var request = URLRequest(url: base.appendingPathComponent("register"))
@@ -334,10 +342,10 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                print("Push token upload rejected by relay: HTTP \(http.statusCode)")
+                NSLog("Push token upload rejected by relay: HTTP %d", http.statusCode)
             }
         } catch {
-            print("Push token upload failed: \(error.localizedDescription)")
+            NSLog("Push token upload failed: %@", String(describing: error))
         }
     }
 }

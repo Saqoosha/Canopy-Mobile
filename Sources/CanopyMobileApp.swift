@@ -193,7 +193,14 @@ struct CanopyMobileApp: App {
             }
             .onReceive(NotificationCenter.default.publisher(for: .canopyMobileReplyRequested)) { notification in
                 guard let machine = notification.userInfo?["machine"] as? String,
-                      let sessionId = notification.userInfo?["sessionId"] as? String else { return }
+                      let sessionId = notification.userInfo?["sessionId"] as? String
+                else {
+                    // Says the same thing `consumePendingNotificationTap` says
+                    // for the same payload arriving the other way. The two
+                    // routes read identical fields; they should fail alike.
+                    NSLog("Notification tap discarded: no machine/sessionId in the posted payload")
+                    return
+                }
                 // Acted on here, so the held copy must not be acted on again.
                 PushRegistrar.pendingTap = nil
                 handleReplyRequested(machine: machine, sessionId: sessionId,
@@ -203,14 +210,13 @@ struct CanopyMobileApp: App {
             .onChange(of: scenePhase, initial: true) { _, phase in
                 switch phase {
                 case .active:
-                    // A second net, not a second race. The cold-launch
-                    // window is `.task`'s to cover, and a tap arriving while
-                    // the app is merely backgrounded reaches the `.onReceive`
-                    // above — the scene and its subscription are still alive,
-                    // and the post is synchronous. This catches a scene that
-                    // was disconnected and reconnected inside a living
-                    // process, and costs nothing when `pendingTap` is already
-                    // nil, which is every ordinary activation.
+                    // Both this and `.task` consume; whichever runs first
+                    // clears `pendingTap` and the other finds nil, so the
+                    // ordering between them does not have to be known. What
+                    // this one adds is coverage for an activation with no
+                    // fresh `.task` — a scene disconnected and reconnected
+                    // inside a living process — and it costs nothing on every
+                    // ordinary activation, where `pendingTap` is already nil.
                     consumePendingNotificationTap()
                     reconnect()
                 default:
@@ -443,8 +449,20 @@ struct CanopyMobileApp: App {
     private func handleReplyRequested(machine: String, sessionId: String,
                                       resumeId: String?, requestId: String?) {
         let pane = snapshots[machine]?.panes.first { $0.sessionId == sessionId }
-        let item = (try? HistoryStore.loadAll())?.first {
-            $0.machine == machine && $0.sessionId == sessionId
+        // Read with a `catch`, not `try?`. A `try?` folds
+        // `containerUnavailable` and every decode failure into the same nil an
+        // absent entry produces, and the line below then reports "no history
+        // entry" — a diagnosis this code never made. "The store would not
+        // open" and "this session has not notified" want different responses,
+        // and the first means every push since has been lost.
+        var item: NotificationHistoryItem?
+        do {
+            item = try HistoryStore.loadAll().first {
+                $0.machine == machine && $0.sessionId == sessionId
+            }
+        } catch {
+            NSLog("Notification tap: history unreadable for machine=%@ session=%@: %@",
+                  machine, sessionId, String(describing: error))
         }
         // **A tap ALWAYS navigates.** The version this replaced bailed out
         // when neither lookup produced a title, which left `path` holding
@@ -461,6 +479,26 @@ struct CanopyMobileApp: App {
             // Surfaced, never swallowed: this is the state that used to be
             // indistinguishable from "the tap did nothing".
             NSLog("Notification tap: no roster pane and no history entry for machine=\(machine) session=\(sessionId) — opening with a placeholder title")
+        }
+        // **Already here? Then stay.** A second push for the session on
+        // screen used to re-assign `path` with a target that legitimately
+        // differed — the first tap may have opened under the placeholder with
+        // the machine id as its subtitle, the second carries the roster's
+        // title and project. `Route` is `Hashable` and
+        // `navigationDestination(for:)` keys on the value, so a changed value
+        // at the same depth is a teardown and rebuild: the new view's
+        // `onAppear` sets `viewedSession`, then the old view's `onDisappear`
+        // finds a matching `sessionId` and clears it, leaving `connectAll`'s
+        // `onOpen` with no session to re-ask a backfill for while that
+        // conversation is on screen. That is Canopy-Mobile#24's silent gap,
+        // reintroduced by a navigation that had nothing to do.
+        //
+        // Compared on identity alone, not on the whole target: the title and
+        // subtitle are what differ between two taps for one session, and they
+        // are exactly what must not count as a different destination.
+        if case .conversation(let current)? = path.last,
+           current.machine == machine, current.sessionId == sessionId {
+            return
         }
         path = [.conversation(ConversationTarget(
             machine: machine,
@@ -530,17 +568,17 @@ struct CanopyMobileApp: App {
                                                    answers: answers)
                     delivered = true
                 } catch {
-                    print("Permission decision POST failed: \(error.localizedDescription)")
+                    NSLog("Permission decision POST failed: %@", String(describing: error))
                 }
             } else {
-                print("Permission decision skipped: relay not configured")
+                NSLog("Permission decision skipped: relay not configured")
             }
             do {
                 try HistoryStore.updateDecision(requestId: requestId,
                                                  decision: recordAs ?? decision,
                                                  decidedAt: decidedAt, delivered: delivered)
             } catch {
-                print("HistoryStore.updateDecision failed: \(error.localizedDescription)")
+                NSLog("HistoryStore.updateDecision failed for requestId=%@: %@", requestId, String(describing: error))
             }
         }
     }
@@ -621,17 +659,20 @@ struct CanopyMobileApp: App {
             viewedSession.current = ViewedSession(machine: target.machine,
                                                   sessionId: target.sessionId)
         }
-        // **The `sessionId` comparison is what makes this safe, and it is only
-        // safe while identity stays structural.** An `.id(target)` was tried
-        // here, to force a rebuild on a `path` swap. It is not needed — the
-        // note above records that SwiftUI already tears down and rebuilds on
-        // that swap — and it breaks this guard: `ConversationTarget` hashes
-        // its `title` and `subtitle` too, so the SAME session arriving with a
-        // different title (the placeholder below, then the roster's real one)
-        // becomes a different view. The rebuild then runs the new `onAppear`,
-        // and this `onDisappear` finds a matching `sessionId` and clears the
-        // session that is on screen right now — leaving `connectAll`'s
-        // `onOpen` with nothing to re-ask a backfill for. Found by review.
+        // **No `.id(target)` here, deliberately.** One was tried, to force a
+        // rebuild when `path` is replaced. It is redundant: `Route` is
+        // `Hashable` and `navigationDestination(for:)` already keys the
+        // destination on the route value, so a changed value at this depth is
+        // already a teardown and rebuild — which is what the note above
+        // records observing. And it is not free, because `ConversationTarget`
+        // hashes `title` and `subtitle`: it turns every cosmetic difference
+        // into a new identity, and this guard compares `sessionId` alone, so
+        // the rebuilt view's `onAppear` sets the session and the outgoing
+        // one's `onDisappear` immediately clears it.
+        //
+        // That second half is a hazard of the route value, not of `.id`, so
+        // removing `.id` did not close it — `handleReplyRequested` returning
+        // early on a route that already names this session is what closes it.
         .onDisappear {
             if viewedSession.current?.sessionId == target.sessionId {
                 viewedSession.current = nil

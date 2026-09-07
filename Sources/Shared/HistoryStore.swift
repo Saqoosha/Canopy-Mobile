@@ -16,8 +16,25 @@ enum HistoryStore {
     /// considered choice for this app's own usage pattern.
     static let maxItems = 100
 
-    enum StoreError: Error {
+    enum StoreError: Error, LocalizedError {
         case containerUnavailable
+        /// `updateDecision` was handed a `requestId` with no file behind it.
+        ///
+        /// **Thrown rather than returned as a silent no-op, and that is the
+        /// fix.** The old shape returned quietly, which meant the entry kept
+        /// `decision == nil` — so `MessageBlock` went on drawing the ask as
+        /// unanswered and the user could answer it again, with nothing on
+        /// screen or in the log saying the record had not been written.
+        case entryNotFound(requestId: String)
+
+        var errorDescription: String? {
+            switch self {
+            case .containerUnavailable:
+                return "The app group container is unavailable"
+            case .entryNotFound(let requestId):
+                return "No history entry for requestId \(requestId)"
+            }
+        }
     }
 
     static func containerURL() -> URL? {
@@ -148,7 +165,11 @@ enum HistoryStore {
     /// view, or from `PushRegistrar` when the action came off the lock screen.
     /// Those two are the only decisions the relay accepts; Pager's third,
     /// "Allow Always", is out of scope and no caller can produce it.
-    /// No-op if the entry has already been pruned.
+    ///
+    /// Throws `StoreError.entryNotFound` when nothing matches — which is what
+    /// a pruned entry looks like, and also what a genuine id mismatch looks
+    /// like. The two are not worth telling apart here; what matters is that
+    /// neither is silent, because both leave the ask drawn as unanswered.
     static func updateDecision(requestId: String, decision: String, decidedAt: Date,
                                delivered: Bool) throws {
         // Look up the file by id rather than recomputing the filename from
@@ -160,7 +181,7 @@ enum HistoryStore {
             includingPropertiesForKeys: nil
         )
         guard let url = files.first(where: { $0.lastPathComponent.hasSuffix("-\(requestId).json") }) else {
-            return
+            throw StoreError.entryNotFound(requestId: requestId)
         }
         let data = try Data(contentsOf: url)
         var item = try decoder().decode(NotificationHistoryItem.self, from: data)

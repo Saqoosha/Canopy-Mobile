@@ -98,6 +98,12 @@ struct HistoryView: View {
             switch storeError {
             case .containerUnavailable:
                 return "History is unavailable — the app group container could not be reached."
+            // Not reachable from this screen — `entryNotFound` is thrown by
+            // `updateDecision`, and nothing here writes a decision — but
+            // spelled out rather than defaulted, so a new case has to be
+            // considered here too.
+            case .entryNotFound(let requestId):
+                return "That answer could not be recorded — no history entry for \(requestId)."
             }
         }
         return error.localizedDescription

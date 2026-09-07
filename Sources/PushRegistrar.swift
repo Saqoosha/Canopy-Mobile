@@ -3,8 +3,9 @@ import UserNotifications
 
 extension Notification.Name {
     /// Posted when the user taps a push notification, carrying `machine` and
-    /// `sessionId` (both `String`) in `userInfo` — the same two fields the
-    /// relay's `/notify` payload puts at the top level (see `worker/src/index.ts`).
+    /// `sessionId` (both `String`) in `userInfo`, plus `resumeId` and
+    /// `requestId` when the push carried them — the same fields the relay's
+    /// `/notify` payload puts at the top level (see `worker/src/index.ts`).
     /// `CanopyMobileApp` turns this into the same conversation push a row tap makes,
     /// so a notification tap and a row tap open the identical sheet.
     static let canopyMobileReplyRequested = Notification.Name("CanopyMobileReplyRequested")
@@ -146,7 +147,17 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         if let machine = userInfo["machine"] as? String,
            let sessionId = userInfo["sessionId"] as? String {
             var info: [String: Any] = ["machine": machine, "sessionId": sessionId]
+            // Forwarded because the push carries it and the app has a use for
+            // it: `resumeId` is what groups a conversation across a Canopy
+            // restart, and the tap handler's other two sources for it (the
+            // roster snapshot, the stored history entry) can both be missing
+            // exactly when the tap arrives — a cold start has no snapshot yet.
+            // Dropping it here left that case with no id at all.
+            if let resumeId = userInfo["resumeId"] as? String { info["resumeId"] = resumeId }
             if let requestId = userInfo["requestId"] as? String { info["requestId"] = requestId }
+            // **Held as well as posted, and the held copy is the one that
+            // works on a cold launch.** See `pendingTap`.
+            PushRegistrar.pendingTap = info
             NotificationCenter.default.post(
                 name: .canopyMobileReplyRequested,
                 object: nil,
@@ -155,6 +166,24 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         }
         completionHandler()
     }
+
+    /// The most recent notification tap no scene has acted on yet, or nil.
+    ///
+    /// **A tap can land before anything is listening, and the post is then
+    /// simply gone.** On a cold launch this type is installed as the
+    /// `UNUserNotificationCenter` delegate inside
+    /// `didFinishLaunchingWithOptions`, and iOS delivers the waiting response
+    /// as soon as that happens — which can be before SwiftUI has evaluated the
+    /// `WindowGroup` body and installed the `.onReceive` that turns the post
+    /// into navigation. `NotificationCenter` does not queue for absent
+    /// observers, so the tap vanishes and the app opens on the roster: the
+    /// user taps a notification and gets the session list, with nothing
+    /// anywhere reporting a dropped tap. Reported from the device.
+    ///
+    /// The scene collects this when it comes up (and again whenever it becomes
+    /// active), so the delivery no longer has to win a race. Cleared by
+    /// whoever acts on it, so one tap opens one conversation.
+    static var pendingTap: [String: Any]?
 
     /// Show the banner even while Canopy Mobile is FRONTMOST. Without this
     /// iOS suppresses a foreground push entirely — no banner, no sound, no

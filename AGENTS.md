@@ -240,7 +240,7 @@ webview→CLI 側に publish を張る必要は**無い**。`stampUser`（phone 
 
 | | |
 |---|---|
-| Swift テスト | 95 |
+| Swift テスト | 100 |
 | worker テスト | 81 |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 

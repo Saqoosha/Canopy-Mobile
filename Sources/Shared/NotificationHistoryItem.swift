@@ -317,6 +317,17 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         return decision != nil && choices?.isEmpty == false
     }
 
+    /// The relay's `BANNER_MAX`. Named here so the two caps are visibly the
+    /// same number rather than coincidentally equal.
+    ///
+    /// The relay counts Unicode code points and this counts Swift
+    /// `Character`s, so a grapheme built from several scalars — a flag, an
+    /// emoji with a skin-tone modifier — leaves this preview slightly longer
+    /// than that banner. Deliberate: the alternative is cutting a row mid
+    /// grapheme, and a row is truncated by the layout anyway. The cap is here
+    /// to bound the string, not to match the banner glyph for glyph.
+    static let questionPreviewMax = 100
+
     /// Single source of truth for "what the History list row should show":
     /// the worker-generated short summary if it exists, else the full body.
     /// Already `null`-cleaned so the row can render it directly.
@@ -326,8 +337,25 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         // as a fenced JSON block, so the two-line preview read "```json" and
         // "{…" — the same duplicate the conversation stopped showing under
         // the form (`showsBody`), leaking into the list. Found on device.
-        if let choices, !choices.isEmpty {
-            return choices.map(\.question).joined(separator: " · ")
+        let questions = (choices ?? []).map(\.question)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if !questions.isEmpty {
+            // The same four steps the relay applies to build the banner from
+            // the same questions (`plainBanner` in worker/src/llm.ts): drop the
+            // blank ones, join, collapse whitespace, cap. It had all four and
+            // this had none, so one push read as two different things — a form
+            // whose first question was blank previewed as " · Which region?"
+            // here while the lock screen showed "Which region?", and a
+            // forty-question form produced an unbounded string that the layout
+            // then cut wherever it happened to land.
+            //
+            // Blank questions are filtered on their TRIMMED form but joined in
+            // their original one, matching the relay; the collapse below is
+            // what removes the padding either way.
+            let line = questions.joined(separator: " · ")
+                .split(whereSeparator: \.isWhitespace)
+                .joined(separator: " ")
+            return String(line.prefix(Self.questionPreviewMax))
         }
         return Self.displayableBody(bodyShort ?? body)
     }

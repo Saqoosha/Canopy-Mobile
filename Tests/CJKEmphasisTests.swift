@@ -518,6 +518,45 @@ struct ListDisplayBodyTests {
         #expect(item(choices: form).listDisplayBody == "Which database? · Which features?")
     }
 
+    // The relay drops these before it joins, so a row that keeps them says
+    // something different from the banner for the same push.
+    @Test("A blank question does not become a leading separator")
+    func dropsBlankQuestions() {
+        let form = [AskChoice(question: "  ", options: ["a"]),
+                    AskChoice(question: "Which region?", options: ["b"])]
+        #expect(item(choices: form).listDisplayBody == "Which region?")
+    }
+
+    @Test("A form of nothing but blank questions falls back to the body")
+    func allBlankFallsBackToBody() {
+        let form = [AskChoice(question: "", options: ["a"]),
+                    AskChoice(question: "\n ", options: ["b"])]
+        #expect(item(choices: form).listDisplayBody == "```json\n{\n}\n```")
+    }
+
+    // A question is prose and can hold a newline. A row is one line.
+    @Test("Whitespace inside a question is collapsed")
+    func collapsesWhitespace() {
+        let form = [AskChoice(question: "Line one\nline  two?", options: ["a"])]
+        #expect(item(choices: form).listDisplayBody == "Line one line two?")
+    }
+
+    @Test("Padding around a real question is removed, not the question")
+    func trimsPadding() {
+        let form = [AskChoice(question: "  Which region?  ", options: ["a"])]
+        #expect(item(choices: form).listDisplayBody == "Which region?")
+    }
+
+    // Forty questions of six options each is a real ask, and it produced a
+    // string bounded by nothing at all.
+    @Test("The preview is capped at the relay's banner length")
+    func capsTheLine() {
+        let form = (0..<40).map { AskChoice(question: "Question \($0)?", options: ["a"]) }
+        let preview = item(choices: form).listDisplayBody
+        #expect(preview.count == NotificationHistoryItem.questionPreviewMax)
+        #expect(preview.hasPrefix("Question 0?"))
+    }
+
     @Test("Without a form the preview is the body as before")
     func noFormFallsBackToBody() {
         #expect(item(choices: nil).listDisplayBody == "```json\n{\n}\n```")

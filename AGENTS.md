@@ -167,6 +167,10 @@ DO が再起動するので publisher も watcher も落ちる。Canopy 側は p
 
 `filename(for:)` は `<millis>-<id>.json` で、`asking` push では `id == requestId`。**`append` は今は upsert する**（既存ファイルがあればそれを残す）ので、同じ requestId から新しく 2 ファイルできることはもう無い。**それでもループは要る** — upsert 前に書かれた履歴がディスクに残っていて、そこには重複がある。片方だけ更新すると、もう片方が `decision == nil` のまま残って未回答の ask として描かれ続ける — しかも 1 件は見つかるので `entryNotFound` も throw されない。
 
+**部分失敗も throw する。** 書けたものと書けなかったものが混ざったら `StoreError.partialUpdate(written:failed:)`。以前は正常終了していて、書けなかったコピーが `decision == nil` のまま未回答の ask として描かれ続けた — この関数自身の症状が、エラー無しで到達していた。ブロードキャストは throw の前に出すので、throw を無視する呼び出し側が以前より悪くなることは無い。
+
+**UI に戻る型がある。** `onDecision` / `onAnswer` は `async throws`。`AskFormView` は失敗で `sent` を戻す（選択は残る、ボタンは「Send answer」に戻る）。成功では戻さない — フォームを消すのは記録された `decision` のほうで、先にボタンを解放すると答え済みのものをもう一度押せてしまう。**relay への POST 失敗は throw しない** — decision は `delivered: false` で記録され、それは履歴行が描ける状態であって、エラーにすると「ユーザーが何を選んだか」の記録ごと捨てることになる。
+
 **upsert は「最初の到着が勝つ」で、上書きではない。** 上書きにすると、記録済みの `decision` が再配送で消えて、答えた ask が未回答に戻る — 重複ファイルが起こしていたのと同じ症状が、その修正自身の経路で復活する。再配送は同じ push なので更新するものが無い。例外は既存ファイルが decode できないときだけで、そのときは配送で書き直す。
 
 ループは **per-file の `do/catch`**。1 件の decode 失敗で全体を落とすと、先に書いたものだけ更新されて broadcast がスキップされ、同じ症状が別経路で出る。`loadAll` も読めないエントリをログして続ける。
@@ -263,7 +267,6 @@ webview→CLI 側に publish を張る必要は**無い**。`stampUser`（phone 
 ## 残タスク
 
 - **Studio を 2.28.0 に上げる。** MBP は 2026-09-07 に上げてストリーム到達を確認済み。Studio はまだ 2.27.0 で、イベントを 1 件も送っていない。イベントストリーム（`04ab152`）は 2.27.0 の**次**のコミットなので、2.27.0 にも 2.26.1 にも入っていない
-- **decision の失敗がカードに戻れない（#28）。** `onDecision` / `onAnswer` が `-> Void` なので、`updateDecision` の throw も部分失敗も UI に届かない。`AskFormView` は `sent` を戻す経路が無く、失敗すると「Sending…」で永久に固まる
 - **タップが本当に落ちる場所にログが無い（#30）。** `didReceive` の `if let` に `else` が無い
 - **LLM 分岐の条件にテストが無い。** `worker/src/index.ts` の `body.kind === "completed"` を `"asking"` に変えると、ask のツール入力が `api.anthropic.com` に飛ぶ。コメントが明示的に守ろうとしている不変条件なのに無防備。`/notify` を `worker.fetch` で叩くハーネスができたので `expect(sent).not.toContain("anthropic")` 1 行で pin できる
 - **relay と Swift が同じ join を別実装。** `plainBanner`（`worker/src/llm.ts`）と `listDisplayBody`（`NotificationHistoryItem.swift`）はどちらも `" · "` で連結するが、blank フィルタ・空白畳み込み・cap がすべて違う。同じ push がロック画面と History 行で違う文字列になりうる

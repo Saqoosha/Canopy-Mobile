@@ -159,34 +159,65 @@ struct HistoryStoreTests {
         }
     }
 
-    // The per-file `do/catch`. A `try` straight through the loop aborted on
-    // the first unreadable duplicate, leaving the rest at `decision == nil`
-    // and — the broadcast sitting after the loop — nothing told to reload.
-    @Test("One unreadable duplicate does not stop the others being updated")
-    func oneBadDuplicateDoesNotStopTheRest() throws {
-        let dir = try makeDir()
-        try HistoryStore.append(item(id: "r1", at: 10), in: dir)
-        try writeCorrupt(id: "r1", at: 1_700_000_020_000, in: dir)
-        try HistoryStore.updateDecision(requestId: "r1", decision: "Allow",
-                                        decidedAt: Date(timeIntervalSince1970: 1_700_000_100),
-                                        delivered: true, in: dir)
-        let loaded = try HistoryStore.loadAll(in: dir)
-        #expect(loaded.count == 1)
-        #expect(loaded.first?.decision == "Allow")
+    /// Run an update and hand back the `StoreError` it raised, if any.
+    private func updateExpectingStoreError(
+        requestId: String, in dir: URL
+    ) throws -> HistoryStore.StoreError? {
+        do {
+            try HistoryStore.updateDecision(requestId: requestId, decision: "Allow",
+                                            decidedAt: Date(timeIntervalSince1970: 1_700_000_100),
+                                            delivered: true, in: dir)
+            return nil
+        } catch let error as HistoryStore.StoreError {
+            return error
+        }
     }
 
-    // Current behaviour, pinned so that changing it is a decision rather than
-    // a side effect: a partial failure returns NORMALLY and the caller is not
-    // told. The survivor keeps `decision == nil` and is still drawn as an
-    // unanswered ask. Closing that needs a case carrying the counts (#28).
-    @Test("A partial failure returns without throwing")
-    func partialFailureIsSilent() throws {
+    // Two things at once, because they are the same moment.
+    //
+    // The per-file `do/catch`: a `try` straight through the loop aborted on
+    // the first unreadable duplicate, leaving the rest at `decision == nil`
+    // and — the broadcast sitting after the loop — nothing told to reload.
+    //
+    // And the partial failure is now REPORTED. It used to return normally:
+    // the copy that failed kept `decision == nil`, still decoded, and was
+    // still drawn as an unanswered ask, reached with no error because the
+    // write that did land looked like enough.
+    @Test("A partial failure is thrown, and the readable copy still lands")
+    func partialFailureIsThrownAndTheGoodCopyLands() throws {
         let dir = try makeDir()
         try HistoryStore.append(item(id: "r1", at: 10), in: dir)
         try writeCorrupt(id: "r1", at: 1_700_000_020_000, in: dir)
-        // No throw, and no signal that one of the two files was not written.
-        try HistoryStore.updateDecision(requestId: "r1", decision: "Allow",
-                                        decidedAt: Date(), delivered: true, in: dir)
+
+        let error = try #require(try updateExpectingStoreError(requestId: "r1", in: dir))
+        guard case .partialUpdate(let written, let failed) = error else {
+            Issue.record("expected partialUpdate, got \(error)")
+            return
+        }
+        #expect(written == 1)
+        #expect(failed == 1)
+        // The announcement happens before the throw, so a caller that ignores
+        // it is no worse off than it was.
+        #expect(try HistoryStore.loadAll(in: dir).first?.decision == "Allow")
+    }
+
+    // The same, with the unreadable copy FIRST. `files(for:in:)` returns them
+    // oldest first, so this is the order in which an abort-on-first loop
+    // reaches the bad one before the good one and writes nothing at all.
+    @Test("An unreadable copy earlier in the order does not block the rest")
+    func aBadFirstCopyDoesNotBlockTheRest() throws {
+        let dir = try makeDir()
+        try writeCorrupt(id: "r1", at: 1_700_000_005_000, in: dir)
+        try writeLegacyDuplicate(item(id: "r1", at: 10), at: 1_700_000_010_000, in: dir)
+
+        let error = try #require(try updateExpectingStoreError(requestId: "r1", in: dir))
+        guard case .partialUpdate(let written, let failed) = error else {
+            Issue.record("expected partialUpdate, got \(error)")
+            return
+        }
+        #expect(written == 1)
+        #expect(failed == 1)
+        #expect(try HistoryStore.loadAll(in: dir).first?.decision == "Allow")
     }
 
     @Test("When no file can be updated the failure is thrown")

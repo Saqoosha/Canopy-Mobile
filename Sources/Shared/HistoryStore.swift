@@ -29,6 +29,15 @@ enum HistoryStore {
         /// unanswered and the user could answer it again, with nothing on
         /// screen or in the log saying the record had not been written.
         case entryNotFound(requestId: String)
+        /// Some of the files for one `requestId` were written and some were
+        /// not.
+        ///
+        /// **Thrown rather than returned as a success, for the same reason
+        /// `entryNotFound` is thrown.** The files that failed keep
+        /// `decision == nil`, still decode, and are still drawn as unanswered
+        /// asks — this store's own symptom, previously reached with no error
+        /// at all because the writes that DID land looked like enough.
+        case partialUpdate(written: Int, failed: Int)
 
         var errorDescription: String? {
             switch self {
@@ -36,6 +45,8 @@ enum HistoryStore {
                 return "The app group container is unavailable"
             case .entryNotFound(let requestId):
                 return "No history entry for requestId \(requestId)"
+            case .partialUpdate(let written, let failed):
+                return "Recorded \(written) of \(written + failed) copies of this answer"
             }
         }
     }
@@ -312,20 +323,20 @@ enum HistoryStore {
                       url.lastPathComponent, requestId, String(describing: error))
             }
         }
-        // Announce whatever landed; throw only when nothing did. `matches` is
-        // non-empty, and each pass either counts or records, so `updated == 0`
-        // guarantees a `firstFailure` — the throw cannot fall through.
+        // Announce whatever landed, then report whatever did not. `matches`
+        // is non-empty and each pass either counts or records, so a zero count
+        // guarantees a `firstFailure` — the first throw cannot fall through.
         //
-        // **A PARTIAL failure returns normally, and the caller is not told.**
-        // The two conditions below are mutually exclusive, so there is no path
-        // that both announces and throws. With two duplicates where one write
-        // fails, the survivor keeps `decision == nil`, still decodes, and is
-        // still drawn as an unanswered ask — this function's own symptom,
-        // reached without an error. It is logged per file above and nowhere
-        // else. Reporting it needs a case carrying the counts, which is a
-        // contract change for both callers.
+        // **A partial failure is thrown too, and that is the change.** It used
+        // to return normally: the survivor kept `decision == nil`, still
+        // decoded, and was still drawn as an unanswered ask — this function's
+        // own symptom, reached with no error because the writes that DID land
+        // looked like enough. The announcement still happens first, so a
+        // caller that ignores the throw is no worse off than before.
         if updated > 0 { HistoryUpdateBridge.postDarwinUpdate() }
-        if updated == 0, let firstFailure { throw firstFailure }
+        guard let firstFailure else { return }
+        if updated == 0 { throw firstFailure }
+        throw StoreError.partialUpdate(written: updated, failed: matches.count - updated)
     }
 
     private static func pruneOldFiles(in dir: URL) throws {

@@ -540,16 +540,22 @@ struct CanopyMobileApp: App {
     ///   picked, so the history row reads "Answered: Postgres" rather than
     ///   "Answered: allow". The two differ on purpose: one is the protocol,
     ///   the other is what the person did.
+    ///
+    /// **Throws when the decision was not recorded**, so the card that offered
+    /// it can say so. A relay failure is NOT one of those: the decision is
+    /// still written with `delivered: false`, which is a state the history row
+    /// renders, and turning that into an error would throw away the record of
+    /// what the user chose.
     private func sendDecision(item: NotificationHistoryItem, decision: String,
                               answers: [String: String]? = nil,
-                              recordAs: String? = nil) {
+                              recordAs: String? = nil) async throws {
         guard let requestId = item.requestId else {
-            // Surfaced, never swallowed. Returning quietly here left the
-            // buttons on screen and the ask answerable again, with the tap
-            // having done nothing at all — indistinguishable from a button
-            // that had not been pressed.
+            // Surfaced, never swallowed — and now it has somewhere to surface
+            // to. Returning quietly left the buttons on screen and the ask
+            // answerable again, with the tap having done nothing at all,
+            // indistinguishable from a button that had not been pressed.
             NSLog("Permission decision skipped: history entry \(item.id) carries no requestId")
-            return
+            throw DecisionError.noRequestId
         }
         // Answering in demo mode moves the fixture rather than the relay, so
         // the roster row flips to "working" the way it would after a real one.
@@ -559,26 +565,36 @@ struct CanopyMobileApp: App {
             return
         }
         let decidedAt = Date()
-        Task {
-            var delivered = false
-            if let client {
-                do {
-                    try await client.sendDecision(machine: item.machine, sessionId: item.sessionId,
-                                                   requestId: requestId, decision: decision,
-                                                   answers: answers)
-                    delivered = true
-                } catch {
-                    NSLog("Permission decision POST failed: %@", String(describing: error))
-                }
-            } else {
-                NSLog("Permission decision skipped: relay not configured")
-            }
+        var delivered = false
+        if let client {
             do {
-                try HistoryStore.updateDecision(requestId: requestId,
-                                                 decision: recordAs ?? decision,
-                                                 decidedAt: decidedAt, delivered: delivered)
+                try await client.sendDecision(machine: item.machine, sessionId: item.sessionId,
+                                               requestId: requestId, decision: decision,
+                                               answers: answers)
+                delivered = true
             } catch {
-                NSLog("HistoryStore.updateDecision failed for requestId=%@: %@", requestId, String(describing: error))
+                NSLog("Permission decision POST failed: %@", String(describing: error))
+            }
+        } else {
+            NSLog("Permission decision skipped: relay not configured")
+        }
+        do {
+            try HistoryStore.updateDecision(requestId: requestId,
+                                             decision: recordAs ?? decision,
+                                             decidedAt: decidedAt, delivered: delivered)
+        } catch {
+            NSLog("HistoryStore.updateDecision failed for requestId=%@: %@", requestId, String(describing: error))
+            throw error
+        }
+    }
+
+    /// The one failure `sendDecision` raises itself.
+    enum DecisionError: LocalizedError {
+        case noRequestId
+
+        var errorDescription: String? {
+            switch self {
+            case .noRequestId: return "This notification carries no request to answer"
             }
         }
     }
@@ -625,13 +641,15 @@ struct CanopyMobileApp: App {
             // not list this session — the header then shows no dot at all,
             // because grey means idle here and "we don't know" is not idle.
             pane: pane,
-            onDecision: { item, decision in sendDecision(item: item, decision: decision) },
+            onDecision: { item, decision in
+                try await sendDecision(item: item, decision: decision)
+            },
             // An answered form is an allow carrying the picked labels. Same
             // method, same single wire path as Allow/Deny — see
             // `RosterClient.sendDecision`'s note on why there is only one.
             onAnswer: { item, answers in
-                sendDecision(item: item, decision: "allow", answers: answers,
-                             recordAs: answers.values.sorted().joined(separator: " · "))
+                try await sendDecision(item: item, decision: "allow", answers: answers,
+                                       recordAs: answers.values.sorted().joined(separator: " · "))
             },
             onSend: { text, replyId in
                 try await sendReply(machine: target.machine,

@@ -593,7 +593,13 @@ private struct SessionEventBlock: View {
                     icon: event.kind == .user ? "arrow.up.circle.fill" : "checkmark.circle",
                     title: event.kind == .user ? "You" : "Canopy",
                     at: event.at)
-                ConversationMarkdown(text: event.text)
+                // A slash command arrives as the CLI's expansion of it, not
+                // as the line that was typed. Only a user turn can be one.
+                if event.kind == .user, let command = SlashCommandText.rendered(event.text) {
+                    SlashCommandBlock(command: command)
+                } else {
+                    ConversationMarkdown(text: event.text)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(14)
@@ -668,6 +674,30 @@ struct ConversationMarkdown: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .markdownMargin(top: .em(0.4), bottom: .em(0.4))
             }
+    }
+}
+
+/// A slash command, boxed the way the Mac boxes it.
+///
+/// **Deliberately not `ConversationMarkdown`.** A command is not prose: an
+/// argument holding `*` or `_` would restyle the line, and one holding a
+/// backtick would open a code span across the rest of it. And the chip shape
+/// that the inline `\.code` style above explicitly cannot have is available
+/// here, because a block can carry a background and padding where a text
+/// style cannot. Same two colours, so a command reads as the same kind of
+/// thing as inline code elsewhere in the conversation.
+private struct SlashCommandBlock: View {
+    let command: String
+
+    var body: some View {
+        Text(command)
+            .font(.system(.callout, design: .monospaced))
+            .foregroundStyle(Color(red: 138 / 255, green: 36 / 255, blue: 36 / 255))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .background(Color.black.opacity(0.04),
+                        in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

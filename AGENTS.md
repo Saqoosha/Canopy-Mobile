@@ -137,6 +137,44 @@ gitignore された生成物なので、worktree を切っただけではビル�
 
 前面復帰を**通知タップ**でやると、アプリが会話画面を積み直して `onAppear` が発火する。修正前のコードでもバックフィルを要求してしまう。**App スイッチャーかホーム画面のアイコンから戻す。**
 
+### コールドスタートの通知タップは `NotificationCenter` に間に合わない
+
+**症状**: 通知をタップするとセッション一覧が開く。あるいは直前に見ていた別の会話がそのまま残る。会話に飛ばない。
+
+**原因**: `didFinishLaunchingWithOptions` でデリゲートを立てた瞬間に iOS が待機中のレスポンスを配る。SwiftUI が `WindowGroup` の body を評価して `.onReceive` を張るのはそのあと。**`NotificationCenter` は観測者のいない post をキューしない** ので、タップは消える。
+
+**修正**: `PushRegistrar.pendingTap` に保持し、post も従来どおり行う。シーンは `.task` と `scenePhase == .active` の両方で回収する。先に着いたほうが処理して nil にする。順序を当てにしない形にした。
+
+**もう一つの顔**: 遷移側が `guard ... else { return }` で黙って帰ると `path` が変わらず、直前の会話が残る。**タップは必ず遷移する**（名前が取れなければ仮タイトル）。
+
+### `print` は実機で読めない — 通知タップ起動なら特に
+
+**症状**: 「surfaced, never swallowed」で足したログが、実機で 1 行も出ない。
+
+**原因**: `print` は stdout。`devicectl process launch --console` で **devicectl 自身が起動した** プロセスでしか拾えない。通知タップで起動したアプリも、ロック画面から Allow を押したときのプロセスも、起動したのは OS なので stdout はどこにも繋がっていない。あとから復元する手段も無い。
+
+**修正**: `NSLog`。os_log の default レベルに乗るのでディスクに残り、`log stream` でも sysdiagnose でも読める。`Sources/` のアプリ側は全部 `NSLog` に統一済み。
+
+補間ではなく `%@` + 引数で書く。`NSLog` の第一引数は printf format string なので、値に `%` が入ると仕様子として読まれる。
+
+### Darwin 通知は自プロセスにも返る。でも依存してはいけない
+
+`CFNotificationCenterGetDarwinNotifyCenter` に post したものは、**同じプロセスの observer にも配送される**。これが常態であって例外ではない。
+
+だが `HistoryUpdateBridge.postDarwinUpdate` はローカルにも `didUpdate` を直接 post する。**decision を書くのはアプリ本体**（`sendDecision` とロック画面ハンドラ）で、読むのも同じプロセス。libnotify の実装詳細に画面更新を賭けると、失敗が「答えたのに質問が消えない」という形でだけ現れる。
+
+代償は `didUpdate` が 1 write につき 2 回鳴ること。`load()` は純粋な再読み込みなので害は無いが、`loadAll()`（最大 100 ファイルの同期 decode）が 2 周する。
+
+`startBridge()` は **Darwin observer を登録して `didUpdate` を post する** 側。`didUpdate` を observe しているのは 2 つの SwiftUI `.onReceive` だけ。だから extension でローカル post が無意味なのは「view が無いから」であって「`startBridge()` を呼んでいないから」ではない。呼んでも何も変わらない。
+
+### `updateDecision` は requestId が一致する全ファイルを更新する
+
+`append` は重複排除しない。`filename(for:)` は `<millis>-<id>.json` で、`asking` push では `id == requestId`。だから同じ requestId が 2 回届くと **2 ファイル** できる。片方だけ更新すると、もう片方が `decision == nil` のまま残って未回答の ask として描かれ続ける — しかも 1 件は見つかるので `entryNotFound` も throw されない。
+
+ループは **per-file の `do/catch`**。1 件の decode 失敗で全体を落とすと、先に書いたものだけ更新されて broadcast がスキップされ、同じ症状が別経路で出る。`loadAll` も読めないエントリをログして続ける。
+
+**重複配送の原因は特定できていない。** relay のスロットルリトライではない — `worker/src/apns.ts` が「429 は拒否であって、配送してから文句を言うわけではない」と明記している。ループの根拠は「`append` が重複排除しない」だけで足りる。
+
 ### vitest が 1Password のロックで空振りする
 
 `worker/.dev.vars` は 1Password の mount（FIFO）へのシンボリックリンク。1Password がロックされていると open でブロックし、vitest-pool-workers がタイムアウトして **exit 0 で "no tests"** を出す。緑に見える。テスト数の床（下記）がこれを捕まえる。
@@ -153,4 +191,8 @@ gitignore された生成物なので、worktree を切っただけではビル�
 
 ## 残タスク
 
-- **Canopy 側にイベントストリームを含むリリースがまだ無い。** インストール版は 2.26.1 で、機能は main にしか入っていない。リリースするまで実機は Debug ビルドを立てないとストリームが出ない
+- **Canopy 2.28.0 を両方の Mac に入れる。** イベントストリーム（`04ab152`）は 2.27.0 の**次**のコミットなので、2.27.0 にも 2.26.1 にも入っていない。2.28.0 で出た。上げるまで電話にストリームは 1 件も来ない — relay のリングバッファを直接読んで両 Mac とも 0 件を確認済み。判定は **レンチアイコンの tool 行** が会話に出るかどうか
+- **Mac で打ったプロンプトが `user` イベントになるかは未検証。** Canopy の `publishSessionEvents` は `handleShimMessage(type: "webview_message")` = **CLI → webview 方向でしか呼ばれない**。webview で打った入力は逆方向なので、CLI がエコーを返す場合だけイベントになる。2.28.0 を入れて、tool 行は出るのに `user` 行だけ出ないなら、publish 経路を webview→CLI 側にも張る必要がある
+- **decision の失敗がカードに戻れない。** `onDecision` / `onAnswer` が `-> Void` なので、`updateDecision` の throw も部分失敗も UI に届かない。`AskFormView` は `sent` を戻す経路が無く、失敗すると「Sending…」で永久に固まる（Mac が止まって待っているカードで）。3 レビュアーが一致して指摘。`StoreError.partialUpdate(written:failed:)` の追加とセットで直すべき
+- **`append` の upsert 化。** 重複ファイルを源で消せば、`ForEach` の id 衝突（同じ `requestId` の item が 2 つ = 同じ `ConversationRow.id`）も同時に閉じる
+- **`HistoryStore` にテストが無い。** `containerURL()` が App Group を直に引くので host-less テストバンドルから触れない。ディレクトリ注入の seam が要る。2026-09-07 に 4 レビュアーが一致で見つけたループのバグは、テストがあれば実機の前に捕まった

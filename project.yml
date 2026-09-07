@@ -28,12 +28,21 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: sh.saqoo.canopy-app
+        INFOPLIST_KEY_CFBundleDisplayName: Canopy
         DEVELOPMENT_TEAM: VCFY2GFR89
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # xcodegen auto-detects an Info.plist anywhere under a target's source
+        # paths and sets INFOPLIST_FILE from it — the `excludes` above does not
+        # stop that scan. Left alone it hands this app the notification
+        # extension's plist, which lands NSExtension in the app bundle and
+        # drops GENERATE_INFOPLIST_FILE's keys, app icon included. Blanking it
+        # puts the generated plist back.
+        INFOPLIST_FILE: ""
     dependencies:
       - target: CanopyMobileNotificationService
       - package: MarkdownUI

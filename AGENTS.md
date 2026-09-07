@@ -236,11 +236,23 @@ plutil -p <app>/Info.plist | grep -E "CFBundleIconName|CFBundleDisplayName|NSExt
 
 webview→CLI 側に publish を張る必要は**無い**。`stampUser`（phone reply の id を echo に付け直す機構）が成立しているのも同じエコーが前提。
 
+**ただし「打った文字列そのもの」は slash command では成り立たない。** CLI はモデルに渡す前に `/remember-session push` を展開するので、エコーで返るのは展開形のほう。
+
+```
+<command-message>remember-session</command-message>
+<command-name>/remember-session</command-name>
+<command-args>push</command-args>
+```
+
+電話はこれをそのまま描いて、"You" の下に XML が 4 行出た（実機で報告）。`SlashCommandText` が `/remember-session push` に戻す。`<command-args>` は任意（ローカルの transcript 5258 件中 3259 件）、`<command-name>` はスラッシュ付きが普通だが無い綴りもある。
+
+**判定は全文一致で、`contains` は禁止。** Canopy が `ShimProcess.isRecapEcho` で先に踏んでいて、理由もそこに書いてある — 部分一致だとラッパーを**引用しただけ**のメッセージ（transcript の貼り付け、この機能のバグ報告、パーサ自身のレビュー）を壊す。
+
 ## 検証で使える基準値
 
 | | |
 |---|---|
-| Swift テスト | 95 |
+| Swift テスト | 109 |
 | worker テスト | 88 |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 

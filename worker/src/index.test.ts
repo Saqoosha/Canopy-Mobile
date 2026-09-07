@@ -439,12 +439,22 @@ describe("plainBanner", () => {
       askJson,
       200,
     );
-    expect(banner).toContain("middle question");
+    expect(banner).toBe("Use ```json · middle question · or ```yaml");
   });
 
   it("caps at the limit", () => {
     const many = Array.from({ length: 20 }, (_, i) => ({ question: `Question number ${i}` }));
     expect(Array.from(plainBanner(many, askJson, 100)).length).toBe(100);
+  });
+
+  it("cuts on code points, so a cap cannot split an emoji", () => {
+    expect(plainBanner([{ question: "\u{1F680}".repeat(200) }], "fallback", 100)).toBe(
+      "\u{1F680}".repeat(100),
+    );
+  });
+
+  it("trims a question that has content and padding", () => {
+    expect(plainBanner([{ question: "  Which region?  " }], "fallback", 100)).toBe("Which region?");
   });
 
   it("collapses newlines so a question cannot break the banner across lines", () => {
@@ -458,7 +468,13 @@ describe("plainBanner", () => {
 // of it. Deleting `plainBanner(...)` from the /notify route leaves every other
 // test in this file green — measured — so without this the fix is unguarded.
 describe("/notify puts the banner it builds into the push", () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    // Storage is not rolled back per test under vitest-pool-workers 0.22, so
+    // these outlive the block. Measured: a probe appended below read both back.
+    await env.MACHINES.delete("device_token");
+    await env.MACHINES.delete("apns_env:abcdef01");
+  });
 
   async function bannerSentFor(body: unknown): Promise<string> {
     // A throwaway P-256 key: `sendPush` signs a JWT before it calls APNs, and
@@ -478,7 +494,7 @@ describe("/notify puts the banner it builds into the push", () => {
       return new Response("", { status: 200 });
     });
 
-    await worker.fetch(
+    const res = await worker.fetch(
       new Request("https://x/notify", {
         method: "POST",
         headers: { ...auth, "Content-Type": "application/json" },
@@ -486,8 +502,12 @@ describe("/notify puts the banner it builds into the push", () => {
       }),
       { ...env, APNS_KEY_ID: "K", APNS_TEAM_ID: "T", APNS_BUNDLE_ID: "B", APNS_AUTH_KEY: pem } as never,
     );
-    return JSON.parse(sent).aps.alert.body;
+    expect(res.ok, `/notify returned ${res.status}`).toBe(true);
+    lastPayload = JSON.parse(sent);
+    return lastPayload.aps.alert.body;
   }
+
+  let lastPayload: { aps: { alert: { body: string } }; choices?: unknown };
 
   const askJson = '```json\n{\n  "questions" : [\n    { "question" : "Which database?" }\n  ]\n}\n```';
 
@@ -499,6 +519,28 @@ describe("/notify puts the banner it builds into the push", () => {
         choices: [{ question: "Which database?", options: [{ label: "pg" }], multiSelect: false }],
       }),
     ).toBe("Which database?");
+  });
+
+  // The whole argument for computing the banner here: `fitPushPayload` drops
+  // `choices` when the payload will not fit, so a phone could not rebuild the
+  // questions for the largest asks. Breaks if the banner ever moves after the
+  // shrink in `index.ts`.
+  it("keeps the questions even when the form is dropped to fit APNs", async () => {
+    const choices = Array.from({ length: 40 }, (_, i) => ({
+      question: `Question ${i}`,
+      options: Array.from({ length: 6 }, (_, j) => ({
+        label: `Option ${j}`,
+        description: "padding".repeat(12),
+      })),
+      multiSelect: false,
+    }));
+    const banner = await bannerSentFor({
+      machine: "m1", sessionId: "s1", title: "Canopy — AskUserQuestion",
+      body: askJson, kind: "asking", requestId: "r1", answerable: false, choices,
+    });
+    expect(banner).toContain("Question 0");
+    expect(banner).not.toContain("{");
+    expect(lastPayload.choices).toBeUndefined();
   });
 
   it("sends the relay's own banner for an ask with no form", async () => {

@@ -165,12 +165,20 @@ enum HistoryStore {
     /// Updates `decision` / `decidedAt` for the entry with a matching requestId.
     /// Called after the user acts on Allow or Deny — from the app's detail
     /// view, or from `PushRegistrar` when the action came off the lock screen.
-    /// `decision` is `allow`, `deny` or `allowAlways` — the notification
-    /// action identifiers, unchanged, so there is no translation table to
-    /// keep in step with the relay's contract. (An earlier version of this
-    /// line said `allowAlways` was out of scope and unproducible; both the
-    /// Always button and the lock-screen action produce it, and
-    /// `worker/src/index.ts` accepts it.)
+    /// **What is STORED here is not always what went on the wire.** The relay
+    /// takes an action identifier — `allow`, `deny` or `allowAlways` — and
+    /// that is what `RosterClient.sendDecision` posts. This function records
+    /// `recordAs` when the caller supplies one, which for an answered
+    /// `AskUserQuestion` is the labels the user picked, so a stored `decision`
+    /// can read "Postgres · main". One is the protocol, the other is what the
+    /// person did; `CanopyMobileApp.sendDecision` is where they part. Reading
+    /// this field as a three-value enum would break every answered form.
+    ///
+    /// (Two earlier versions of this line were wrong in opposite directions:
+    /// one said `allowAlways` was unproducible — both the Always button and
+    /// the lock-screen action produce it, and `worker/src/index.ts` accepts
+    /// it — and its replacement said the three identifiers were the whole
+    /// set. Found by review, twice.)
     ///
     /// Throws `StoreError.entryNotFound` when nothing matches — which is what
     /// a pruned entry looks like, and also what a genuine id mismatch looks

@@ -320,15 +320,29 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
     /// Single source of truth for "what the History list row should show":
     /// the worker-generated short summary if it exists, else the full body.
     /// Already `null`-cleaned so the row can render it directly.
+    ///
+    /// **An ask carrying a form needs no special case here, because the relay
+    /// already did it.** `bodyShort` is `aps.alert.body`, and for an ask with
+    /// a form that banner IS the questions joined into one line — computed by
+    /// `plainBanner` in worker/src/llm.ts, which drops the blank ones,
+    /// collapses whitespace and caps at BANNER_MAX. This used to join
+    /// `choices` itself, which was the same rule written a second time and
+    /// with none of those three steps, so one push read differently on the
+    /// lock screen and in this row: a leading " · " for a blank first
+    /// question, a wrapped row for a question holding a newline, and 587
+    /// unbounded characters for a forty-question form.
+    ///
+    /// Reading the relay's line also covers the case the phone could never
+    /// reach: `fitPushPayload` drops `choices` wholesale when the payload will
+    /// not fit 4 KB, so for the largest asks — the ones whose JSON body is
+    /// least readable — there was no form here to derive anything from. The
+    /// banner is computed before that drop.
+    ///
+    /// The cost is stored history written before the relay bannered questions
+    /// at all: those items hold the truncated JSON in `bodyShort`, and their
+    /// rows go back to showing it. They are bounded (100 files) and they are
+    /// showing what they showed when they arrived.
     var listDisplayBody: String {
-        // An ask that carries its form previews as its QUESTIONS, not as its
-        // body. The body of an AskUserQuestion is the tool's input rendered
-        // as a fenced JSON block, so the two-line preview read "```json" and
-        // "{…" — the same duplicate the conversation stopped showing under
-        // the form (`showsBody`), leaking into the list. Found on device.
-        if let choices, !choices.isEmpty {
-            return choices.map(\.question).joined(separator: " · ")
-        }
-        return Self.displayableBody(bodyShort ?? body)
+        Self.displayableBody(bodyShort ?? body)
     }
 }

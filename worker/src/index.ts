@@ -1,6 +1,6 @@
 import { MachineDO } from "./machine";
 import { sendPush, type ApnsEnv } from "./apns";
-import { shortenWithLLM, fallbackBanner, safeSlice, type LlmEnv } from "./llm";
+import { fallbackBanner, questionBanner, safeSlice, shortenWithLLM, type LlmEnv } from "./llm";
 import type { DecisionBody, NotifyBody, ReplyBody } from "./types";
 export { MachineDO };
 
@@ -172,10 +172,15 @@ export default {
       // doc argues nowhere; it was inherited by the banner path rather than
       // chosen. Truncation loses nothing here either, since the full text is
       // in `bodyFull` and a JSON blob summarises badly.
+      // An ask that carries a form banners as its QUESTIONS. Its `fullText` is
+      // the tool's input as a fenced JSON block, which `stripMarkdown` empties
+      // and `fallbackBanner` then falls back to the raw text of — see
+      // `questionBanner`, which also explains why this belongs here and not on
+      // the phone. Still capped at BANNER_MAX, and still never sent to an LLM.
       const banner =
         body.kind === "completed" && fullText.length > BANNER_MAX
           ? await shortenWithLLM(env, fullText, BANNER_MAX)
-          : fallbackBanner(fullText, BANNER_MAX);
+          : fallbackBanner(questionBanner(body.choices) ?? fullText, BANNER_MAX);
       const payload = {
         aps: {
           alert: { title: body.title, body: banner },

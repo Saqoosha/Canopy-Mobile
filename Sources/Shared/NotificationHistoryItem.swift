@@ -320,28 +320,15 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
     /// Single source of truth for "what the History list row should show":
     /// the worker-generated short summary if it exists, else the full body.
     /// Already `null`-cleaned so the row can render it directly.
-    /// The questions this ask poses, as one line — nil when it poses none.
-    ///
-    /// **The single source for "what an AskUserQuestion says instead of its
-    /// body".** That body is the tool's input rendered as a fenced JSON block,
-    /// and three surfaces have each had to stop showing it: the conversation
-    /// card (`showsBody`), the History row (`listDisplayBody`), and the
-    /// lock-screen banner (the Notification Service Extension). The first two
-    /// grew a copy of the rule apiece and the third was missed, so a real ask
-    /// arrived on the lock screen reading "```json / { / \"questions\" : [ /
-    /// {…" — measured on device 2026-09-07. One rule, three readers.
-    ///
-    /// The relay cannot do this instead: it truncates an `asking` push's body
-    /// rather than summarising it, deliberately, so the tool's input is never
-    /// sent to an LLM (`worker/src/index.ts`). Rewriting the banner is what
-    /// `mutable-content` is for.
-    var questionSummary: String? {
-        guard let choices, !choices.isEmpty else { return nil }
-        return choices.map(\.question).joined(separator: " · ")
-    }
-
     var listDisplayBody: String {
-        if let questionSummary { return questionSummary }
+        // An ask that carries its form previews as its QUESTIONS, not as its
+        // body. The body of an AskUserQuestion is the tool's input rendered
+        // as a fenced JSON block, so the two-line preview read "```json" and
+        // "{…" — the same duplicate the conversation stopped showing under
+        // the form (`showsBody`), leaking into the list. Found on device.
+        if let choices, !choices.isEmpty {
+            return choices.map(\.question).joined(separator: " · ")
+        }
         return Self.displayableBody(bodyShort ?? body)
     }
 }

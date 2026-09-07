@@ -46,6 +46,35 @@ export function safeSlice(text: string, maxChars: number): string {
   return Array.from(text).slice(0, maxChars).join("");
 }
 
+/// The questions an `AskUserQuestion` poses, as one line — or null when the
+/// push carries no form.
+///
+/// **This exists because the banner for an ask is the tool's input, and for
+/// this one tool that input is a fenced JSON block.** `stripMarkdown` deletes
+/// a fenced block wholesale, so `fallbackBanner` finds nothing left, falls
+/// back to the raw text, and the lock screen reads "```json / { / "questions"
+/// : [ / {…". Reported from a device 2026-09-07.
+///
+/// **Answered here rather than on the phone, and the difference is the case
+/// that matters most.** `fitPushPayload` drops `choices` wholesale when the
+/// payload will not fit 4 KB — so the phone cannot reconstruct the questions
+/// for exactly the largest asks, which are both the most likely to overflow
+/// and the ones whose JSON banner is least readable. This runs before that
+/// drop. It also needs no LLM, so it does not touch the rule that an ask's
+/// input is never sent to one, and it reaches phones running an older build.
+export function questionBanner(choices: unknown): string | null {
+  if (!Array.isArray(choices) || choices.length === 0) return null;
+  const questions = choices
+    .map((c) =>
+      c !== null && typeof c === "object" ? (c as { question?: unknown }).question : undefined,
+    )
+    .filter((q): q is string => typeof q === "string" && q.trim().length > 0);
+  // Every question blank is not a form worth showing: a banner of "" or " · "
+  // is strictly worse than the JSON it would replace, because a bodyless
+  // notification is indistinguishable from no notification.
+  return questions.length > 0 ? questions.join(" · ") : null;
+}
+
 export function fallbackBanner(text: string, maxChars: number): string {
   const stripped = stripMarkdown(text);
   return safeSlice(stripped.length > 0 ? stripped : text, maxChars);

@@ -1,7 +1,7 @@
 // worker/src/index.test.ts
 import { SELF } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
-import { safeSlice } from "./llm";
+import { fallbackBanner, questionBanner, safeSlice } from "./llm";
 import { fitPushPayload } from "./index";
 
 // Must match the SHARED_SECRET binding in vitest.config.ts. Spelled as a
@@ -385,5 +385,89 @@ describe("AskUserQuestion form", () => {
   it("leaves a payload that already fits completely alone", () => {
     const payload = { title: "t", body: "b", bodyFull: "short", choices: form };
     expect(fitPushPayload(payload, 4096)).toEqual(payload);
+  });
+});
+
+describe("questionBanner", () => {
+  it("joins the questions an ask poses", () => {
+    expect(
+      questionBanner([{ question: "Which database?" }, { question: "Which region?" }]),
+    ).toBe("Which database? · Which region?");
+  });
+
+  it("is null for a push with no form, so the relay's own banner stands", () => {
+    expect(questionBanner(undefined)).toBeNull();
+    expect(questionBanner([])).toBeNull();
+  });
+
+  // A blank banner is worse than the JSON it replaces: a notification with a
+  // title and no body reads as no notification at all.
+  it("is null when every question is blank", () => {
+    expect(questionBanner([{ question: "   " }, { question: "" }])).toBeNull();
+  });
+
+  it("keeps the questions that are real and drops the rest", () => {
+    expect(questionBanner([{ question: "  " }, { question: "Which region?" }])).toBe(
+      "Which region?",
+    );
+  });
+
+  it("refuses anything that is not a list of question-bearing objects", () => {
+    expect(questionBanner("questions")).toBeNull();
+    expect(questionBanner([null, 42, { header: "no question here" }])).toBeNull();
+  });
+});
+
+describe("the banner an asking push actually ships", () => {
+  // The reported bug. `stripMarkdown` deletes the fenced block wholesale, so
+  // `fallbackBanner` finds nothing left and falls back to the raw JSON.
+  const askJson = '```json\n{\n  "questions" : [\n    {\n      "question" : "Which database?"\n    }\n  ]\n}\n```';
+
+  it("was the raw JSON before questionBanner existed", () => {
+    const before = fallbackBanner(askJson, 100);
+    expect(before).toContain("json");
+    expect(before).toContain("{");
+  });
+
+  it("is the questions once the form is present", () => {
+    const after = fallbackBanner(
+      questionBanner([{ question: "Which database?" }]) ?? askJson,
+      100,
+    );
+    expect(after).toBe("Which database?");
+    expect(after).not.toContain("{");
+  });
+
+  it("stays capped at BANNER_MAX", () => {
+    const long = Array.from({ length: 10 }, (_, i) => ({ question: `Question number ${i} with padding` }));
+    const banner = fallbackBanner(questionBanner(long) ?? "", 100);
+    expect(Array.from(banner).length).toBeLessThanOrEqual(100);
+  });
+
+  // The case the phone-side fix could not reach: `fitPushPayload` drops
+  // `choices` to fit 4 KB, so a phone reconstructing the questions from the
+  // payload has nothing to work with. The banner is computed before that.
+  it("survives the payload shrink that drops choices", () => {
+    // A form big enough that emptying `bodyFull` is not enough — the only
+    // condition under which `fitPushPayload` drops `choices`, and reachable
+    // exactly for the asks whose JSON banner is worst.
+    const choices = Array.from({ length: 40 }, (_, i) => ({
+      question: `Question ${i}`,
+      options: Array.from({ length: 6 }, (_, j) => ({
+        label: `Option ${j}`,
+        description: "padding".repeat(12),
+      })),
+    }));
+    const banner = fallbackBanner(questionBanner(choices) ?? askJson, 100);
+    const fitted = fitPushPayload(
+      { aps: { alert: { body: banner } }, bodyFull: "x".repeat(2000), choices } as never,
+      4096,
+    ) as { aps: { alert: { body: string } }; choices?: unknown };
+    // The form is gone, so a phone reading the payload cannot rebuild the
+    // questions. The banner computed before the shrink still carries them.
+    expect(fitted.choices).toBeUndefined();
+    expect(fitted.aps.alert.body).toBe(banner);
+    expect(fitted.aps.alert.body).toContain("Question 0");
+    expect(fitted.aps.alert.body).not.toContain("{");
   });
 });

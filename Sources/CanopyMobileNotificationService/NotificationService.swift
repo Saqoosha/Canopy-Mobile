@@ -108,27 +108,6 @@ final class NotificationService: UNNotificationServiceExtension {
             eventId: userInfo["eventId"] as? String
         )
 
-        // **The one thing this extension mutates, and the reason
-        // `mutable-content` is set.** An `AskUserQuestion`'s body is the tool's
-        // input rendered as a fenced JSON block. The relay truncates an
-        // `asking` push rather than summarising it — deliberately, so the
-        // tool's input never reaches an LLM — so the first 100 characters of
-        // that JSON became the lock-screen banner: "```json / { / "questions" :
-        // [ / {…". Measured on device 2026-09-07.
-        //
-        // `questionSummary` is the same rule the conversation card and the
-        // History row already apply; see its doc. Nil for every other push, so
-        // the relay's banner stands untouched — including an `asking` that
-        // carries no form, where the truncated tool input IS the useful text.
-        //
-        // Only reachable when `mutableCopy` succeeded. On the fallback path the
-        // original content ships with the raw banner, which is the same
-        // trade-off `deliverableContent` already makes: a worse notification
-        // beats no notification.
-        if let best, let summary = item.questionSummary {
-            best.body = summary
-        }
-
         do {
             // HistoryStore.append posts the Darwin update itself on success,
             // waking any foregrounded main-app view observing history.

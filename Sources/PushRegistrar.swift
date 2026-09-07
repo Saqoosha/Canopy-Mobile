@@ -171,8 +171,36 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
                 object: nil,
                 userInfo: info
             )
+        } else {
+            // **The one place a tap is really dropped, and it was silent.**
+            // Everything past this point is guaranteed to navigate — the
+            // handler falls back to a placeholder title rather than returning
+            // — so a tap that went nowhere got here, and got here with the app
+            // coming up on whatever screen it was already on. Indistinguishable
+            // from a tap that never happened, which is what made the last one
+            // of these take a device session to find.
+            //
+            // A push from this relay always carries both keys, so one missing
+            // means a payload from somewhere else or a build older than the
+            // field. Key NAMES only: the values are the user's conversation.
+            NSLog("Notification tap dropped: payload is missing %@ (present: %@)",
+                  Self.missingTapKeys(in: userInfo).joined(separator: ", "),
+                  userInfo.keys.compactMap { $0 as? String }.sorted().joined(separator: ", "))
         }
         completionHandler()
+    }
+
+    /// Which of the two keys a tap needs to route are absent.
+    ///
+    /// Pure and static so it can be pinned without a `UNNotificationResponse`,
+    /// which cannot be built outside the system — the reason the branch above
+    /// had no test to lose. The `as? String` matches the `if let` exactly: a
+    /// key present under the wrong type is as missing as one not there.
+    ///
+    /// `nonisolated` because it is exactly that — a function of its argument.
+    /// This type is `@MainActor` for the delegate callbacks around it.
+    nonisolated static func missingTapKeys(in userInfo: [AnyHashable: Any]) -> [String] {
+        ["machine", "sessionId"].filter { userInfo[$0] as? String == nil }
     }
 
     /// The most recent notification tap no scene has acted on yet, or nil.

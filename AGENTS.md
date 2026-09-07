@@ -179,6 +179,14 @@ gitignore された生成物なので、worktree を切っただけではビル�
 
 `worker/.dev.vars` は 1Password の mount（FIFO）へのシンボリックリンク。1Password がロックされていると open でブロックし、vitest-pool-workers がタイムアウトして **exit 0 で "no tests"** を出す。緑に見える。テスト数の床（下記）がこれを捕まえる。
 
+### Mac で打ったプロンプトも `user` イベントになる（検証済み）
+
+`publishSessionEvents` は `handleShimMessage(type: "webview_message")` = **CLI → webview 方向でしか呼ばれない**。webview で打った入力は逆方向なので、コードを読むだけだと「Mac 入力はイベントにならない」と読める。
+
+**ならない、が正解ではない。** CLI は webview 発の user フレームを**エコーして返す**ので、その復路で `publishSessionEvents` が拾う。2026-09-07 に MBP を 2.28.0 に上げて実測：1 ターンで `{"user":1,"assistant":2,"tool":2}`、`user` の text は Mac のチャット欄に打った文字列そのもの。
+
+webview→CLI 側に publish を張る必要は**無い**。`stampUser`（phone reply の id を echo に付け直す機構）が成立しているのも同じエコーが前提。
+
 ## 検証で使える基準値
 
 | | |
@@ -191,8 +199,7 @@ gitignore された生成物なので、worktree を切っただけではビル�
 
 ## 残タスク
 
-- **Canopy 2.28.0 を両方の Mac に入れる。** イベントストリーム（`04ab152`）は 2.27.0 の**次**のコミットなので、2.27.0 にも 2.26.1 にも入っていない。2.28.0 で出た。上げるまで電話にストリームは 1 件も来ない — relay のリングバッファを直接読んで両 Mac とも 0 件を確認済み。判定は **レンチアイコンの tool 行** が会話に出るかどうか
-- **Mac で打ったプロンプトが `user` イベントになるかは未検証。** Canopy の `publishSessionEvents` は `handleShimMessage(type: "webview_message")` = **CLI → webview 方向でしか呼ばれない**。webview で打った入力は逆方向なので、CLI がエコーを返す場合だけイベントになる。2.28.0 を入れて、tool 行は出るのに `user` 行だけ出ないなら、publish 経路を webview→CLI 側にも張る必要がある
+- **Studio を 2.28.0 に上げる。** MBP は 2026-09-07 に上げてストリーム到達を確認済み。Studio はまだ 2.27.0 で、イベントを 1 件も送っていない。イベントストリーム（`04ab152`）は 2.27.0 の**次**のコミットなので、2.27.0 にも 2.26.1 にも入っていない
 - **decision の失敗がカードに戻れない。** `onDecision` / `onAnswer` が `-> Void` なので、`updateDecision` の throw も部分失敗も UI に届かない。`AskFormView` は `sent` を戻す経路が無く、失敗すると「Sending…」で永久に固まる（Mac が止まって待っているカードで）。3 レビュアーが一致して指摘。`StoreError.partialUpdate(written:failed:)` の追加とセットで直すべき
 - **`append` の upsert 化。** 重複ファイルを源で消せば、`ForEach` の id 衝突（同じ `requestId` の item が 2 つ = 同じ `ConversationRow.id`）も同時に閉じる
 - **`HistoryStore` にテストが無い。** `containerURL()` が App Group を直に引くので host-less テストバンドルから触れない。ディレクトリ注入の seam が要る。2026-09-07 に 4 レビュアーが一致で見つけたループのバグは、テストがあれば実機の前に捕まった

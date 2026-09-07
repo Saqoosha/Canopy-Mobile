@@ -14,7 +14,24 @@ enum HistoryUpdateBridge {
     static let didUpdate = Notification.Name("CanopyMobileHistoryDidUpdate")
 
     /// Posts the Darwin notification so any process subscribed to
-    /// `HistoryUpdateBridge.darwinName` is woken.
+    /// `HistoryUpdateBridge.darwinName` is woken, and re-posts `didUpdate`
+    /// locally so THIS process is woken too.
+    ///
+    /// **The local re-post is not redundant belt-and-braces — it is the only
+    /// thing that guarantees the writing process sees its own write.** Both
+    /// writers now run in the host app as well as in the extension:
+    /// `updateDecision` is called from `CanopyMobileApp.sendDecision` and from
+    /// `PushRegistrar`'s lock-screen handler, both in-process. Whether
+    /// `notifyd` loops a Darwin notification back to the process that posted
+    /// it is an implementation detail of libnotify that this app must not
+    /// depend on, and the failure when it does not is silent and specific: the
+    /// answered ask keeps rendering its buttons, because `SessionConversationView`
+    /// only reloads on `didUpdate`.
+    ///
+    /// If the loopback DOES happen, `didUpdate` fires twice and the list
+    /// reloads twice. `load()` is a pure re-read, so that costs a duplicate
+    /// pass and changes nothing — the right trade against an answer that
+    /// silently never appears.
     static func postDarwinUpdate() {
         let name = darwinName as CFString
         CFNotificationCenterPostNotification(
@@ -24,6 +41,13 @@ enum HistoryUpdateBridge {
             nil,
             true
         )
+        // `NotificationCenter` delivers synchronously on the calling thread,
+        // and the observers are SwiftUI `.onReceive` handlers, so hop to main
+        // rather than reloading a view's state from whatever queue the write
+        // finished on.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: didUpdate, object: nil)
+        }
     }
 
     /// Subscribes the current process to the Darwin notification and

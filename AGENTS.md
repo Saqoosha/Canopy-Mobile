@@ -252,7 +252,7 @@ plutil -p <app>/Info.plist | grep -E "CFBundleIconName|CFBundleDisplayName|NSExt
 
 **症状**: Cloudflare から「Durable Objects の 1 日 5,000,000 rows_read 無料枠を超えた」。relay がエラーを返し始める。イベントストリームを入れた翌日（2026-09-08）。
 
-**原因**: `appendEvent` がイベント 1 件ごとに `trim()` を呼び、そこにこの形が 2 本あった。
+**原因**: `appendEvent` がイベント 1 件ごとに `trim()` を呼び、そこにこの形が **記録用の SELECT と削除用の DELETE で 2 本** あった。
 
 ```sql
 DELETE FROM event WHERE session_id NOT IN (
@@ -260,23 +260,35 @@ DELETE FROM event WHERE session_id NOT IN (
 )
 ```
 
-`EXPLAIN QUERY PLAN` で外が `SCAN event`、内が `SCAN event USING COVERING INDEX`。**上限以下で消すものが 1 行も無くても、毎回そのまま走る。**
+`EXPLAIN QUERY PLAN` で外が `SCAN event`、内が `SCAN event USING COVERING INDEX`。**1 文につき全表 2 周、2 本で 4 周。** しかも上限以下で消すものが 1 行も無くても毎回走る。（セッション単位の trim にも `NOT IN` が 2 本あって、これは 800 行ほど。合計 4 本）
 
 **実測の取り方**: `sql.exec()` が返すカーソルの `rowsRead` / `rowsWritten` が課金カウンタそのもの。`runInDurableObject(stub, (instance, state) => ...)` の `state.storage.sql.exec` を包めば、本物の workerd で 1 操作あたりのコストが取れる。**カーソルは汲み終わってからでないと数を報告しない**ので、包む側で `toArray()` して配列で返す。
 
-イベント 1 件 append あたりの rows_read（バッファ満杯 = 20 セッション × 200 件）:
+### 上限は 3 つある。fixture が 2 つしか埋めないとコストのテストは嘘をつく
+
+**この修正自身が 1 回踏んだ。** 上のコスト上限テストの fixture は `event` の 2 つの上限（20 セッション × 200 件）だけを埋めていて、`maxEvictionMarks` = 200 のマーク表が空だった。その状態で 249 行。**マーク表を実際に上限まで埋めると同じ append が 651 行**で、差の 405 行は全部 `trimEvictionMarks` の 1 文 — 消すものがゼロなのに `eviction` を 2 周する、まさにこの PR が消したのと同じ形。テストの天井は 500 だったので、**本番の定常状態はテストが落ちる値だったのに緑だった。**
+
+`noteEviction` が毎回 `trimEvictionMarks()` を呼んでいたのが原因。**上限を越えさせられるのは新規 session_id の INSERT だけ**なので、主キー 1 行の存在確認でゲートすれば、定常状態（既にマークがある）では呼ばれない。405 → 0。
+
+**fixture のもう一つの罠**: セッションを上限ちょうど（200 件）で止めると、そのセッションはまだ 1 度も evict していないのでマークを持たない。次の 1 件が「そのセッション唯一のマーク trim」を払う。測るなら **上限 +1 件まで**入れて、定常状態の append を測る。
+
+イベント 1 件 append あたりの rows_read（定常状態 = 各セッションが上限を越えて回り続けている状態）:
 
 | | 修正前 | 修正後 |
 |---|---:|---:|
-| 1 セッション / 200 行 | 1,614 | 212 |
-| 5 セッション / 1,000 行 | 4,824 | 220 |
-| 20 セッション / 4,000 行 | **16,854** | **250** |
+| 1 セッション / 200 行 | ≈1,614 | 248 |
+| 5 セッション / 1,000 行 | ≈4,824 | 248 |
+| 20 セッション / 4,000 行 | **≈16,853** | **248** |
+
+**修正後がフラットなのが要点**で、248 という数字そのものではない。セッション数にもテーブル総行数にもマーク数にも依存しない。唯一スケールするのは `trimSessionEvents` の cutoff 探索 201 行で、これは `maxEventsPerSession` に比例する。修正前の数字は DO の履歴で 1〜2 行ぶれる。
 
 **修正**: `session (session_id PRIMARY KEY, last_seq)` を 1 枚足して、セッション上限の判定を 4,000 行の `event` ではなく 20 行の `session` の並べ替えでやる。per-session 側は `ORDER BY seq DESC LIMIT 1 OFFSET 200` で切る seq を直接引き、**返らなければ何もせず抜ける**。消した集合は `seq <= cutoff` ちょうどなので、eviction マークはその cutoff そのもの — 最大値を取り直すクエリが要らない。
 
 **テストが 1 本も落ちなかった。** 遅い版も正しい行を消していて、判定に全表を読んでいただけ。だから **`rowsRead` に上限を張るテストがこのバグの唯一の網**。ミューテーション（`session` ではなく `event` を並べ替える版に戻す）で 4,229 まで跳ねて落ちることを確認済み。
 
-**既存 DO には backfill が要る。** `session` は後から足したので、動いている DO はイベントを持っていて索引を持っていない。索引が空のときだけ `INSERT INTO session SELECT session_id, MAX(seq) FROM event GROUP BY session_id` を 1 回。これが無いと、**すでにディスクにあるセッションにだけ上限が効かなくなる** — エラーは出ない。
+**既存 DO には backfill が要る。** `session` は後から足したので、動いている DO はイベントを持っていて索引を持っていない。索引が空のときだけ `INSERT INTO session SELECT session_id, MAX(seq) FROM event GROUP BY session_id` を 1 回。これが無いと、**すでにディスクにあるセッションについてセッション数の上限だけが効かなくなる** — エラーは出ない。1 セッション 200 件の上限は `trimSessionEvents` が `event` を直接見るので生きたまま。増えるのは保持されるセッションの本数。
+
+**backfill テストは 1 セッション 1 イベントだと `MAX` と `MIN` を区別できない。** 全部の集約が同じ値になるので、`MIN(seq)` に変えても緑のまま通る（実測）。本番では「最初に喋ったセッション」を最新扱いすることになる。**どれか 1 セッションに 2 件目を足す**と両者が分かれる。
 
 ### vitest が 1Password のロックで空振りする
 
@@ -325,7 +337,7 @@ git rebase origin/main --update-refs
 | | |
 |---|---|
 | Swift テスト | 136 |
-| worker テスト | 110 |
+| worker テスト | 112 |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 
 床は `.github/workflows/ci.yml` の `EXPECTED_TESTS` / `EXPECTED_SWIFT_TESTS`。**exit code だけでは足りない** — 0 件走っても exit 0 になる経路が両方にある。

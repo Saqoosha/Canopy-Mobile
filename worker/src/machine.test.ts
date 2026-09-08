@@ -424,10 +424,18 @@ describe("session event ring buffer", () => {
     await runInDurableObject<MachineDO, void>(stub, async (instance) => {
       const over = MachineDO.maxSessions + 1;
       for (let i = 0; i < over; i++) instance.appendEvent(ev(`s${i}`, "x"));
+      // **`s1` gets a second event, and that is the whole point of it.** With
+      // one event per session every aggregate over `seq` agrees, so a backfill
+      // seeding `MIN(seq)` instead of `MAX(seq)` passes — verified: the suite
+      // stayed green under that mutation. A second event separates them, and
+      // ranking by the oldest seq would then evict the session that is in fact
+      // the most recently written.
+      instance.appendEvent(ev("s1", "later"));
       instance.rebuildSessionIndex();
       // The cap still bites on a session that only the backfill knows about.
       instance.appendEvent(ev("fresh", "x"));
-      expect(instance.eventsSince("s1", 0).events.length).toBe(0);
+      expect(instance.eventsSince("s2", 0).events.length).toBe(0);
+      expect(instance.eventsSince("s1", 0).events.length).toBe(2);
       expect(instance.eventsSince("fresh", 0).events.length).toBe(1);
     });
   });
@@ -442,26 +450,101 @@ describe("session event ring buffer", () => {
     });
   });
 
-  // **The regression that cost a day of relay downtime.** Enforcing the
-  // session cap with `session_id NOT IN (SELECT ... FROM event GROUP BY
-  // session_id ...)` scans the whole `event` table twice per appended event,
-  // whether or not anything is over the cap. On a full buffer that measured
-  // 16,854 rows read to store one event, and a normal day's traffic went
-  // through Durable Objects' 5,000,000 rows_read daily free tier.
+  // The same hole on the OTHER eviction path. `trimSessions` drops a session
+  // whole and looks its mark up separately, and swapping that `MAX(seq)` for
+  // `MIN(seq)` also left the whole file green — a session dropped with 200
+  // buffered events would then report its FIRST seq as the mark, telling a
+  // phone caught up past it that nothing was lost.
+  it("marks a session evicted in full at its newest seq", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-mark-whole"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      let last = 0;
+      for (let n = 0; n < 5; n++) {
+        last = instance.appendEvent(ev("doomed", `d${n}`))!.seq;
+      }
+      for (let n = 0; n < MachineDO.maxSessions; n++) instance.appendEvent(ev(`s${n}`, "x"));
+      const page = instance.eventsSince("doomed", 0);
+      expect(page.events.length).toBe(0);
+      expect(page.evictedThrough).toBe(last);
+    });
+  });
+
+  // **Nothing pinned the mark's VALUE until this test.** The old code derived
+  // it with `SELECT MAX(seq) ... WHERE seq NOT IN (survivors)` — computed from
+  // what actually went. The new code asserts by construction that the deleted
+  // set is exactly `seq <= cutoff`, so the mark IS the cutoff, and skips that
+  // query. That argument stood on a comment: mutating the mark to `cutoff + 1`
+  // left every other test in this file green.
   //
-  // **The bound is what makes this a test.** Every assertion in this file
-  // passes with the quadratic version — it deleted the right rows, it just
-  // read the whole table to decide that. `cursor.rowsRead` is the billed
-  // number itself, so pinning it is pinning the bill. The ceiling is loose
-  // on purpose: the shape that matters is "independent of how much is
-  // buffered", and 250 measured against a buffer at BOTH caps is the value
-  // it has to stay near, not creep away from.
+  // One too high is the failure the eviction table exists to prevent, in
+  // reverse — a phone holding everything is told a gap it does not have. One
+  // too low hides a real gap. Both directions are pinned by the equality.
+  it("marks exactly the newest evicted seq", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-mark-value"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      for (let i = 0; i < MachineDO.maxEventsPerSession + 5; i++) {
+        instance.appendEvent(ev("s1", `e${i}`));
+      }
+      const page = instance.eventsSince("s1", 0);
+      expect(page.events.length).toBe(MachineDO.maxEventsPerSession);
+      expect(page.evictedThrough).toBe(page.events[0].seq - 1);
+    });
+  });
+
+  // **The regression that exhausted a day's free tier.** Enforcing the
+  // session cap with a SELECT and a DELETE, each shaped `session_id NOT IN
+  // (SELECT ... FROM event GROUP BY session_id ...)`, scans the whole `event`
+  // table four times per appended event — twice per statement — whether or
+  // not anything is over the cap. On a full buffer that measured 16,853 rows
+  // read to store one event, and a normal day's traffic went through Durable
+  // Objects' 5,000,000 rows_read daily free tier; every route that touches a
+  // DO then returned errors until the counter reset.
+  //
+  // **The bound is what makes this a test.** Every assertion that existed
+  // before this change passes with the full-scan version — it deleted the
+  // right rows, it just read the whole table to decide that. `cursor.rowsRead`
+  // is the billed number itself, so pinning it is pinning the bill.
+  //
+  // **There are THREE caps, and the fixture has to fill all of them.** The
+  // first version of this test filled the two on `event` and measured 249 —
+  // while a Durable Object that has run for any length of time also holds
+  // `maxEvictionMarks` marks, and against that the same append read 648. The
+  // mark trim was 400 of it, reading the whole table to delete nothing. So
+  // the test that existed to pin the bill was blind to 62% of it, and its
+  // own comment claimed a number measured under a fixture that omitted the
+  // dominant cost. Fill every cap or the ceiling is decoration.
+  //
+  // The ceiling stays loose on purpose, but the shape it guards is specific:
+  // an append costs the same 248 rows at 1, 5 and 20 buffered sessions with
+  // the mark table full — flat in the session count, the total table size and
+  // the mark count, which is what the old form was not. The one term that is
+  // NOT flat is the ~201-row cutoff walk in `trimSessionEvents`, which is
+  // linear in `maxEventsPerSession`; raise that cap and this number moves.
   it("appends an event without reading the whole buffer", async () => {
     const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-cost"));
     await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      // Distinct one-event sessions, each evicted whole, until the mark
+      // table is at its own cap — the state every long-lived DO reaches.
+      const churn = MachineDO.maxEvictionMarks + MachineDO.maxSessions + 10;
+      for (let i = 0; i < churn; i++) instance.appendEvent(ev(`churn${i}`, "x"));
+      // **One event PAST the cap, not up to it.** A session stopped exactly at
+      // the cap has never evicted, so it has no mark yet, and the first append
+      // after that pays the mark trim once — 651 rows, and then never again.
+      // Measuring that append pins a per-session one-off instead of the number
+      // that multiplies by traffic.
       for (let s = 0; s < MachineDO.maxSessions; s++)
-        for (let n = 0; n < MachineDO.maxEventsPerSession; n++)
+        for (let n = 0; n <= MachineDO.maxEventsPerSession; n++)
           instance.appendEvent(ev(`s${s}`, `e${n}`));
+      // The fixture is only worth what it actually built.
+      const built = state.storage.sql
+        .exec<{ marks: number }>(
+          `SELECT COUNT(*) AS marks FROM eviction`
+        ).toArray()[0];
+      expect(built.marks).toBe(MachineDO.maxEvictionMarks);
+      expect(
+        state.storage.sql
+          .exec(`SELECT 1 FROM eviction WHERE session_id = 's0'`).toArray().length
+      ).toBe(1);
 
       const sql = state.storage.sql;
       const real = sql.exec.bind(sql);
@@ -480,7 +563,7 @@ describe("session event ring buffer", () => {
       } finally {
         (sql as unknown as { exec: unknown }).exec = real;
       }
-      expect(read).toBeLessThan(500);
+      expect(read).toBeLessThan(400);
     });
   });
 

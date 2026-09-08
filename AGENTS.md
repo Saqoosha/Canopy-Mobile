@@ -108,6 +108,8 @@ cd worker && npx wrangler kv key delete --binding MACHINES --remote "machine:PRO
 
 **確認**: Mac 側で `[event]` のログ行が出ているかを見る。roster の接続行があるのに `[event]` が 0 なら送信側。
 
+**境目は 2.28.0。** イベントストリーム（`04ab152`）は 2.27.0 の**次**のコミットなので、2.27.0 にも 2.26.1 にも入っていない。全 Mac が 2.28.0 以上なら、この指紋が出たときの原因はバージョンではない。
+
 **回避**: Canopy の Debug ビルド（`sh.saqoo.Canopy.debug`、別 bundle id）を隣に立てればリリース版を止めずに検証できる。ただし machine id は共通なので roster を取り合う。
 
 ### `log show` は `.debug` レベルを出さない
@@ -230,6 +232,22 @@ plutil -p <app>/Info.plist | grep -E "CFBundleIconName|CFBundleDisplayName|NSExt
 
 `strings` は Swift の文字列リテラルを拾わないことがある。シンボルを見るなら `nm`、デマングルは `swift demangle`。Xcode 16+ の Debug ビルドは実コードを `<App>.debug.dylib` に置き、メイン実行ファイルは 90KB 程度の launcher なので、**バイナリを検証するならそちらを見る**。
 
+### 1 本の fallback が 5 本の代役をしていた
+
+**症状**: `shortenWithLLM` の 5 つの失敗経路（非 200 / error envelope / 読めない content / strip して空 / catch とタイムアウト）が全部 `fallbackBanner` を返すのに、テストが 1 件も無かった。`/notify` 経由では書けもしない。
+
+**原因**: そのルートの fetch スパイは**空の 200** を返す。`shortenWithLLM` はそれを JSON パース失敗として受け、catch に落ちて fallback を返す。だから **1 本の経路が 5 本分の代役をしていて、ステータス判定が壊れていても動いているのと同じ絵になる**。
+
+**修正**: `llm.test.ts` で fetch をケースごとに差し替える。合成の env と stub された fetch — `apns.test.ts` と同じ理由で、`.dev.vars`（テストプールに読み込まれ、本物の鍵を持つ）に触らず Anthropic にも到達しない。
+
+**テストの形が要点**: 非 200 と error envelope のケースは**読める content ブロックを載せる**。空ボディだと「content が読めない」分岐に落ちて同じ fallback に着くので、**判定を消してもテストが通る** — 別の行を pin していることになる。mutation で確かめる。
+
+### `@MainActor` の型に純関数を足すと、テストから呼べない
+
+`PushRegistrar` は delegate コールバックのために `@MainActor`。そこへ `static func` を足すと swift-testing から呼べず `call to main actor-isolated static method ... in a synchronous nonisolated context` で落ちる。`nonisolated` を付ける。純関数ならそれが正しい記述でもある。
+
+`UNNotificationResponse` はシステム外で構築できないので、`didReceive` の分岐そのものはテストできない。**判定だけ純関数に出す** のが手（`missingTapKeys(in:)`、`NotificationHistoryItem.answerableForm` と同じ）。
+
 ### vitest が 1Password のロックで空振りする
 
 `worker/.dev.vars` は 1Password の mount（FIFO）へのシンボリックリンク。1Password がロックされていると open でブロックし、vitest-pool-workers がタイムアウトして **exit 0 で "no tests"** を出す。緑に見える。テスト数の床（下記）がこれを捕まえる。
@@ -250,9 +268,27 @@ webview→CLI 側に publish を張る必要は**無い**。`stampUser`（phone 
 <command-args>push</command-args>
 ```
 
-電話はこれをそのまま描いて、"You" の下に XML が 4 行出た（実機で報告）。`SlashCommandText` が `/remember-session push` に戻す。`<command-args>` は任意（ローカルの transcript 5258 件中 3259 件）、`<command-name>` はスラッシュ付きが普通だが無い綴りもある。
+電話はこれをそのまま描いて、"You" の下に XML が 4 行出た（実機で報告）。`SlashCommandText` が `/remember-session push` に戻し、`SlashCommandBlock` が等幅の箱で描く。同じコマンドを実機で打ち直して確認済み。`<command-args>` は任意（ローカルの transcript 5258 件中 3259 件）、`<command-name>` はスラッシュ付きが普通だが無い綴りもある。
 
 **判定は全文一致で、`contains` は禁止。** Canopy が `ShimProcess.isRecapEcho` で先に踏んでいて、理由もそこに書いてある — 部分一致だとラッパーを**引用しただけ**のメッセージ（transcript の貼り付け、この機能のバグ報告、パーサ自身のレビュー）を壊す。
+
+## 並行 PR と worktree
+
+**stack した PR の base ブランチを消すと、上の PR は死ぬ。** `gh pr merge <n> --squash --delete-branch` は base を消し、GitHub はそれを向いていた PR を**自動で close する**。閉じた PR は base を変えられず（`Cannot change the base branch of a closed pull request`）、base が無いので開き直せもしない（`Could not open the pull request`）。**復旧は PR の作り直しだけ**で、番号が変わる。**stack がある間は `--delete-branch` を付けない。**
+
+順番は「下をマージ → 上を `gh pr edit <n> --base main` → rebase → force-push」。
+
+**スタック全体の rebase は `--update-refs`。** 中間ブランチの ref も一緒に動く。squash 済みのコミットは patch-id が一致するので `skipped previously applied commit` として勝手に落ちる。
+
+```bash
+git rebase origin/main --update-refs
+```
+
+**`## 検証で使える基準値` のテーブルは、並行 PR が必ずコンフリクトする。** Swift 行と worker 行が隣接しているので、テスト数を動かす PR が 2 本あれば必ずぶつかる。`ci.yml` の `EXPECTED_*` も同じ。**解決は足し算** — 両方入るなら 109 と 97 ではなく 111。1 本ずつマージして残りを rebase するのが結局いちばん速い。
+
+**worktree 隔離セッションは `main` を動かせない。** `git fetch origin main:main` は `refusing to fetch into branch 'refs/heads/main' checked out at <本体>` で落ちる。checkout 中のブランチはその worktree からしか動かせないので、**本体の更新は人間の `git pull` が要る**。`gh pr merge --delete-branch` も同じ理由で `fatal: 'main' is already used by worktree` を出すが、**マージ自体は成功している** — この行だけ見て失敗と判断しない。
+
+**`--force-with-lease` は URL 直指定の push では効かない。** リモート追跡 ref を名前で解決できず `stale info` で拒否される。`--force-with-lease=<branch>:<sha>` と明示する。sha は記憶で書かない（`cannot parse expected object name` で落ちる）— `git rev-parse origin/<branch>` で取る。
 
 ## 検証で使える基準値
 
@@ -266,5 +302,4 @@ webview→CLI 側に publish を張る必要は**無い**。`stampUser`（phone 
 
 ## 残タスク
 
-- **Studio を 2.28.0 に上げる。** MBP は 2026-09-07 に上げてストリーム到達を確認済み。Studio はまだ 2.27.0 で、イベントを 1 件も送っていない。イベントストリーム（`04ab152`）は 2.27.0 の**次**のコミットなので、2.27.0 にも 2.26.1 にも入っていない
 - **Canopy 側: appcast が公開されていないファイルに署名している（Canopy#188）。** `update_appcast.sh` の `strip_sh_xattrs` が DMG を作り直し、それに署名する。GitHub に上がるのは `release.sh` が作った元の DMG。Sparkle は検証に落ちた item を**黙って飛ばして**次に古い版を「最新」として出す。2.26.1 から続く

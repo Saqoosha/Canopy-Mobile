@@ -395,10 +395,16 @@ describe("session event ring buffer", () => {
   // degrades to reporting no gap, which is the safe direction.
   it("bounds the eviction mark table, dropping the oldest marks first", async () => {
     const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-mark-cap"));
-    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
       const total = MachineDO.maxEvictionMarks + MachineDO.maxSessions + 10;
       for (let i = 0; i < total; i++) instance.appendEvent(ev(`s${i}`, "x"));
-      // Evicted earliest, so its mark is the first to go.
+      // **The size is asserted here, in the test whose subject it is.** It was
+      // pinned only by a fixture precondition in the cost test — scaffolding
+      // someone could reasonably loosen, taking the mark cap with it.
+      expect(
+        state.storage.sql
+          .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM eviction`).toArray()[0].n
+      ).toBe(MachineDO.maxEvictionMarks);
       expect(instance.eventsSince("s0", 0).evictedThrough).toBe(0);
       // Evicted too, but recently enough that its mark is still held.
       const recent = total - MachineDO.maxSessions - 1;
@@ -415,6 +421,191 @@ describe("session event ring buffer", () => {
     });
   });
 
+  // `LIMIT -1` in `trimSessions` is there so a woken DO whose `maxSessions`
+  // was lowered sheds every session past the new cap at once, rather than one
+  // per append. Mutating it to `LIMIT 1` left the whole file green, and this
+  // is the only fixture that can tell them apart: normal appends add one
+  // session at a time, so the doomed set is never larger than one.
+  it("sheds every session past the cap in one append", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-shed-many"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      for (let i = 0; i < MachineDO.maxSessions; i++) instance.appendEvent(ev(`s${i}`, "x"));
+      // Stand in for a deploy that lowered the cap: indexed sessions past the
+      // cap that this append did not create. Seeded after the appends, or the
+      // trim each append runs would sweep them straight back out. `last_seq`
+      // 0 puts them at the bottom of the ranking, so they are the doomed set.
+      const extra = 5;
+      for (let i = 0; i < extra; i++) {
+        state.storage.sql.exec(
+          `INSERT INTO session (session_id, last_seq) VALUES (?, 0)`, `stale${i}`
+        );
+      }
+      const count = () => state.storage.sql
+        .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM session`).toArray()[0].n;
+      expect(count()).toBe(MachineDO.maxSessions + extra);
+      // One append puts it one further over, so `LIMIT 1` would leave five.
+      instance.appendEvent(ev("fresh", "x"));
+      expect(count()).toBe(MachineDO.maxSessions);
+    });
+  });
+
+  // **A gate needs a backstop somewhere off the hot path.** `noteEviction`
+  // runs the mark trim only when it inserts a session id the table has never
+  // held — right for the append path, but it means a table over cap for any
+  // other reason never comes back down. Lowering `maxEvictionMarks` in a
+  // deploy is exactly that, and before the gate the next append re-capped it.
+  // The wake path is where that property went, so this is where it is pinned.
+  it("re-caps an oversized mark table on wake", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-mark-wake"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      // Stand in for a deploy that lowered the cap: marks already on disk
+      // that no append will ever be the "first" for.
+      const over = MachineDO.maxEvictionMarks + 50;
+      for (let i = 0; i < over; i++) {
+        state.storage.sql.exec(
+          `INSERT INTO eviction (session_id, through) VALUES (?, ?)`, `old${i}`, i + 1
+        );
+      }
+      instance.rebuildSessionIndex();
+      const marks = state.storage.sql
+        .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM eviction`).toArray()[0].n;
+      expect(marks).toBe(MachineDO.maxEvictionMarks);
+      // The newest marks are the ones kept — losing a mark degrades to
+      // reporting no gap, so what goes has to be the oldest history.
+      expect(
+        state.storage.sql
+          .exec(`SELECT 1 FROM eviction WHERE session_id = ?`, `old${over - 1}`)
+          .toArray().length
+      ).toBe(1);
+    });
+  });
+
+  // **The wake path's false branch had no test.** Everything that reached
+  // the migration went through `rebuildSessionIndex`, which empties the index
+  // first, so all of it took the true branch — and a bare `INSERT` there
+  // raises `UNIQUE constraint failed` inside `blockConcurrencyWhile`, which
+  // fails construction and takes every route for that Mac down on each wake.
+  it("wakes again over storage it has already migrated", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-rewake"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      instance.appendEvent(ev("s1", "a"));
+      instance.appendEvent(ev("s1", "b"));
+      instance.appendEvent(ev("s2", "a"));
+      const before = state.storage.sql
+        .exec(`SELECT session_id, last_seq FROM session ORDER BY session_id`).toArray();
+      instance.rerunWakePath();
+      expect(
+        state.storage.sql
+          .exec(`SELECT session_id, last_seq FROM session ORDER BY session_id`).toArray()
+      ).toEqual(before);
+    });
+  });
+
+  // **A rollback leaves two kinds of drift, and both are silent.** The old
+  // binary writes `event` without touching `session`: a session it starts is
+  // never indexed at all, and one that was already indexed keeps a
+  // `last_seq` that stops advancing. Neither raises anything. The first is
+  // invisible to `trimSessions`, so `maxSessions` stops bounding the buffer;
+  // the second ranks a busy session as the stalest and evicts it first.
+  it("repairs an index a pre-index binary wrote around", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-drift"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      instance.appendEvent(ev("indexed", "a"));
+      const stale = state.storage.sql
+        .exec<{ seq: number }>(`SELECT last_seq AS seq FROM session WHERE session_id = 'indexed'`)
+        .toArray()[0].seq;
+      // What the old binary does: rows in `event`, nothing in `session`.
+      const raw = (session: string, seq: number) => state.storage.sql.exec(
+        `INSERT INTO event (seq, session_id, event_id, kind, text, created_at)
+         VALUES (?, ?, ?, 'assistant', 'x', 0)`,
+        seq, session, `${session}-${seq}`
+      );
+      raw("ghost", stale + 100);
+
+      // Two more shapes the same rollback leaves, both invisible to the
+      // INSERT alone. `indexed`'s stored value is pushed ABOVE its own newest
+      // event — the old binary's trim deletes from `event` and has no
+      // `session` table to lower — and a repair spelled
+      // `MAX(last_seq, excluded.last_seq)` would keep the wrong number. It
+      // stays below the global max, so the check still fires.
+      state.storage.sql.exec(
+        `UPDATE session SET last_seq = ? WHERE session_id = 'indexed'`, stale + 50
+      );
+      // `phantom` is an index row whose events are all gone. `trimSessions`
+      // ranks over this table, so a phantom keeps one of the `maxSessions`
+      // slots and a LIVE session is evicted in its place.
+      state.storage.sql.exec(
+        `INSERT INTO session (session_id, last_seq) VALUES ('phantom', ?)`, stale + 40
+      );
+
+      instance.rerunWakePath();
+
+      const rows = state.storage.sql
+        .exec<{ session_id: string; last_seq: number }>(
+          `SELECT session_id, last_seq FROM session ORDER BY session_id`
+        ).toArray();
+      expect(rows).toEqual([
+        // The session that was never indexed is now known...
+        { session_id: "ghost", last_seq: stale + 100 },
+        // ...the one whose value ran ahead of its own events is corrected
+        // downward, which only a plain assignment can do...
+        { session_id: "indexed", last_seq: stale },
+        // ...and the row with no events at all is gone.
+      ]);
+    });
+  });
+
+  // The repair seeds the index from whatever `event` holds, which after a
+  // rollback can be more sessions than the cap allows. Nothing else would
+  // shed them: `trimSessions` runs on the append path, and a DO woken only
+  // by phone backfills never reaches it.
+  it("re-applies the session cap after repairing the index", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-drift-cap"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      const over = MachineDO.maxSessions + 10;
+      for (let i = 0; i < over; i++) {
+        state.storage.sql.exec(
+          `INSERT INTO event (seq, session_id, event_id, kind, text, created_at)
+           VALUES (?, ?, ?, 'assistant', 'x', 0)`,
+          i + 1, `ghost${i}`, `ghost${i}-1`
+        );
+      }
+      instance.rerunWakePath();
+      expect(
+        state.storage.sql
+          .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM session`).toArray()[0].n
+      ).toBe(MachineDO.maxSessions);
+      // The oldest are the ones shed, and their events go with them.
+      expect(instance.eventsSince("ghost0", 0).events.length).toBe(0);
+      expect(instance.eventsSince(`ghost${over - 1}`, 0).events.length).toBe(1);
+    });
+  });
+
+  // A Durable Object that was already running when the session index landed
+  // holds events but no index rows, and the session cap is enforced entirely
+  // from that index. Without the backfill the cap silently stops applying to
+  // everything already on disk — no error, just a buffer that grows.
+  it("backfills the session index for a DO that predates it", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-migrate"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      const over = MachineDO.maxSessions + 1;
+      for (let i = 0; i < over; i++) instance.appendEvent(ev(`s${i}`, "x"));
+      // **`s1` gets a second event, and that is the whole point of it.** With
+      // one event per session every aggregate over `seq` agrees, so a backfill
+      // seeding `MIN(seq)` instead of `MAX(seq)` passes — verified: the suite
+      // stayed green under that mutation. A second event separates them, and
+      // ranking by the oldest seq would then evict the session that is in fact
+      // the most recently written.
+      instance.appendEvent(ev("s1", "later"));
+      instance.rebuildSessionIndex();
+      // The cap still bites on a session that only the backfill knows about.
+      instance.appendEvent(ev("fresh", "x"));
+      expect(instance.eventsSince("s2", 0).events.length).toBe(0);
+      expect(instance.eventsSince("s1", 0).events.length).toBe(2);
+      expect(instance.eventsSince("fresh", 0).events.length).toBe(1);
+    });
+  });
+
   it("evicts the least recently written session past the session cap", async () => {
     const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-sessions"));
     await runInDurableObject<MachineDO, void>(stub, async (instance) => {
@@ -422,6 +613,157 @@ describe("session event ring buffer", () => {
       for (let i = 0; i < over; i++) instance.appendEvent(ev(`s${i}`, "x"));
       expect(instance.eventsSince("s0", 0).events.length).toBe(0);
       expect(instance.eventsSince(`s${over - 1}`, 0).events.length).toBe(1);
+    });
+  });
+
+  // The same hole on the OTHER eviction path. `trimSessions` drops a session
+  // whole and looks its mark up separately, and swapping that `MAX(seq)` for
+  // `MIN(seq)` also left the whole file green — a session dropped with 200
+  // buffered events would then report its FIRST seq as the mark, telling a
+  // phone caught up past it that nothing was lost.
+  it("marks a session evicted in full at its newest seq", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-mark-whole"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      let last = 0;
+      for (let n = 0; n < 5; n++) {
+        last = instance.appendEvent(ev("doomed", `d${n}`))!.seq;
+      }
+      for (let n = 0; n < MachineDO.maxSessions; n++) instance.appendEvent(ev(`s${n}`, "x"));
+      const page = instance.eventsSince("doomed", 0);
+      expect(page.events.length).toBe(0);
+      expect(page.evictedThrough).toBe(last);
+    });
+  });
+
+  // **Nothing pinned the mark's VALUE until this test** — mutating it to
+  // `cutoff + 1` left every other test in this file green. One too high tells
+  // a phone holding everything about a gap it does not have; one too low
+  // hides a real one. The equality pins both directions.
+  it("marks exactly the newest evicted seq", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-mark-value"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      for (let i = 0; i < MachineDO.maxEventsPerSession + 5; i++) {
+        instance.appendEvent(ev("s1", `e${i}`));
+      }
+      const page = instance.eventsSince("s1", 0);
+      expect(page.events.length).toBe(MachineDO.maxEventsPerSession);
+      expect(page.evictedThrough).toBe(page.events[0].seq - 1);
+    });
+  });
+
+  // **The bound is what makes this a test.** Every assertion that existed
+  // before this change passes with the old full-scan version — it deleted the
+  // right rows, it just read the whole table to decide that. `cursor.rowsRead`
+  // is the billed quantity, so a bound on it is a bound on the bill.
+  //
+  // **There are THREE caps and the fixture has to fill all of them.** Filling
+  // only the two on `event` measured 249 for a steady state that really cost
+  // 651, above this test's own ceiling — the mark trim was 402 of the
+  // difference. A ceiling measured against a fixture that omits a cap asserts
+  // nothing about the case that cap produces.
+  //
+  // An append reads `201 + 2 × (rows in session) + ~7`: 248 at the session
+  // cap, 210 with one live session. **Not "flat"** — the churn phase leaves
+  // `session` at its cap whatever runs after it, so measuring 248 at 1, 5 and
+  // 20 sessions is a property of the fixture, not of the code.
+  it("appends an event without reading the whole buffer", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-cost"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      // Distinct one-event sessions, each evicted whole, until the mark
+      // table is at its own cap — the state every long-lived DO reaches.
+      const churn = MachineDO.maxEvictionMarks + MachineDO.maxSessions + 10;
+      for (let i = 0; i < churn; i++) instance.appendEvent(ev(`churn${i}`, "x"));
+      // **One event PAST the cap, not up to it.** A session stopped exactly at
+      // the cap has never evicted, so it has no mark yet, and the first append
+      // after that pays the mark trim once — 651 rows, and then never again.
+      // Measuring that append pins a per-session one-off instead of the number
+      // that multiplies by traffic.
+      for (let s = 0; s < MachineDO.maxSessions; s++)
+        for (let n = 0; n <= MachineDO.maxEventsPerSession; n++)
+          instance.appendEvent(ev(`s${s}`, `e${n}`));
+      // **Check every cap, not the one that was on your mind.** An earlier
+      // version of this block asserted the mark count alone — while its own
+      // comment said the fixture is worth only what it actually built. A
+      // later change that made `trimSessions` over-evict would collapse the
+      // buffer, drop the measured append to ~210, and still pass the ceiling.
+      const built = state.storage.sql
+        .exec<{ marks: number; sessions: number; events: number }>(
+          `SELECT (SELECT COUNT(*) FROM eviction) AS marks,
+                  (SELECT COUNT(*) FROM session)  AS sessions,
+                  (SELECT COUNT(*) FROM event)    AS events`
+        ).toArray()[0];
+      expect(built.marks).toBe(MachineDO.maxEvictionMarks);
+      expect(built.sessions).toBe(MachineDO.maxSessions);
+      expect(built.events).toBe(MachineDO.maxSessions * MachineDO.maxEventsPerSession);
+      expect(
+        state.storage.sql
+          .exec(`SELECT 1 FROM eviction WHERE session_id = 's0'`).toArray().length
+      ).toBe(1);
+
+      const sql = state.storage.sql;
+      const real = sql.exec.bind(sql);
+      let read = 0;
+      // The cursor reports its counts only once it has been drained, and the
+      // caller drains its own copy — so read the rows here and hand back an
+      // array-backed stand-in rather than the spent cursor.
+      (sql as unknown as { exec: unknown }).exec = (...args: [string, ...unknown[]]) => {
+        const cursor = real(...args);
+        const rows = cursor.toArray();
+        read += cursor.rowsRead;
+        return { toArray: () => rows };
+      };
+      try {
+        instance.appendEvent(ev("s0", "one-more"));
+      } finally {
+        (sql as unknown as { exec: unknown }).exec = real;
+      }
+      expect(read).toBeLessThan(300);
+    });
+  });
+
+  // **The wake path needs the same instrument as the append path.** This
+  // change put real work there — a drift check, a repair that scans `event`,
+  // the mark cap's backstop — and replacing the drift condition with
+  // `if (true)` left every test green. A hibernating DO is re-constructed by
+  // an arriving event, so at low traffic wakes and appends are billed one for
+  // one, which is why this ceiling sits beside the append's.
+  it("wakes without reading the whole buffer", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-wake-cost"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      const churn = MachineDO.maxEvictionMarks + MachineDO.maxSessions + 10;
+      for (let i = 0; i < churn; i++) instance.appendEvent(ev(`churn${i}`, "x"));
+      for (let s = 0; s < MachineDO.maxSessions; s++)
+        for (let n = 0; n <= MachineDO.maxEventsPerSession; n++)
+          instance.appendEvent(ev(`s${s}`, `e${n}`));
+      const built = state.storage.sql
+        .exec<{ marks: number; sessions: number; events: number }>(
+          `SELECT (SELECT COUNT(*) FROM eviction) AS marks,
+                  (SELECT COUNT(*) FROM session)  AS sessions,
+                  (SELECT COUNT(*) FROM event)    AS events`
+        ).toArray()[0];
+      expect(built.marks).toBe(MachineDO.maxEvictionMarks);
+      expect(built.sessions).toBe(MachineDO.maxSessions);
+      expect(built.events).toBe(MachineDO.maxSessions * MachineDO.maxEventsPerSession);
+
+      const sql = state.storage.sql;
+      const real = sql.exec.bind(sql);
+      let read = 0;
+      (sql as unknown as { exec: unknown }).exec = (...args: [string, ...unknown[]]) => {
+        const cursor = real(...args);
+        const rows = cursor.toArray();
+        read += cursor.rowsRead;
+        return { toArray: () => rows };
+      };
+      try {
+        instance.rerunWakePath();
+      } finally {
+        (sql as unknown as { exec: unknown }).exec = real;
+      }
+      // Measured 222: one row for `MAX(seq)`, `maxSessions` for
+      // `MAX(last_seq)`, `maxEvictionMarks` to decide the mark trim is not
+      // needed, and the schema statements. No scan of `event`, because
+      // nothing has drifted.
+      expect(read).toBeLessThan(300);
     });
   });
 

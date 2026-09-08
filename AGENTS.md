@@ -248,6 +248,84 @@ plutil -p <app>/Info.plist | grep -E "CFBundleIconName|CFBundleDisplayName|NSExt
 
 `UNNotificationResponse` はシステム外で構築できないので、`didReceive` の分岐そのものはテストできない。**判定だけ純関数に出す** のが手（`missingTapKeys(in:)`、`NotificationHistoryItem.answerableForm` と同じ）。
 
+### DO の `NOT IN (SELECT ...)` は、消すものがゼロでも全表を 2 回読む
+
+**症状**: Cloudflare から「Durable Objects の 1 日 5,000,000 rows_read 無料枠を超えた」。relay がエラーを返し始める。イベントストリームを入れた翌日（2026-09-08）。
+
+**原因**: `appendEvent` がイベント 1 件ごとに `trim()` を呼び、そこにこの形が **記録用の SELECT と削除用の DELETE で 2 本** あった。
+
+```sql
+DELETE FROM event WHERE session_id NOT IN (
+  SELECT session_id FROM event GROUP BY session_id ORDER BY MAX(seq) DESC LIMIT 20
+)
+```
+
+`EXPLAIN QUERY PLAN` で外が `SCAN event`、内が `SCAN event USING COVERING INDEX`。**1 文につき全表 2 周、2 本で 4 周。** しかも上限以下で消すものが 1 行も無くても毎回走る。（セッション単位の trim にも `NOT IN` が 2 本あって、これは 800 行ほど。合計 4 本）
+
+**実測の取り方**: `sql.exec()` が返すカーソルの `rowsRead` / `rowsWritten` が課金カウンタそのもの。`runInDurableObject(stub, (instance, state) => ...)` の `state.storage.sql.exec` を包めば、本物の workerd で 1 操作あたりのコストが取れる。**カーソルは汲み終わってからでないと数を報告しない**ので、包む側で `toArray()` して配列で返す。
+
+### 上限は 3 つある。fixture が 2 つしか埋めないとコストのテストは嘘をつく
+
+**この修正自身が 1 回踏んだ。** 上のコスト上限テストの fixture は `event` の 2 つの上限（20 セッション × 200 件）だけを埋めていて、`maxEvictionMarks` = 200 のマーク表が空だった。その状態で 249 行。**マーク表を実際に上限まで埋めると同じ append が 651 行**で、差の 402 行は全部 `trimEvictionMarks` の 1 文（絶対値は 405 行、空の fixture では 3 行） — 消すものがゼロなのに `eviction` を 2 周する、まさにこの PR が消したのと同じ形。テストの天井は 500 だったので、**本番の定常状態はテストが落ちる値だったのに緑だった。**
+
+`noteEviction` が毎回 `trimEvictionMarks()` を呼んでいたのが原因。**上限を越えさせられるのは新規 session_id の INSERT だけ**なので、主キー 1 行の存在確認でゲートすれば、定常状態（既にマークがある）では呼ばれない。405 → 0。
+
+**fixture のもう一つの罠**: セッションを上限ちょうど（200 件）で止めると、そのセッションはまだ 1 度も evict していないのでマークを持たない。次の 1 件が「そのセッション唯一のマーク trim」を払う。測るなら **上限 +1 件まで**入れて、定常状態の append を測る。
+
+**ゲートには wake 時の受け皿が要る。** 「新規 session_id の INSERT のときだけ trim」にすると、それ以外の理由で上限を超えた表が二度と縮まない。具体的には `maxEvictionMarks` をデプロイで下げたとき — ゲート前は次の append で戻っていた。`ensureSchema()` から 1 回呼んで埋める。append ごとではなく wake ごとなので、hot path には乗らない。
+
+**インデックスは足さない（実測で判断）。** `eviction(through)` と `session(last_seq)` にインデックスを張ると読み込みは 405→204、40→20 に減る。**が、DO は書き込み行が読み込み行より桁違いに高い**（無料枠で 1 日 10 万 write 対 500 万 read = 50 倍）。どちらの索引も **append のたびに index 行の書き込みが 1 行増える** — `session.last_seq` は毎回 upsert、`eviction.through` も上限に達したセッションでは毎回。+1 write で −20 read（または滅多に走らない経路の −201 read）は差し引きマイナス。read だけ見て索引を足すと悪化する。
+
+### `trimEvictionMarks` は `through` 順なので、生きているセッションのマークが先に消えることがある（既存）
+
+`through` は seq。**上限に張り付いた長寿セッションの `through` は自分の 200 件ぶん後ろを指す**ので、その間に evict された短いセッション 200 本に順位で負ける。負けると書いた直後のマークが同じ呼び出しの中で消え、`evictedThrough` が 0 に戻る — 実際に落ちたイベントについて「欠落なし」と申告する。
+
+実測（S を上限に張り付かせ、S の 1 append につき新規セッション 5 本を回す）: `marks=200 / S のマーク=無し / evictedThrough=0`。**`main` でも同じ値**。この PR が入れたものではなく、`ORDER BY through DESC` そのものの性質。直すなら「`session` にまだ居るセッションを優先する」順序が要る。
+
+イベント 1 件 append あたりの rows_read（定常状態 = 各セッションが上限を越えて回り続けている状態）:
+
+| | 修正前 | 修正後 |
+|---|---:|---:|
+| 1 セッション / 200 行 | ≈1,614 | 248 |
+| 5 セッション / 1,000 行 | ≈4,824 | 248 |
+| 20 セッション / 4,000 行 | **≈16,853** | **248** |
+
+**2 つの列は fixture が違う。** 修正前はマーク表を埋めない 2 cap の fixture、修正後は 3 cap 全部埋めた fixture で測っている（修正前のコードで 3 cap を埋めると 20 セッションで 17,650）。改善幅を過小に見せる向きなのでそのままにしてあるが、厳密な同条件比較ではない。
+
+修正後の内訳は `201 + 2×(session の行数) + 約 7`。セッション上限まで使っていて 248、生きているセッションが 1 本なら 210。**要点は 248 という数字ではなく、どの項も上限で抑えられていて、`event` や `eviction` の大きさが 1 つも入っていないこと。** 修正前の数字は DO の履歴でぶれる — マーク表が空か上限かだけで 77 行動く（16,853 対 16,930）。
+
+**「フラット」と書きかけて 1 度間違えた。** 上の fixture は churn フェーズで `session` を上限まで埋めるので、そのあと何セッション動かしても `session` は 20 行のまま。1/5/20 セッションで 248 が揃うのは fixture の性質であってコードの性質ではない。**同じテストで同じ種類の間違いを 2 回やった。**
+
+**修正**: `session (session_id PRIMARY KEY, last_seq)` を 1 枚足して、セッション上限の判定を 4,000 行の `event` ではなく 20 行の `session` の並べ替えでやる。per-session 側は `ORDER BY seq DESC LIMIT 1 OFFSET 200` で切る seq を直接引き、**返らなければ何もせず抜ける**。消した集合は `seq <= cutoff` ちょうどなので、eviction マークはその cutoff そのもの — 最大値を取り直すクエリが要らない。
+
+**テストが 1 本も落ちなかった。** 遅い版も正しい行を消していて、判定に全表を読んでいただけ。だから **`rowsRead` に上限を張るテストがこのバグの唯一の網**。ミューテーション（`session` ではなく `event` を並べ替える版に戻す）で 4,229 まで跳ねて落ちることを確認済み。
+
+**既存 DO には backfill が要る。** `session` は後から足したので、動いている DO はイベントを持っていて索引を持っていない。索引が空のときだけ `INSERT INTO session SELECT session_id, MAX(seq) FROM event GROUP BY session_id` を 1 回。これが無いと、**すでにディスクにあるセッションについてセッション数の上限だけが効かなくなる** — エラーは出ない。1 セッション 200 件の上限は `trimSessionEvents` が `event` を直接見るので生きたまま。増えるのは保持されるセッションの本数。
+
+**索引が「空か」ではなく「最新か」を訊く。** 空かどうかで判定すると、索引を一度も持ったことのない DO しか拾えない。ロールバックや混在バージョンで旧バイナリが `event` だけ書くと、**索引が知らないセッション**（`trimSessions` から見えないので `maxSessions` が効かない）と、**`last_seq` が止まったままの既知セッション**（最古扱いされて先に落とされる）の 2 種類のずれが出る。どちらもエラーは出ない。
+
+判定は 2 クエリで厳密にできる。`appendEvent` はイベント行と索引行を必ず一緒に書くので、**平常時は `event` の `MAX(seq)` と `session` の `MAX(last_seq)` が必ず一致する**（最新セッションの最新イベントを消す経路は無く、索引行はそのセッションの全イベントと一緒にしか消えない）。索引を飛ばして書いた瞬間に等号が壊れるので、1 回の比較で両方のずれを拾える。修復も `ON CONFLICT DO UPDATE SET last_seq = MAX(...)` の 1 文で両方直る。
+
+**wake ごとに走るので安さが要る。** `MAX(seq)` は INTEGER PRIMARY KEY で 1 行、`MAX(last_seq)` は最大 20 行。`event` の grouped scan は実際にずれているときだけ。無条件に走らせると wake ごとに約 4,000 行で、**hibernation した DO はイベント到着のたびに起きる**ので、この修正が消したのと同じ形の請求になる。
+
+**この判定に至る前、ガードは `if (seeded === 0)`（索引が空か）で、それはコストのガードではなくクラッシュのガードだった。** 中身が裸の `INSERT ... SELECT` なので、索引がすでにある DO で走らせると `UNIQUE constraint failed` を投げる。場所が `blockConcurrencyWhile` の中なので、**構築が失敗してその Mac の全ルートが毎 wake 落ちる**。コメントは「空なら scan はタダ」としか書いておらず、最適化に見えていた。今は `ON CONFLICT ... DO UPDATE` なので投げない。
+
+**false 分岐にテストが 1 本も無かった。** backfill に到達するテストが全部 `rebuildSessionIndex()` 経由で、あれは先に `DELETE FROM session` するので true 分岐しか通らない。**普通の wake が通る側**を踏むには、索引を消さずに `ensureSchema()` を呼び直すシームが要る（`rerunWakePath()`）。
+
+### wake パスにも rows_read の天井を張る
+
+**この修正は wake に仕事を載せた** — ドリフト判定、ずれたときの修復スキャン、マーク上限の受け皿、修復後のセッション上限。そして計器は append パスにしか付いていなかった。ドリフト判定を `if (true)` に変えて 4,000 行のスキャンを毎 wake 走らせても **116 本全部緑**。この PR が消したのと同じ形のバグが、1 つ隣の経路で見えなくなっていた。
+
+**hibernation した DO はイベント到着ごとに構築し直される**ので、低トラフィックでは wake と append がほぼ 1:1 で並んで課金される。だから天井は append のそれと同じ桁に置く。実測: wake 222 行（判定 21 + マーク数え 200 + スキーマ）、append 248 行。
+
+ずれには **3 つ形がある**。索引が知らないセッション、`last_seq` が止まった既知セッション、そして **イベントが全部消えているのに残っている索引行**。3 つめは旧バイナリがセッションごと `event` から消したときに残るもので、`INSERT ... SELECT` からは見えない。`trimSessions` はこの表で順位を付けるので、**幽霊行が枠を 1 つ占めて、代わりに生きているセッションが落とされる**。同じ枝で `DELETE FROM session WHERE session_id NOT IN (SELECT session_id FROM event)` する。
+
+修復の代入は `MAX(last_seq, excluded.last_seq)` ではなく **`excluded.last_seq`**。他の場所でマークを前にしか動かさないのは、コードが手持ちの値より良い情報を持っていないから。ここは持っている — 副問い合わせが `event` 側の `MAX(seq)` そのもので、それが `last_seq` の定義。大きいほうを取ると、逆向きに間違った値がそのまま残る。
+
+判定は **`!==` ではなく「`event` が先行しているとき」**。修復は `last_seq` を上げる方向にしか動かないので、索引が `event` より先に行っている状態を `!==` で拾うと、直せないまま毎 wake スキャンを走らせ続ける吸収状態になる。今のコードに到達経路は無いが、無いからこそ誰も気づかない。
+
+**backfill テストは 1 セッション 1 イベントだと `MAX` と `MIN` を区別できない。** 全部の集約が同じ値になるので、`MIN(seq)` に変えても緑のまま通る（実測）。本番では「最初に喋ったセッション」を最新扱いすることになる。**どれか 1 セッションに 2 件目を足す**と両者が分かれる。
+
 ### vitest が 1Password のロックで空振りする
 
 `worker/.dev.vars` は 1Password の mount（FIFO）へのシンボリックリンク。1Password がロックされていると open でブロックし、vitest-pool-workers がタイムアウトして **exit 0 で "no tests"** を出す。緑に見える。テスト数の床（下記）がこれを捕まえる。
@@ -295,7 +373,7 @@ git rebase origin/main --update-refs
 | | |
 |---|---|
 | Swift テスト | 136 |
-| worker テスト | 108 |
+| worker テスト | 118 |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 
 床は `.github/workflows/ci.yml` の `EXPECTED_TESTS` / `EXPECTED_SWIFT_TESTS`。**exit code だけでは足りない** — 0 件走っても exit 0 になる経路が両方にある。

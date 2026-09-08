@@ -248,6 +248,36 @@ plutil -p <app>/Info.plist | grep -E "CFBundleIconName|CFBundleDisplayName|NSExt
 
 `UNNotificationResponse` はシステム外で構築できないので、`didReceive` の分岐そのものはテストできない。**判定だけ純関数に出す** のが手（`missingTapKeys(in:)`、`NotificationHistoryItem.answerableForm` と同じ）。
 
+### DO の `NOT IN (SELECT ...)` は、消すものがゼロでも全表を 2 回読む
+
+**症状**: Cloudflare から「Durable Objects の 1 日 5,000,000 rows_read 無料枠を超えた」。relay がエラーを返し始める。イベントストリームを入れた翌日（2026-09-08）。
+
+**原因**: `appendEvent` がイベント 1 件ごとに `trim()` を呼び、そこにこの形が 2 本あった。
+
+```sql
+DELETE FROM event WHERE session_id NOT IN (
+  SELECT session_id FROM event GROUP BY session_id ORDER BY MAX(seq) DESC LIMIT 20
+)
+```
+
+`EXPLAIN QUERY PLAN` で外が `SCAN event`、内が `SCAN event USING COVERING INDEX`。**上限以下で消すものが 1 行も無くても、毎回そのまま走る。**
+
+**実測の取り方**: `sql.exec()` が返すカーソルの `rowsRead` / `rowsWritten` が課金カウンタそのもの。`runInDurableObject(stub, (instance, state) => ...)` の `state.storage.sql.exec` を包めば、本物の workerd で 1 操作あたりのコストが取れる。**カーソルは汲み終わってからでないと数を報告しない**ので、包む側で `toArray()` して配列で返す。
+
+イベント 1 件 append あたりの rows_read（バッファ満杯 = 20 セッション × 200 件）:
+
+| | 修正前 | 修正後 |
+|---|---:|---:|
+| 1 セッション / 200 行 | 1,614 | 212 |
+| 5 セッション / 1,000 行 | 4,824 | 220 |
+| 20 セッション / 4,000 行 | **16,854** | **250** |
+
+**修正**: `session (session_id PRIMARY KEY, last_seq)` を 1 枚足して、セッション上限の判定を 4,000 行の `event` ではなく 20 行の `session` の並べ替えでやる。per-session 側は `ORDER BY seq DESC LIMIT 1 OFFSET 200` で切る seq を直接引き、**返らなければ何もせず抜ける**。消した集合は `seq <= cutoff` ちょうどなので、eviction マークはその cutoff そのもの — 最大値を取り直すクエリが要らない。
+
+**テストが 1 本も落ちなかった。** 遅い版も正しい行を消していて、判定に全表を読んでいただけ。だから **`rowsRead` に上限を張るテストがこのバグの唯一の網**。ミューテーション（`session` ではなく `event` を並べ替える版に戻す）で 4,229 まで跳ねて落ちることを確認済み。
+
+**既存 DO には backfill が要る。** `session` は後から足したので、動いている DO はイベントを持っていて索引を持っていない。索引が空のときだけ `INSERT INTO session SELECT session_id, MAX(seq) FROM event GROUP BY session_id` を 1 回。これが無いと、**すでにディスクにあるセッションにだけ上限が効かなくなる** — エラーは出ない。
+
 ### vitest が 1Password のロックで空振りする
 
 `worker/.dev.vars` は 1Password の mount（FIFO）へのシンボリックリンク。1Password がロックされていると open でブロックし、vitest-pool-workers がタイムアウトして **exit 0 で "no tests"** を出す。緑に見える。テスト数の床（下記）がこれを捕まえる。
@@ -295,7 +325,7 @@ git rebase origin/main --update-refs
 | | |
 |---|---|
 | Swift テスト | 136 |
-| worker テスト | 108 |
+| worker テスト | 110 |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 
 床は `.github/workflows/ci.yml` の `EXPECTED_TESTS` / `EXPECTED_SWIFT_TESTS`。**exit code だけでは足りない** — 0 件走っても exit 0 になる経路が両方にある。

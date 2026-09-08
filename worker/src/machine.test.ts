@@ -415,6 +415,23 @@ describe("session event ring buffer", () => {
     });
   });
 
+  // A Durable Object that was already running when the session index landed
+  // holds events but no index rows, and the session cap is enforced entirely
+  // from that index. Without the backfill the cap silently stops applying to
+  // everything already on disk — no error, just a buffer that grows.
+  it("backfills the session index for a DO that predates it", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-migrate"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+      const over = MachineDO.maxSessions + 1;
+      for (let i = 0; i < over; i++) instance.appendEvent(ev(`s${i}`, "x"));
+      instance.rebuildSessionIndex();
+      // The cap still bites on a session that only the backfill knows about.
+      instance.appendEvent(ev("fresh", "x"));
+      expect(instance.eventsSince("s1", 0).events.length).toBe(0);
+      expect(instance.eventsSince("fresh", 0).events.length).toBe(1);
+    });
+  });
+
   it("evicts the least recently written session past the session cap", async () => {
     const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-sessions"));
     await runInDurableObject<MachineDO, void>(stub, async (instance) => {
@@ -422,6 +439,48 @@ describe("session event ring buffer", () => {
       for (let i = 0; i < over; i++) instance.appendEvent(ev(`s${i}`, "x"));
       expect(instance.eventsSince("s0", 0).events.length).toBe(0);
       expect(instance.eventsSince(`s${over - 1}`, 0).events.length).toBe(1);
+    });
+  });
+
+  // **The regression that cost a day of relay downtime.** Enforcing the
+  // session cap with `session_id NOT IN (SELECT ... FROM event GROUP BY
+  // session_id ...)` scans the whole `event` table twice per appended event,
+  // whether or not anything is over the cap. On a full buffer that measured
+  // 16,854 rows read to store one event, and a normal day's traffic went
+  // through Durable Objects' 5,000,000 rows_read daily free tier.
+  //
+  // **The bound is what makes this a test.** Every assertion in this file
+  // passes with the quadratic version — it deleted the right rows, it just
+  // read the whole table to decide that. `cursor.rowsRead` is the billed
+  // number itself, so pinning it is pinning the bill. The ceiling is loose
+  // on purpose: the shape that matters is "independent of how much is
+  // buffered", and 250 measured against a buffer at BOTH caps is the value
+  // it has to stay near, not creep away from.
+  it("appends an event without reading the whole buffer", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-cost"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      for (let s = 0; s < MachineDO.maxSessions; s++)
+        for (let n = 0; n < MachineDO.maxEventsPerSession; n++)
+          instance.appendEvent(ev(`s${s}`, `e${n}`));
+
+      const sql = state.storage.sql;
+      const real = sql.exec.bind(sql);
+      let read = 0;
+      // The cursor reports its counts only once it has been drained, and the
+      // caller drains its own copy — so read the rows here and hand back an
+      // array-backed stand-in rather than the spent cursor.
+      (sql as unknown as { exec: unknown }).exec = (...args: [string, ...unknown[]]) => {
+        const cursor = real(...args);
+        const rows = cursor.toArray();
+        read += cursor.rowsRead;
+        return { toArray: () => rows };
+      };
+      try {
+        instance.appendEvent(ev("s0", "one-more"));
+      } finally {
+        (sql as unknown as { exec: unknown }).exec = real;
+      }
+      expect(read).toBeLessThan(500);
     });
   });
 

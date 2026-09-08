@@ -20,42 +20,86 @@ export class MachineDO extends DurableObject {
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
-    ctx.blockConcurrencyWhile(async () => {
+    ctx.blockConcurrencyWhile(async () => this.ensureSchema());
+  }
+
+  /** Create every table this DO needs and bring an older one's data up to it.
+   *  Split out of the constructor so a test can re-run it. */
+  private ensureSchema(): void {
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS snapshot (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL)`
+    );
+    // The session-event ring buffer. A table rather than a JSON blob
+    // because both things this feature needs are one statement here:
+    // "everything after seq N" and "drop all but the newest 200".
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS event (
+         seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+         session_id TEXT NOT NULL,
+         event_id   TEXT NOT NULL,
+         resume_id  TEXT,
+         kind       TEXT NOT NULL,
+         text       TEXT NOT NULL,
+         created_at REAL NOT NULL
+       )`
+    );
+    this.ctx.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS event_by_session ON event (session_id, seq)`
+    );
+    // What the ring buffer has thrown away, per session. Without it a
+    // watcher cannot tell a dropped event from a seq that belonged to a
+    // different session, because `seq` above is global to this Mac and a
+    // single session's numbers are therefore not consecutive. See
+    // `EventsResponse.evictedThrough`.
+    //
+    // Deliberately its own table rather than a column on `event`: the
+    // case it has to survive is a session whose rows are ALL gone.
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS eviction (
+         session_id TEXT PRIMARY KEY,
+         through    INTEGER NOT NULL
+       )`
+    );
+    // One row per session that still has events, holding its newest seq.
+    //
+    // **This table exists for the bill, not for the feature.** The session
+    // cap used to be enforced with `session_id NOT IN (SELECT session_id
+    // FROM event GROUP BY session_id ...)`, which scans every row of
+    // `event` twice — once for the subquery, once for the outer statement —
+    // on EVERY appended event, whether or not anything is over the cap.
+    // Measured with `cursor.rowsRead` on a full buffer (20 sessions × 200
+    // events): 16,040 of the 16,854 rows read per event, 95% of the cost,
+    // to delete nothing. That put a day's normal traffic past Durable
+    // Objects' 5,000,000 rows_read free tier and the relay started
+    // returning errors. Ordering ~20 rows here instead of ~4,000 there is
+    // the whole fix.
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS session (
+         session_id TEXT PRIMARY KEY,
+         last_seq   INTEGER NOT NULL
+       )`
+    );
+    // Durable Objects created before this table existed already hold
+    // events, and their session rows have to come from somewhere. One
+    // grouped scan, guarded so it runs once in a DO's life rather than on
+    // every wake — an empty table with a non-empty `event` is exactly the
+    // pre-migration state, and an empty `event` makes the scan free.
+    const seeded = this.ctx.storage.sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM session`)
+      .toArray()[0]?.n ?? 0;
+    if (seeded === 0) {
       this.ctx.storage.sql.exec(
-        `CREATE TABLE IF NOT EXISTS snapshot (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL)`
+        `INSERT INTO session (session_id, last_seq)
+           SELECT session_id, MAX(seq) FROM event GROUP BY session_id`
       );
-      // The session-event ring buffer. A table rather than a JSON blob
-      // because both things this feature needs are one statement here:
-      // "everything after seq N" and "drop all but the newest 200".
-      this.ctx.storage.sql.exec(
-        `CREATE TABLE IF NOT EXISTS event (
-           seq        INTEGER PRIMARY KEY AUTOINCREMENT,
-           session_id TEXT NOT NULL,
-           event_id   TEXT NOT NULL,
-           resume_id  TEXT,
-           kind       TEXT NOT NULL,
-           text       TEXT NOT NULL,
-           created_at REAL NOT NULL
-         )`
-      );
-      this.ctx.storage.sql.exec(
-        `CREATE INDEX IF NOT EXISTS event_by_session ON event (session_id, seq)`
-      );
-      // What the ring buffer has thrown away, per session. Without it a
-      // watcher cannot tell a dropped event from a seq that belonged to a
-      // different session, because `seq` above is global to this Mac and a
-      // single session's numbers are therefore not consecutive. See
-      // `EventsResponse.evictedThrough`.
-      //
-      // Deliberately its own table rather than a column on `event`: the
-      // case it has to survive is a session whose rows are ALL gone.
-      this.ctx.storage.sql.exec(
-        `CREATE TABLE IF NOT EXISTS eviction (
-           session_id TEXT PRIMARY KEY,
-           through    INTEGER NOT NULL
-         )`
-      );
-    });
+    }
+  }
+
+  /** Test seam: put this DO back in the state a deployment from before the
+   *  `session` index left behind — events on disk, no index — and migrate. */
+  rebuildSessionIndex(): void {
+    this.ctx.storage.sql.exec(`DELETE FROM session`);
+    this.ensureSchema();
   }
 
   /**
@@ -130,7 +174,7 @@ export class MachineDO extends DurableObject {
       .toArray();
     const seq = rows[0]?.seq;
     if (typeof seq !== "number") return null;
-    this.trim(msg.sessionId);
+    this.trim(msg.sessionId, seq);
     // **The STORED row, not the message that arrived.** Fanning out the raw
     // `parsed` was the first version, and it made the same event two
     // different things depending on the route: live it carried untruncated
@@ -159,54 +203,85 @@ export class MachineDO extends DurableObject {
    *  branches record separately because they lose different things: the
    *  first drops a session's oldest events, the second drops whole sessions.
    */
-  private trim(sessionId: string): void {
-    this.noteEvictions(
-      `SELECT session_id, MAX(seq) AS through FROM event
-        WHERE session_id = ? AND seq NOT IN (
-          SELECT seq FROM event WHERE session_id = ? ORDER BY seq DESC LIMIT ?
-        ) GROUP BY session_id`,
-      sessionId, sessionId, MachineDO.maxEventsPerSession
-    );
+  private trim(sessionId: string, seq: number): void {
     this.ctx.storage.sql.exec(
-      `DELETE FROM event WHERE session_id = ? AND seq NOT IN (
-         SELECT seq FROM event WHERE session_id = ? ORDER BY seq DESC LIMIT ?
-       )`,
-      sessionId, sessionId, MachineDO.maxEventsPerSession
+      `INSERT INTO session (session_id, last_seq) VALUES (?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET last_seq = MAX(last_seq, excluded.last_seq)`,
+      sessionId, seq
     );
-    this.noteEvictions(
-      `SELECT session_id, MAX(seq) AS through FROM event
-        WHERE session_id NOT IN (
-          SELECT session_id FROM event GROUP BY session_id ORDER BY MAX(seq) DESC LIMIT ?
-        ) GROUP BY session_id`,
-      MachineDO.maxSessions
-    );
-    this.ctx.storage.sql.exec(
-      `DELETE FROM event WHERE session_id NOT IN (
-         SELECT session_id FROM event GROUP BY session_id ORDER BY MAX(seq) DESC LIMIT ?
-       )`,
-      MachineDO.maxSessions
-    );
-    this.trimEvictionMarks();
+    this.trimSessionEvents(sessionId);
+    this.trimSessions();
   }
 
-  /** Raise each named session's eviction mark to cover what `query` selects.
+  /** Drop this session's events past `maxEventsPerSession`.
+   *
+   *  **The cutoff is looked up, not described in the DELETE.** `OFFSET` on
+   *  the session's own index walks exactly `maxEventsPerSession + 1` rows and
+   *  returns the newest seq that has to go — or nothing at all, which is the
+   *  common case and ends the work here. The old `seq NOT IN (SELECT ... LIMIT
+   *  200)` form asked the same question by materialising the 200 survivors and
+   *  testing every row against them, twice over, on every append.
+   *
+   *  The deleted set is exactly `seq <= cutoff` for this session, so the
+   *  eviction mark IS the cutoff — no second query to find the max of what
+   *  went. */
+  private trimSessionEvents(sessionId: string): void {
+    const cutoff = this.ctx.storage.sql
+      .exec<{ seq: number }>(
+        `SELECT seq FROM event WHERE session_id = ? ORDER BY seq DESC LIMIT 1 OFFSET ?`,
+        sessionId, MachineDO.maxEventsPerSession
+      )
+      .toArray()[0]?.seq;
+    if (typeof cutoff !== "number") return;
+    this.noteEviction(sessionId, cutoff);
+    this.ctx.storage.sql.exec(
+      `DELETE FROM event WHERE session_id = ? AND seq <= ?`, sessionId, cutoff
+    );
+  }
+
+  /** Drop whole sessions past `maxSessions`, least recently written first.
+   *
+   *  Ordering happens over `session`, which holds one row per live session,
+   *  rather than over `event`, which holds up to `maxSessions ×
+   *  maxEventsPerSession` of them. Same verdict, three orders of magnitude
+   *  fewer rows read. `LIMIT -1` is SQLite's "no limit", so the OFFSET names
+   *  every session past the cap. */
+  private trimSessions(): void {
+    const doomed = this.ctx.storage.sql
+      .exec<{ session_id: string }>(
+        `SELECT session_id FROM session ORDER BY last_seq DESC LIMIT -1 OFFSET ?`,
+        MachineDO.maxSessions
+      )
+      .toArray();
+    for (const row of doomed) {
+      // What this session actually still has, not what it once reached: a
+      // mark has to cover the rows being deleted here and nothing beyond.
+      const through = this.ctx.storage.sql
+        .exec<{ seq: number | null }>(
+          `SELECT MAX(seq) AS seq FROM event WHERE session_id = ?`, row.session_id
+        )
+        .toArray()[0]?.seq;
+      if (typeof through === "number") this.noteEviction(row.session_id, through);
+      this.ctx.storage.sql.exec(`DELETE FROM event WHERE session_id = ?`, row.session_id);
+      this.ctx.storage.sql.exec(`DELETE FROM session WHERE session_id = ?`, row.session_id);
+    }
+  }
+
+  /** Raise one session's eviction mark to `through`.
    *
    *  `MAX(through, excluded.through)` rather than a plain assignment: marks
    *  only ever move forward. A later trim of a session that has since been
    *  re-seeded selects lower seqs, and letting it overwrite would retire a
    *  mark that is still true. */
-  private noteEvictions(query: string, ...bindings: unknown[]): void {
-    const doomed = this.ctx.storage.sql
-      .exec<{ session_id: string; through: number | null }>(query, ...bindings)
-      .toArray();
-    for (const row of doomed) {
-      if (typeof row.through !== "number") continue;
-      this.ctx.storage.sql.exec(
-        `INSERT INTO eviction (session_id, through) VALUES (?, ?)
-         ON CONFLICT(session_id) DO UPDATE SET through = MAX(through, excluded.through)`,
-        row.session_id, row.through
-      );
-    }
+  private noteEviction(sessionId: string, through: number): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO eviction (session_id, through) VALUES (?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET through = MAX(through, excluded.through)`,
+      sessionId, through
+    );
+    // Only a new mark can push the table over its cap, so this rides with the
+    // write instead of running on every append the way it used to.
+    this.trimEvictionMarks();
   }
 
   /** Keep the mark table bounded.
@@ -220,8 +295,8 @@ export class MachineDO extends DurableObject {
    *  a hole in a conversation that never had one. */
   private trimEvictionMarks(): void {
     this.ctx.storage.sql.exec(
-      `DELETE FROM eviction WHERE session_id NOT IN (
-         SELECT session_id FROM eviction ORDER BY through DESC LIMIT ?
+      `DELETE FROM eviction WHERE session_id IN (
+         SELECT session_id FROM eviction ORDER BY through DESC LIMIT -1 OFFSET ?
        )`,
       MachineDO.maxEvictionMarks
     );

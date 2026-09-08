@@ -306,7 +306,7 @@ DELETE FROM event WHERE session_id NOT IN (
 
 判定は 2 クエリで厳密にできる。`appendEvent` はイベント行と索引行を必ず一緒に書くので、**平常時は `event` の `MAX(seq)` と `session` の `MAX(last_seq)` が必ず一致する**（最新セッションの最新イベントを消す経路は無く、索引行はそのセッションの全イベントと一緒にしか消えない）。索引を飛ばして書いた瞬間に等号が壊れるので、1 回の比較で両方のずれを拾える。修復も `ON CONFLICT DO UPDATE SET last_seq = MAX(...)` の 1 文で両方直る。
 
-**wake ごとに走るので安さが要る。** `MAX(seq)` は INTEGER PRIMARY KEY で 1 行、`MAX(last_seq)` は最大 20 行。`event` の grouped scan は実際にずれているときだけ。無条件に走らせると wake ごとに約 4,000 行で、**hibernation したDO はイベント到着のたびに起きる**ので、この修正が消したのと同じ形の請求になる。実測: wake 全体で 422 行（うち 405 はマーク trim）。
+**wake ごとに走るので安さが要る。** `MAX(seq)` は INTEGER PRIMARY KEY で 1 行、`MAX(last_seq)` は最大 20 行。`event` の grouped scan は実際にずれているときだけ。無条件に走らせると wake ごとに約 4,000 行で、**hibernation した DO はイベント到着のたびに起きる**ので、この修正が消したのと同じ形の請求になる。
 
 **この判定に至る前、ガードは `if (seeded === 0)`（索引が空か）で、それはコストのガードではなくクラッシュのガードだった。** 中身が裸の `INSERT ... SELECT` なので、索引がすでにある DO で走らせると `UNIQUE constraint failed` を投げる。場所が `blockConcurrencyWhile` の中なので、**構築が失敗してその Mac の全ルートが毎 wake 落ちる**。コメントは「空なら scan はタダ」としか書いておらず、最適化に見えていた。今は `ON CONFLICT ... DO UPDATE` なので投げない。
 

@@ -584,7 +584,7 @@ describe("session event ring buffer", () => {
     });
   });
 
-  // A Durable Object that was already running when the session index landed  // A Durable Object that was already running when the session index landed
+  // A Durable Object that was already running when the session index landed
   // holds events but no index rows, and the session cap is enforced entirely
   // from that index. Without the backfill the cap silently stops applying to
   // everything already on disk — no error, just a buffer that grows.

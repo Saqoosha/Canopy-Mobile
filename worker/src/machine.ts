@@ -88,9 +88,8 @@ export class MachineDO extends DurableObject {
     // events, and their session rows have to come from somewhere. One
     // grouped scan, guarded so it does real work only once — an empty index
     // beside a non-empty `event` is exactly the pre-migration state. The
-    // guard is evaluated on every wake, and for a DO that has never stored
-    // an event it never stops being true; that costs one row, because an
-    // empty `event` makes the scan free.
+    // check is evaluated on every wake. A DO that has never stored an event
+    // has both maxima null, which compare equal, so it does no work at all.
     //
     // **The question is "is the index current", not "is the index empty".**
     // Asking whether it is empty only catches the DO that has never had one.
@@ -157,6 +156,16 @@ export class MachineDO extends DurableObject {
            SELECT session_id, MAX(seq) FROM event GROUP BY session_id
          ON CONFLICT(session_id) DO UPDATE SET last_seq = excluded.last_seq`
       );
+      // The third shape, which the INSERT cannot reach: a row whose events
+      // are all gone. The old binary evicts whole sessions from `event` and
+      // has no `session` table to update, so it leaves them behind — and
+      // `trimSessions` ranks over this table, so a phantom holding a high
+      // `last_seq` keeps a slot and a LIVE session is evicted in its place.
+      // Only reconciled here, so an index that has drifted this way and no
+      // other stays wrong until appends age the phantoms out.
+      this.ctx.storage.sql.exec(
+        `DELETE FROM session WHERE session_id NOT IN (SELECT session_id FROM event)`
+      );
       // The repair seeds whatever `event` holds, which after a rollback can
       // be more sessions than the cap allows — and every other caller of
       // this is on the append path, which a DO that has gone quiet never
@@ -200,8 +209,10 @@ export class MachineDO extends DurableObject {
    *
    *  This and `rerunWakePath` are public because a `DurableObject` subclass
    *  has no other way to expose one, matching `forgetInMemoryState` below.
-   *  Nothing routes to them: every entry point in `index.ts` reaches this
-   *  class through `stub.fetch`. */
+   *  That makes them callable over RPC by anything holding a `MACHINE` stub,
+   *  not merely visible: no route reaches them today because every entry
+   *  point in `index.ts` goes through `stub.fetch`, and only this Worker
+   *  binds `MACHINE`. */
   rebuildSessionIndex(): void {
     this.ctx.storage.sql.exec(`DELETE FROM session`);
     this.ensureSchema();
@@ -395,6 +406,14 @@ export class MachineDO extends DurableObject {
   }
 
   /** Raise one session's eviction mark to `through`.
+   *
+   *  **No test separates this from a plain assignment**, and none can without
+   *  raw SQL: both callers pass values that only rise for a given session, so
+   *  the guard is unreachable by construction. The same is true of
+   *  `last_seq`'s `MAX` in `trim`. It is kept because the cost is a word and
+   *  the failure it prevents is a retired mark, which reads to the phone as a
+   *  gap that closed itself. `ensureSchema`'s repair is deliberately NOT
+   *  spelled this way — see there for why that one is different.
    *
    *  `MAX(through, excluded.through)` rather than a plain assignment: marks
    *  only ever move forward. A later trim of a session that has since been

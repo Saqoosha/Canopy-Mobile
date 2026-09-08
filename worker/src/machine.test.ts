@@ -523,8 +523,23 @@ describe("session event ring buffer", () => {
          VALUES (?, ?, ?, 'assistant', 'x', 0)`,
         seq, session, `${session}-${seq}`
       );
-      raw("indexed", stale + 1);
-      raw("ghost", stale + 2);
+      raw("ghost", stale + 100);
+
+      // Two more shapes the same rollback leaves, both invisible to the
+      // INSERT alone. `indexed`'s stored value is pushed ABOVE its own newest
+      // event — the old binary's trim deletes from `event` and has no
+      // `session` table to lower — and a repair spelled
+      // `MAX(last_seq, excluded.last_seq)` would keep the wrong number. It
+      // stays below the global max, so the check still fires.
+      state.storage.sql.exec(
+        `UPDATE session SET last_seq = ? WHERE session_id = 'indexed'`, stale + 50
+      );
+      // `phantom` is an index row whose events are all gone. `trimSessions`
+      // ranks over this table, so a phantom keeps one of the `maxSessions`
+      // slots and a LIVE session is evicted in its place.
+      state.storage.sql.exec(
+        `INSERT INTO session (session_id, last_seq) VALUES ('phantom', ?)`, stale + 40
+      );
 
       instance.rerunWakePath();
 
@@ -534,9 +549,11 @@ describe("session event ring buffer", () => {
         ).toArray();
       expect(rows).toEqual([
         // The session that was never indexed is now known...
-        { session_id: "ghost", last_seq: stale + 2 },
-        // ...and the one whose mark fell behind has caught up.
-        { session_id: "indexed", last_seq: stale + 1 },
+        { session_id: "ghost", last_seq: stale + 100 },
+        // ...the one whose value ran ahead of its own events is corrected
+        // downward, which only a plain assignment can do...
+        { session_id: "indexed", last_seq: stale },
+        // ...and the row with no events at all is gone.
       ]);
     });
   });

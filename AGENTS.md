@@ -108,6 +108,8 @@ cd worker && npx wrangler kv key delete --binding MACHINES --remote "machine:PRO
 
 **確認**: Mac 側で `[event]` のログ行が出ているかを見る。roster の接続行があるのに `[event]` が 0 なら送信側。
 
+**境目は 2.28.0。** イベントストリーム（`04ab152`）は 2.27.0 の**次**のコミットなので、2.27.0 にも 2.26.1 にも入っていない。全 Mac が 2.28.0 以上なら、この指紋が出たときの原因はバージョンではない。
+
 **回避**: Canopy の Debug ビルド（`sh.saqoo.Canopy.debug`、別 bundle id）を隣に立てればリリース版を止めずに検証できる。ただし machine id は共通なので roster を取り合う。
 
 ### `log show` は `.debug` レベルを出さない
@@ -300,5 +302,4 @@ git rebase origin/main --update-refs
 
 ## 残タスク
 
-- **Studio を 2.28.0 に上げる。** MBP は 2026-09-07 に上げてストリーム到達を確認済み。Studio はまだ 2.27.0 で、イベントを 1 件も送っていない。イベントストリーム（`04ab152`）は 2.27.0 の**次**のコミットなので、2.27.0 にも 2.26.1 にも入っていない
 - **Canopy 側: appcast が公開されていないファイルに署名している（Canopy#188）。** `update_appcast.sh` の `strip_sh_xattrs` が DMG を作り直し、それに署名する。GitHub に上がるのは `release.sh` が作った元の DMG。Sparkle は検証に落ちた item を**黙って飛ばして**次に古い版を「最新」として出す。2.26.1 から続く

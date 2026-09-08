@@ -89,7 +89,7 @@ export class MachineDO extends DurableObject {
     // grouped scan, guarded so it does real work only once — an empty index
     // beside a non-empty `event` is exactly the pre-migration state. The
     // guard is evaluated on every wake, and for a DO that has never stored
-    // an event it never stops being true; that costs nothing, because an
+    // an event it never stops being true; that costs one row, because an
     // empty `event` makes the scan free.
     //
     // **The guard asks "is the index empty", not "is the index complete".**
@@ -284,10 +284,19 @@ export class MachineDO extends DurableObject {
    *  Ordering happens over `session`, which holds one row per live session,
    *  rather than over `event`, which holds up to `maxSessions ×
    *  maxEventsPerSession` of them. Same verdict, ~400× fewer rows read
-   *  (16,040 → 40, measured). `LIMIT -1` is SQLite's "no limit", so the
-   *  OFFSET names every session past the cap — all of them, which matters the
-   *  first time `maxSessions` is lowered and a woken DO has to shed several
-   *  at once. The ordering is total and the choice deterministic because
+   *  (16,040 → 40, measured — 2 per row, the scan plus the sort).
+   *
+   *  It runs on every append, including the overwhelming majority that add no
+   *  session. Gating it on "was this session id new" the way `noteEviction`
+   *  is gated would take those 40 rows to 1; it is left ungated here because
+   *  40 is bounded by `maxSessions` and the gate would need the same
+   *  wake-time backstop the mark cap now carries.
+   *
+   *  `LIMIT -1` is SQLite's "no limit", so the OFFSET names every session
+   *  past the cap — all of them, which matters on the first append after
+   *  `maxSessions` is lowered. Nothing sheds sessions at wake time; that
+   *  asymmetry with the mark cap is deliberate, because only the mark cap
+   *  lost its per-append enforcement to a gate. The ordering is total and the choice deterministic because
    *  `event.seq` is a single global AUTOINCREMENT, so no two sessions can
    *  share a `last_seq`. */
   private trimSessions(): void {
@@ -326,8 +335,9 @@ export class MachineDO extends DurableObject {
     // one-row primary-key lookup decides whether `trimEvictionMarks` needs
     // to run at all, and the answer is normally no.
     //
-    // Measured, with all three caps full: the trim reads ~400 rows to delete
-    // nothing, 62% of an evicting append's cost. Running it unconditionally
+    // Measured, with all three caps full: the trim reads ~405 rows to delete
+    // nothing — 62% of the append that inserts a session's FIRST mark, and
+    // the whole reason the ungated version cost 651 rather than 248. Running it unconditionally
     // here — which is what the first version of this fix did — left the last
     // full-table scan sitting on the append path, in a PR whose entire
     // subject is full-table scans on the append path.

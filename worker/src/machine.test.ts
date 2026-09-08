@@ -567,19 +567,26 @@ describe("session event ring buffer", () => {
   // **There are THREE caps, and the fixture has to fill all of them.** The
   // first version of this test filled the two on `event` and measured 249 —
   // while a Durable Object that has run for any length of time also holds
-  // `maxEvictionMarks` marks, and against that the same append read 648. The
-  // mark trim was 400 of it, reading the whole table to delete nothing. So
-  // the test that existed to pin the bill was blind to 62% of it, and its
-  // own comment claimed a number measured under a fixture that omitted the
+  // `maxEvictionMarks` marks, and against that the same append read 651. The
+  // mark trim was 405 of it — 3 rows in the fixture that omitted the cap, so
+  // 402 of the difference — reading the whole table to delete nothing. So the
+  // test that existed to pin the bill was blind to 62% of it, and its own
+  // comment claimed a number measured under a fixture that omitted the
   // dominant cost. A ceiling measured against a fixture that omits a cap
   // asserts nothing about the case that omitted cap produces.
   //
-  // The ceiling stays loose on purpose, but the shape it guards is specific:
-  // an append costs the same 248 rows at 1, 5 and 20 buffered sessions with
-  // the mark table full — flat in the session count, the total table size and
-  // the mark count, which is what the old form was not. The one term that is
-  // NOT flat is the ~201-row cutoff walk in `trimSessionEvents`, which is
-  // linear in `maxEventsPerSession`; raise that cap and this number moves.
+  // The ceiling has some slack, but the cost it bounds is deterministic. An
+  // append reads `201 + 2 × (rows in session) + ~7` — 248 at the session cap,
+  // 210 with one live session. Every term is bounded by a cap, and none of
+  // them is the size of `event` or of `eviction`, which is what the old form
+  // could not say.
+  //
+  // **Do not shorten that to "flat".** An earlier draft of this comment did,
+  // on the strength of this very fixture measuring 248 at 1, 5 and 20 live
+  // sessions — but the churn phase leaves `session` at its cap whatever the
+  // second phase does, so all three runs had the same 20 rows and the number
+  // was an artifact of the fixture, not a property of the code. That is the
+  // same mistake, twice, in the same test.
   it("appends an event without reading the whole buffer", async () => {
     const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-cost"));
     await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {

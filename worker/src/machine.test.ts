@@ -415,6 +415,34 @@ describe("session event ring buffer", () => {
     });
   });
 
+  // `LIMIT -1` in `trimSessions` is there so a woken DO whose `maxSessions`
+  // was lowered sheds every session past the new cap at once, rather than one
+  // per append. Mutating it to `LIMIT 1` left the whole file green, and this
+  // is the only fixture that can tell them apart: normal appends add one
+  // session at a time, so the doomed set is never larger than one.
+  it("sheds every session past the cap in one append", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-shed-many"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      for (let i = 0; i < MachineDO.maxSessions; i++) instance.appendEvent(ev(`s${i}`, "x"));
+      // Stand in for a deploy that lowered the cap: indexed sessions past the
+      // cap that this append did not create. Seeded after the appends, or the
+      // trim each append runs would sweep them straight back out. `last_seq`
+      // 0 puts them at the bottom of the ranking, so they are the doomed set.
+      const extra = 5;
+      for (let i = 0; i < extra; i++) {
+        state.storage.sql.exec(
+          `INSERT INTO session (session_id, last_seq) VALUES (?, 0)`, `stale${i}`
+        );
+      }
+      const count = () => state.storage.sql
+        .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM session`).toArray()[0].n;
+      expect(count()).toBe(MachineDO.maxSessions + extra);
+      // One append puts it one further over, so `LIMIT 1` would leave five.
+      instance.appendEvent(ev("fresh", "x"));
+      expect(count()).toBe(MachineDO.maxSessions);
+    });
+  });
+
   // **A gate needs a backstop somewhere off the hot path.** `noteEviction`
   // runs the mark trim only when it inserts a session id the table has never
   // held — right for the append path, but it means a table over cap for any
@@ -534,7 +562,7 @@ describe("session event ring buffer", () => {
   // **The bound is what makes this a test.** Every assertion that existed
   // before this change passes with the full-scan version — it deleted the
   // right rows, it just read the whole table to decide that. `cursor.rowsRead`
-  // is the billed number itself, so pinning it is pinning the bill.
+  // is the billed quantity itself, so a bound on it is a bound on the bill.
   //
   // **There are THREE caps, and the fixture has to fill all of them.** The
   // first version of this test filled the two on `event` and measured 249 —
@@ -543,7 +571,8 @@ describe("session event ring buffer", () => {
   // mark trim was 400 of it, reading the whole table to delete nothing. So
   // the test that existed to pin the bill was blind to 62% of it, and its
   // own comment claimed a number measured under a fixture that omitted the
-  // dominant cost. Fill every cap or the ceiling is decoration.
+  // dominant cost. A ceiling measured against a fixture that omits a cap
+  // asserts nothing about the case that omitted cap produces.
   //
   // The ceiling stays loose on purpose, but the shape it guards is specific:
   // an append costs the same 248 rows at 1, 5 and 20 buffered sessions with
@@ -566,12 +595,20 @@ describe("session event ring buffer", () => {
       for (let s = 0; s < MachineDO.maxSessions; s++)
         for (let n = 0; n <= MachineDO.maxEventsPerSession; n++)
           instance.appendEvent(ev(`s${s}`, `e${n}`));
-      // The fixture is only worth what it actually built.
+      // **Check every cap, not the one that was on your mind.** An earlier
+      // version of this block asserted the mark count alone — while its own
+      // comment said the fixture is worth only what it actually built. A
+      // later change that made `trimSessions` over-evict would collapse the
+      // buffer, drop the measured append to ~210, and still pass the ceiling.
       const built = state.storage.sql
-        .exec<{ marks: number }>(
-          `SELECT COUNT(*) AS marks FROM eviction`
+        .exec<{ marks: number; sessions: number; events: number }>(
+          `SELECT (SELECT COUNT(*) FROM eviction) AS marks,
+                  (SELECT COUNT(*) FROM session)  AS sessions,
+                  (SELECT COUNT(*) FROM event)    AS events`
         ).toArray()[0];
       expect(built.marks).toBe(MachineDO.maxEvictionMarks);
+      expect(built.sessions).toBe(MachineDO.maxSessions);
+      expect(built.events).toBe(MachineDO.maxSessions * MachineDO.maxEventsPerSession);
       expect(
         state.storage.sql
           .exec(`SELECT 1 FROM eviction WHERE session_id = 's0'`).toArray().length
@@ -594,7 +631,7 @@ describe("session event ring buffer", () => {
       } finally {
         (sql as unknown as { exec: unknown }).exec = real;
       }
-      expect(read).toBeLessThan(400);
+      expect(read).toBeLessThan(300);
     });
   });
 

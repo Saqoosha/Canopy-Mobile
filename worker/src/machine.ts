@@ -98,9 +98,12 @@ export class MachineDO extends DurableObject {
     // leaves sessions the cap can never see, and this will not repair them.
     // Reaching that state needs a rollback or a split-version deployment;
     // any such session self-heals on its next append.
+    // `LIMIT 1`, not `COUNT(*)`: the question is whether any row exists, and
+    // a count reads the whole table to answer it — the pattern this whole
+    // change is about, one row where twenty were being read.
     const seeded = this.ctx.storage.sql
-      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM session`)
-      .toArray()[0]?.n ?? 0;
+      .exec(`SELECT 1 FROM session LIMIT 1`)
+      .toArray().length;
     if (seeded === 0) {
       this.ctx.storage.sql.exec(
         `INSERT INTO session (session_id, last_seq)
@@ -114,7 +117,11 @@ export class MachineDO extends DurableObject {
     // any OTHER reason stays over cap indefinitely. Lowering
     // `maxEvictionMarks` in a deploy is exactly that: before the gate the
     // next append re-capped the table, and the gate silently took that away.
-    // Here it costs one statement per wake instead of one per append.
+    // Here it costs one statement per wake instead of one per append: ~405
+    // rows with the mark table full, against ~248 for an append. A DO would
+    // have to wake more than ten thousand times a day for that to matter, and
+    // a DO waking that often is already handling enough appends to dominate
+    // it.
     this.trimEvictionMarks();
   }
 

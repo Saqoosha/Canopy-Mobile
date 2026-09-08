@@ -480,14 +480,11 @@ describe("session event ring buffer", () => {
     });
   });
 
-  // **The migration guard is a crash guard, and its false branch had no
-  // test.** Every test that reached the backfill went through
-  // `rebuildSessionIndex`, which empties the index first — so all of them
-  // took the TRUE branch, and removing the guard entirely left the whole file
-  // green while making `ensureSchema` raise `UNIQUE constraint failed` on any
-  // DO that has ever stored an event. That throw is inside
-  // `blockConcurrencyWhile`: the Durable Object fails to construct, and every
-  // route for that Mac fails, on every wake.
+  // **The wake path's false branch had no test.** Everything that reached
+  // the migration went through `rebuildSessionIndex`, which empties the index
+  // first, so all of it took the true branch — and a bare `INSERT` there
+  // raises `UNIQUE constraint failed` inside `blockConcurrencyWhile`, which
+  // fails construction and takes every route for that Mac down on each wake.
   it("wakes again over storage it has already migrated", async () => {
     const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-rewake"));
     await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
@@ -638,16 +635,10 @@ describe("session event ring buffer", () => {
     });
   });
 
-  // **Nothing pinned the mark's VALUE until this test.** The old code derived
-  // it with `SELECT MAX(seq) ... WHERE seq NOT IN (survivors)` — computed from
-  // what actually went. The new code asserts by construction that the deleted
-  // set is exactly `seq <= cutoff`, so the mark IS the cutoff, and skips that
-  // query. That argument stood on a comment: mutating the mark to `cutoff + 1`
-  // left every other test in this file green.
-  //
-  // One too high is the failure the eviction table exists to prevent, in
-  // reverse — a phone holding everything is told a gap it does not have. One
-  // too low hides a real gap. Both directions are pinned by the equality.
+  // **Nothing pinned the mark's VALUE until this test** — mutating it to
+  // `cutoff + 1` left every other test in this file green. One too high tells
+  // a phone holding everything about a gap it does not have; one too low
+  // hides a real one. The equality pins both directions.
   it("marks exactly the newest evicted seq", async () => {
     const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-mark-value"));
     await runInDurableObject<MachineDO, void>(stub, async (instance) => {
@@ -660,43 +651,21 @@ describe("session event ring buffer", () => {
     });
   });
 
-  // **The regression that exhausted a day's free tier.** Enforcing the
-  // session cap with a SELECT and a DELETE, each shaped `session_id NOT IN
-  // (SELECT ... FROM event GROUP BY session_id ...)`, scans the whole `event`
-  // table four times per appended event — twice per statement — whether or
-  // not anything is over the cap. On a full buffer that measured 16,853 rows
-  // read to store one event, and a normal day's traffic went through Durable
-  // Objects' 5,000,000 rows_read daily free tier; every route that touches a
-  // DO then returned errors until the counter reset.
-  //
   // **The bound is what makes this a test.** Every assertion that existed
-  // before this change passes with the full-scan version — it deleted the
+  // before this change passes with the old full-scan version — it deleted the
   // right rows, it just read the whole table to decide that. `cursor.rowsRead`
-  // is the billed quantity itself, so a bound on it is a bound on the bill.
+  // is the billed quantity, so a bound on it is a bound on the bill.
   //
-  // **There are THREE caps, and the fixture has to fill all of them.** The
-  // first version of this test filled the two on `event` and measured 249 —
-  // while a Durable Object that has run for any length of time also holds
-  // `maxEvictionMarks` marks, and against that the same append read 651. The
-  // mark trim was 405 of it — 3 rows in the fixture that omitted the cap, so
-  // 402 of the difference — reading the whole table to delete nothing. So the
-  // test that existed to pin the bill was blind to 62% of it, and its own
-  // comment claimed a number measured under a fixture that omitted the
-  // dominant cost. A ceiling measured against a fixture that omits a cap
-  // asserts nothing about the case that omitted cap produces.
+  // **There are THREE caps and the fixture has to fill all of them.** Filling
+  // only the two on `event` measured 249 for a steady state that really cost
+  // 651, above this test's own ceiling — the mark trim was 402 of the
+  // difference. A ceiling measured against a fixture that omits a cap asserts
+  // nothing about the case that cap produces.
   //
-  // The ceiling has some slack, but the cost it bounds is deterministic. An
-  // append reads `201 + 2 × (rows in session) + ~7` — 248 at the session cap,
-  // 210 with one live session. Every term is bounded by a cap, and none of
-  // them is the size of `event` or of `eviction`, which is what the old form
-  // could not say.
-  //
-  // **Do not shorten that to "flat".** An earlier draft of this comment did,
-  // on the strength of this very fixture measuring 248 at 1, 5 and 20 live
-  // sessions — but the churn phase leaves `session` at its cap whatever the
-  // second phase does, so all three runs had the same 20 rows and the number
-  // was an artifact of the fixture, not a property of the code. That is the
-  // same mistake, twice, in the same test.
+  // An append reads `201 + 2 × (rows in session) + ~7`: 248 at the session
+  // cap, 210 with one live session. **Not "flat"** — the churn phase leaves
+  // `session` at its cap whatever runs after it, so measuring 248 at 1, 5 and
+  // 20 sessions is a property of the fixture, not of the code.
   it("appends an event without reading the whole buffer", async () => {
     const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-cost"));
     await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
@@ -752,18 +721,12 @@ describe("session event ring buffer", () => {
     });
   });
 
-  // **The wake path needed the same instrument as the append path.** This
-  // change put real work on the wake — a drift check, a repair that scans
-  // `event` when it fires, and the mark cap's backstop — and every guard
-  // holding those to a bounded cost was pinned by nothing. Replacing the
-  // drift condition with `if (true)`, so the ~4,000-row repair scan ran on
-  // every wake, left all 116 tests green: the exact class of regression this
-  // PR exists to remove, moved one path across and invisible again.
-  //
-  // A hibernating Durable Object is re-constructed by an arriving event, so
-  // at low traffic there is about one wake per append and the two are billed
-  // together. That is why this ceiling is near the append's, not orders above
-  // it.
+  // **The wake path needs the same instrument as the append path.** This
+  // change put real work there — a drift check, a repair that scans `event`,
+  // the mark cap's backstop — and replacing the drift condition with
+  // `if (true)` left every test green. A hibernating DO is re-constructed by
+  // an arriving event, so at low traffic wakes and appends are billed one for
+  // one, which is why this ceiling sits beside the append's.
   it("wakes without reading the whole buffer", async () => {
     const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-wake-cost"));
     await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {

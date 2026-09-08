@@ -272,6 +272,16 @@ DELETE FROM event WHERE session_id NOT IN (
 
 **fixture のもう一つの罠**: セッションを上限ちょうど（200 件）で止めると、そのセッションはまだ 1 度も evict していないのでマークを持たない。次の 1 件が「そのセッション唯一のマーク trim」を払う。測るなら **上限 +1 件まで**入れて、定常状態の append を測る。
 
+**ゲートには wake 時の受け皿が要る。** 「新規 session_id の INSERT のときだけ trim」にすると、それ以外の理由で上限を超えた表が二度と縮まない。具体的には `maxEvictionMarks` をデプロイで下げたとき — ゲート前は次の append で戻っていた。`ensureSchema()` から 1 回呼んで埋める。append ごとではなく wake ごとなので、hot path には乗らない。
+
+**インデックスは足さない（実測で判断）。** `eviction(through)` と `session(last_seq)` にインデックスを張ると読み込みは 405→204、40→20 に減る。**が、DO は書き込み行が読み込み行より桁違いに高い**（無料枠で 1 日 10 万 write 対 500 万 read = 50 倍）。どちらの索引も **append のたびに index 行の書き込みが 1 行増える** — `session.last_seq` は毎回 upsert、`eviction.through` も上限に達したセッションでは毎回。+1 write で −20 read（または滅多に走らない経路の −201 read）は差し引きマイナス。read だけ見て索引を足すと悪化する。
+
+### `trimEvictionMarks` は `through` 順なので、生きているセッションのマークが先に消えることがある（既存）
+
+`through` は seq。**上限に張り付いた長寿セッションの `through` は自分の 200 件ぶん後ろを指す**ので、その間に evict された短いセッション 200 本に順位で負ける。負けると書いた直後のマークが同じ呼び出しの中で消え、`evictedThrough` が 0 に戻る — 実際に落ちたイベントについて「欠落なし」と申告する。
+
+実測（S を上限に張り付かせ、S の 1 append につき新規セッション 5 本を回す）: `marks=200 / S のマーク=無し / evictedThrough=0`。**`main` でも同じ値**。この PR が入れたものではなく、`ORDER BY through DESC` そのものの性質。直すなら「`session` にまだ居るセッションを優先する」順序が要る。
+
 イベント 1 件 append あたりの rows_read（定常状態 = 各セッションが上限を越えて回り続けている状態）:
 
 | | 修正前 | 修正後 |
@@ -280,7 +290,9 @@ DELETE FROM event WHERE session_id NOT IN (
 | 5 セッション / 1,000 行 | ≈4,824 | 248 |
 | 20 セッション / 4,000 行 | **≈16,853** | **248** |
 
-**修正後がフラットなのが要点**で、248 という数字そのものではない。セッション数にもテーブル総行数にもマーク数にも依存しない。唯一スケールするのは `trimSessionEvents` の cutoff 探索 201 行で、これは `maxEventsPerSession` に比例する。修正前の数字は DO の履歴で 1〜2 行ぶれる。
+修正後の内訳は `201 + 2×(session の行数) + 約 7`。セッション上限まで使っていて 248、生きているセッションが 1 本なら 210。**要点は 248 という数字ではなく、どの項も上限で抑えられていて、`event` や `eviction` の大きさが 1 つも入っていないこと。** 修正前の数字は DO の履歴で 1〜2 行ぶれる。
+
+**「フラット」と書きかけて 1 度間違えた。** 上の fixture は churn フェーズで `session` を上限まで埋めるので、そのあと何セッション動かしても `session` は 20 行のまま。1/5/20 セッションで 248 が揃うのは fixture の性質であってコードの性質ではない。**同じテストで同じ種類の間違いを 2 回やった。**
 
 **修正**: `session (session_id PRIMARY KEY, last_seq)` を 1 枚足して、セッション上限の判定を 4,000 行の `event` ではなく 20 行の `session` の並べ替えでやる。per-session 側は `ORDER BY seq DESC LIMIT 1 OFFSET 200` で切る seq を直接引き、**返らなければ何もせず抜ける**。消した集合は `seq <= cutoff` ちょうどなので、eviction マークはその cutoff そのもの — 最大値を取り直すクエリが要らない。
 
@@ -337,7 +349,7 @@ git rebase origin/main --update-refs
 | | |
 |---|---|
 | Swift テスト | 136 |
-| worker テスト | 112 |
+| worker テスト | 113 |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 
 床は `.github/workflows/ci.yml` の `EXPECTED_TESTS` / `EXPECTED_SWIFT_TESTS`。**exit code だけでは足りない** — 0 件走っても exit 0 になる経路が両方にある。

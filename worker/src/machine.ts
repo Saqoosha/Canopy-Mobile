@@ -107,10 +107,20 @@ export class MachineDO extends DurableObject {
            SELECT session_id, MAX(seq) FROM event GROUP BY session_id`
       );
     }
+    // **The mark cap needs one enforcement point that does not depend on a
+    // new session appearing.** `noteEviction` runs the trim only when it
+    // inserts a session id the table has never held, which is the right
+    // trade on the append path — but it means a table that is over cap for
+    // any OTHER reason stays over cap indefinitely. Lowering
+    // `maxEvictionMarks` in a deploy is exactly that: before the gate the
+    // next append re-capped the table, and the gate silently took that away.
+    // Here it costs one statement per wake instead of one per append.
+    this.trimEvictionMarks();
   }
 
   /** Test seam: put this DO back in the state a deployment from before the
-   *  `session` index left behind — events on disk, no index — and migrate. */
+   *  `session` index left behind — events on disk, no index — and re-run the
+   *  whole wake path over it, migration and cap enforcement both. */
   rebuildSessionIndex(): void {
     this.ctx.storage.sql.exec(`DELETE FROM session`);
     this.ensureSchema();
@@ -314,6 +324,17 @@ export class MachineDO extends DurableObject {
     // here — which is what the first version of this fix did — left the last
     // full-table scan sitting on the append path, in a PR whose entire
     // subject is full-table scans on the append path.
+    //
+    // **The gate is only as good as the mark surviving.** `trimEvictionMarks`
+    // ranks by `through`, which is a seq, so a long-lived session at the cap
+    // — whose `through` trails 200 of its own events behind — can be outranked
+    // by 200 short sessions evicted since, and lose the mark it just wrote.
+    // Then `known` is false again on the next append and the ~400 rows come
+    // back. That ordering predates this change and behaves identically on
+    // `main` (measured), where it costs the mark itself: the session reports
+    // `evictedThrough: 0` for events it really dropped. Fixing the ordering is
+    // a separate job; this comment exists so the next person measuring 651
+    // knows where to look.
     const known = this.ctx.storage.sql
       .exec(`SELECT 1 FROM eviction WHERE session_id = ?`, sessionId)
       .toArray().length > 0;

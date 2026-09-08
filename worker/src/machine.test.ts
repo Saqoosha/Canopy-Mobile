@@ -415,6 +415,37 @@ describe("session event ring buffer", () => {
     });
   });
 
+  // **A gate needs a backstop somewhere off the hot path.** `noteEviction`
+  // runs the mark trim only when it inserts a session id the table has never
+  // held — right for the append path, but it means a table over cap for any
+  // other reason never comes back down. Lowering `maxEvictionMarks` in a
+  // deploy is exactly that, and before the gate the next append re-capped it.
+  // The wake path is where that property went, so this is where it is pinned.
+  it("re-caps an oversized mark table on wake", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-mark-wake"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      // Stand in for a deploy that lowered the cap: marks already on disk
+      // that no append will ever be the "first" for.
+      const over = MachineDO.maxEvictionMarks + 50;
+      for (let i = 0; i < over; i++) {
+        state.storage.sql.exec(
+          `INSERT INTO eviction (session_id, through) VALUES (?, ?)`, `old${i}`, i + 1
+        );
+      }
+      instance.rebuildSessionIndex();
+      const marks = state.storage.sql
+        .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM eviction`).toArray()[0].n;
+      expect(marks).toBe(MachineDO.maxEvictionMarks);
+      // The newest marks are the ones kept — losing a mark degrades to
+      // reporting no gap, so what goes has to be the oldest history.
+      expect(
+        state.storage.sql
+          .exec(`SELECT 1 FROM eviction WHERE session_id = ?`, `old${over - 1}`)
+          .toArray().length
+      ).toBe(1);
+    });
+  });
+
   // A Durable Object that was already running when the session index landed
   // holds events but no index rows, and the session cap is enforced entirely
   // from that index. Without the backfill the cap silently stops applying to

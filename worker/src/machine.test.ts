@@ -504,7 +504,44 @@ describe("session event ring buffer", () => {
     });
   });
 
-  // A Durable Object that was already running when the session index landed
+  // **A rollback leaves two kinds of drift, and both are silent.** The old
+  // binary writes `event` without touching `session`: a session it starts is
+  // never indexed at all, and one that was already indexed keeps a
+  // `last_seq` that stops advancing. Neither raises anything. The first is
+  // invisible to `trimSessions`, so `maxSessions` stops bounding the buffer;
+  // the second ranks a busy session as the stalest and evicts it first.
+  it("repairs an index a pre-index binary wrote around", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-drift"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      instance.appendEvent(ev("indexed", "a"));
+      const stale = state.storage.sql
+        .exec<{ seq: number }>(`SELECT last_seq AS seq FROM session WHERE session_id = 'indexed'`)
+        .toArray()[0].seq;
+      // What the old binary does: rows in `event`, nothing in `session`.
+      const raw = (session: string, seq: number) => state.storage.sql.exec(
+        `INSERT INTO event (seq, session_id, event_id, kind, text, created_at)
+         VALUES (?, ?, ?, 'assistant', 'x', 0)`,
+        seq, session, `${session}-${seq}`
+      );
+      raw("indexed", stale + 1);
+      raw("ghost", stale + 2);
+
+      instance.rerunWakePath();
+
+      const rows = state.storage.sql
+        .exec<{ session_id: string; last_seq: number }>(
+          `SELECT session_id, last_seq FROM session ORDER BY session_id`
+        ).toArray();
+      expect(rows).toEqual([
+        // The session that was never indexed is now known...
+        { session_id: "ghost", last_seq: stale + 2 },
+        // ...and the one whose mark fell behind has caught up.
+        { session_id: "indexed", last_seq: stale + 1 },
+      ]);
+    });
+  });
+
+  // A Durable Object that was already running when the session index landed  // A Durable Object that was already running when the session index landed
   // holds events but no index rows, and the session cap is enforced entirely
   // from that index. Without the backfill the cap silently stops applying to
   // everything already on disk — no error, just a buffer that grows.

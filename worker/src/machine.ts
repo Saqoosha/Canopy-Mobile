@@ -92,33 +92,46 @@ export class MachineDO extends DurableObject {
     // an event it never stops being true; that costs one row, because an
     // empty `event` makes the scan free.
     //
-    // **This guard is not an optimisation — without it the DO cannot wake.**
-    // It reads like one, and the sentence above only talks about cost, but
-    // the statement it guards is a bare `INSERT`: run it against storage that
-    // already has index rows and it raises `UNIQUE constraint failed`, inside
-    // `blockConcurrencyWhile`, which fails construction and takes every route
-    // for that Mac down on every wake. `ON CONFLICT DO NOTHING` below means
-    // that is no longer true, so the guard is back to being about cost — but
-    // both are kept, because one of them being load-bearing was invisible.
-    //
-    // **The guard asks "is the index empty", not "is the index complete".**
+    // **The question is "is the index current", not "is the index empty".**
+    // Asking whether it is empty only catches the DO that has never had one.
     // A binary that writes `event` without maintaining `session` — the one
-    // this replaces — running against storage that already has an index
-    // leaves sessions the cap can never see, and this will not repair them.
-    // Reaching that state needs a rollback or a split-version deployment. A
-    // session that appends again heals itself; one that has gone quiet keeps
-    // its rows for good, and while it does, `maxSessions` is not a bound.
-    // `LIMIT 1`, not `COUNT(*)`: the question is whether any row exists, and
-    // a count reads the whole table to answer it — the pattern this whole
-    // change is about, one row where twenty were being read.
-    const seeded = this.ctx.storage.sql
-      .exec(`SELECT 1 FROM session LIMIT 1`)
-      .toArray().length;
-    if (seeded === 0) {
+    // this replaces — leaves rows the index has never heard of, and a session
+    // the index cannot see is a session `trimSessions` cannot cap. It heals
+    // itself if it ever appends again, and never if it has gone quiet, and
+    // while it sits there `maxSessions` is not a bound. Reaching that state
+    // needs a rollback or a split-version deployment of THIS change, which is
+    // exactly the window a change like this one is most likely to be in.
+    //
+    // Two reads answer it exactly. `appendEvent` writes the event and the
+    // index row together, so outside that window the newest seq in `event`
+    // and the highest `last_seq` in `session` are the same number: nothing
+    // deletes the newest event of the newest session, and a session's index
+    // row is deleted only along with all of its events. Any write by a binary
+    // that skips the index breaks the equality — a new session it never
+    // indexed, or an indexed one whose `last_seq` it left behind — so one
+    // comparison covers both shapes of drift, and one statement repairs both.
+    //
+    // **This has to be cheap, because it is per wake and a hibernating DO
+    // wakes often.** `MAX(seq)` over an INTEGER PRIMARY KEY is one row and
+    // `MAX(last_seq)` is at most `maxSessions` rows; the grouped scan of
+    // `event` runs only when they actually disagree. Doing that scan on every
+    // wake instead would put ~4,000 rows on each one, which for a DO woken by
+    // each arriving event is the same shape of bill this change removes.
+    const newestEvent = this.ctx.storage.sql
+      .exec<{ seq: number | null }>(`SELECT MAX(seq) AS seq FROM event`)
+      .toArray()[0]?.seq ?? null;
+    const newestIndexed = this.ctx.storage.sql
+      .exec<{ seq: number | null }>(`SELECT MAX(last_seq) AS seq FROM session`)
+      .toArray()[0]?.seq ?? null;
+    if (newestEvent !== newestIndexed) {
+      // `DO UPDATE`, not `DO NOTHING`: a session the old binary kept writing
+      // to is already indexed, with a `last_seq` left behind. That one is not
+      // missing, it is stale, and it ranks too low to be evicted in turn.
+      // `MAX` so a repair can only ever move the value forward.
       this.ctx.storage.sql.exec(
         `INSERT INTO session (session_id, last_seq)
            SELECT session_id, MAX(seq) FROM event GROUP BY session_id
-         ON CONFLICT(session_id) DO NOTHING`
+         ON CONFLICT(session_id) DO UPDATE SET last_seq = MAX(last_seq, excluded.last_seq)`
       );
     }
     // **The mark cap needs one enforcement point that does not depend on a

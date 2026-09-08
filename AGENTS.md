@@ -302,6 +302,12 @@ DELETE FROM event WHERE session_id NOT IN (
 
 **既存 DO には backfill が要る。** `session` は後から足したので、動いている DO はイベントを持っていて索引を持っていない。索引が空のときだけ `INSERT INTO session SELECT session_id, MAX(seq) FROM event GROUP BY session_id` を 1 回。これが無いと、**すでにディスクにあるセッションについてセッション数の上限だけが効かなくなる** — エラーは出ない。1 セッション 200 件の上限は `trimSessionEvents` が `event` を直接見るので生きたまま。増えるのは保持されるセッションの本数。
 
+**索引が「空か」ではなく「最新か」を訊く。** 空かどうかで判定すると、索引を一度も持ったことのない DO しか拾えない。ロールバックや混在バージョンで旧バイナリが `event` だけ書くと、**索引が知らないセッション**（`trimSessions` から見えないので `maxSessions` が効かない）と、**`last_seq` が止まったままの既知セッション**（最古扱いされて先に落とされる）の 2 種類のずれが出る。どちらもエラーは出ない。
+
+判定は 2 クエリで厳密にできる。`appendEvent` はイベント行と索引行を必ず一緒に書くので、**平常時は `event` の `MAX(seq)` と `session` の `MAX(last_seq)` が必ず一致する**（最新セッションの最新イベントを消す経路は無く、索引行はそのセッションの全イベントと一緒にしか消えない）。索引を飛ばして書いた瞬間に等号が壊れるので、1 回の比較で両方のずれを拾える。修復も `ON CONFLICT DO UPDATE SET last_seq = MAX(...)` の 1 文で両方直る。
+
+**wake ごとに走るので安さが要る。** `MAX(seq)` は INTEGER PRIMARY KEY で 1 行、`MAX(last_seq)` は最大 20 行。`event` の grouped scan は実際にずれているときだけ。無条件に走らせると wake ごとに約 4,000 行で、**hibernation したDO はイベント到着のたびに起きる**ので、この修正が消したのと同じ形の請求になる。実測: wake 全体で 422 行（うち 405 はマーク trim）。
+
 **`if (seeded === 0)` はコストのガードではなくクラッシュのガードだった。** 中身は裸の `INSERT ... SELECT` なので、索引がすでにある DO で走らせると `UNIQUE constraint failed` を投げる。しかも場所が `blockConcurrencyWhile` の中なので、**構築が失敗してその Mac の全ルートが毎 wake 落ちる**。コメントは「空なら scan はタダ」としか書いておらず、コストの最適化に見えていた。`ON CONFLICT(session_id) DO NOTHING` を足して投げないようにし、ガードはコストの話に戻した。
 
 **false 分岐にテストが 1 本も無かった。** backfill に到達するテストが全部 `rebuildSessionIndex()` 経由で、あれは先に `DELETE FROM session` するので true 分岐しか通らない。**普通の wake が通る側**を踏むには、索引を消さずに `ensureSchema()` を呼び直すシームが要る（`rerunWakePath()`）。
@@ -355,7 +361,7 @@ git rebase origin/main --update-refs
 | | |
 |---|---|
 | Swift テスト | 136 |
-| worker テスト | 115 |
+| worker テスト | 116 |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 
 床は `.github/workflows/ci.yml` の `EXPECTED_TESTS` / `EXPECTED_SWIFT_TESTS`。**exit code だけでは足りない** — 0 件走っても exit 0 になる経路が両方にある。

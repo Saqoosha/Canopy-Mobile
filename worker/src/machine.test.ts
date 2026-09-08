@@ -541,6 +541,32 @@ describe("session event ring buffer", () => {
     });
   });
 
+  // The repair seeds the index from whatever `event` holds, which after a
+  // rollback can be more sessions than the cap allows. Nothing else would
+  // shed them: `trimSessions` runs on the append path, and a DO woken only
+  // by phone backfills never reaches it.
+  it("re-applies the session cap after repairing the index", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-drift-cap"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      const over = MachineDO.maxSessions + 10;
+      for (let i = 0; i < over; i++) {
+        state.storage.sql.exec(
+          `INSERT INTO event (seq, session_id, event_id, kind, text, created_at)
+           VALUES (?, ?, ?, 'assistant', 'x', 0)`,
+          i + 1, `ghost${i}`, `ghost${i}-1`
+        );
+      }
+      instance.rerunWakePath();
+      expect(
+        state.storage.sql
+          .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM session`).toArray()[0].n
+      ).toBe(MachineDO.maxSessions);
+      // The oldest are the ones shed, and their events go with them.
+      expect(instance.eventsSince("ghost0", 0).events.length).toBe(0);
+      expect(instance.eventsSince(`ghost${over - 1}`, 0).events.length).toBe(1);
+    });
+  });
+
   // A Durable Object that was already running when the session index landed  // A Durable Object that was already running when the session index landed
   // holds events but no index rows, and the session cap is enforced entirely
   // from that index. Without the backfill the cap silently stops applying to
@@ -705,6 +731,58 @@ describe("session event ring buffer", () => {
       } finally {
         (sql as unknown as { exec: unknown }).exec = real;
       }
+      expect(read).toBeLessThan(300);
+    });
+  });
+
+  // **The wake path needed the same instrument as the append path.** This
+  // change put real work on the wake — a drift check, a repair that scans
+  // `event` when it fires, and the mark cap's backstop — and every guard
+  // holding those to a bounded cost was pinned by nothing. Replacing the
+  // drift condition with `if (true)`, so the ~4,000-row repair scan ran on
+  // every wake, left all 116 tests green: the exact class of regression this
+  // PR exists to remove, moved one path across and invisible again.
+  //
+  // A hibernating Durable Object is re-constructed by an arriving event, so
+  // at low traffic there is about one wake per append and the two are billed
+  // together. That is why this ceiling is near the append's, not orders above
+  // it.
+  it("wakes without reading the whole buffer", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-wake-cost"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      const churn = MachineDO.maxEvictionMarks + MachineDO.maxSessions + 10;
+      for (let i = 0; i < churn; i++) instance.appendEvent(ev(`churn${i}`, "x"));
+      for (let s = 0; s < MachineDO.maxSessions; s++)
+        for (let n = 0; n <= MachineDO.maxEventsPerSession; n++)
+          instance.appendEvent(ev(`s${s}`, `e${n}`));
+      const built = state.storage.sql
+        .exec<{ marks: number; sessions: number; events: number }>(
+          `SELECT (SELECT COUNT(*) FROM eviction) AS marks,
+                  (SELECT COUNT(*) FROM session)  AS sessions,
+                  (SELECT COUNT(*) FROM event)    AS events`
+        ).toArray()[0];
+      expect(built.marks).toBe(MachineDO.maxEvictionMarks);
+      expect(built.sessions).toBe(MachineDO.maxSessions);
+      expect(built.events).toBe(MachineDO.maxSessions * MachineDO.maxEventsPerSession);
+
+      const sql = state.storage.sql;
+      const real = sql.exec.bind(sql);
+      let read = 0;
+      (sql as unknown as { exec: unknown }).exec = (...args: [string, ...unknown[]]) => {
+        const cursor = real(...args);
+        const rows = cursor.toArray();
+        read += cursor.rowsRead;
+        return { toArray: () => rows };
+      };
+      try {
+        instance.rerunWakePath();
+      } finally {
+        (sql as unknown as { exec: unknown }).exec = real;
+      }
+      // Measured 222: one row for `MAX(seq)`, `maxSessions` for
+      // `MAX(last_seq)`, `maxEvictionMarks` to decide the mark trim is not
+      // needed, and the schema statements. No scan of `event`, because
+      // nothing has drifted.
       expect(read).toBeLessThan(300);
     });
   });

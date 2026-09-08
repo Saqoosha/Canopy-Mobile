@@ -102,19 +102,36 @@ export class MachineDO extends DurableObject {
     // needs a rollback or a split-version deployment of THIS change, which is
     // exactly the window a change like this one is most likely to be in.
     //
-    // Two reads answer it exactly. `appendEvent` writes the event and the
-    // index row together, so outside that window the newest seq in `event`
-    // and the highest `last_seq` in `session` are the same number: nothing
-    // deletes the newest event of the newest session, and a session's index
-    // row is deleted only along with all of its events. Any write by a binary
-    // that skips the index breaks the equality — a new session it never
-    // indexed, or an indexed one whose `last_seq` it left behind — so one
-    // comparison covers both shapes of drift, and one statement repairs both.
+    // Two reads decide it. `appendEvent` writes the event and the index row
+    // together, so in normal operation the newest seq in `event` and the
+    // highest `last_seq` in `session` are the same number: nothing deletes
+    // the newest event of the newest session, and a session's index row is
+    // deleted only along with all of its events. A binary that skips the
+    // index leaves `event` ahead — a session it never indexed, or an indexed
+    // one whose `last_seq` it left behind — and one statement repairs both.
+    //
+    // **What that rests on**: an un-indexed write can never be followed by an
+    // indexed one without a construction in between, because this runs in the
+    // constructor and no request is served before it. An old binary's writes
+    // are therefore still the newest when the next wake looks. Add a second
+    // writer to `event` that is neither `appendEvent` nor a whole other
+    // deployment — a bulk import, an admin repair — and that stops holding:
+    // interleave `appendEvent` after it and the maxima agree again while the
+    // row stays unindexed. There is no cheap exact test for that; a session
+    // present in `event` and absent from `session` needs a scan to find.
+    //
+    // **Strictly ahead, not merely different.** The repair only raises
+    // `last_seq`, so an index somehow ahead of `event` can never be brought
+    // back into agreement — and `!==` would then rerun the grouped scan on
+    // every wake, for ever, silently. That state has no in-code path today,
+    // which is exactly why nothing would have noticed it.
     //
     // **This has to be cheap, because it is per wake and a hibernating DO
     // wakes often.** `MAX(seq)` over an INTEGER PRIMARY KEY is one row and
-    // `MAX(last_seq)` is at most `maxSessions` rows; the grouped scan of
-    // `event` runs only when they actually disagree. Doing that scan on every
+    // `MAX(last_seq)` is one per indexed session — `maxSessions` in normal
+    // operation, and however many the previous binary left behind on the one
+    // path this exists for. The grouped scan of `event` runs only when the
+    // two actually disagree. Doing that scan on every
     // wake instead would put ~4,000 rows on each one, which for a DO woken by
     // each arriving event is the same shape of bill this change removes.
     const newestEvent = this.ctx.storage.sql
@@ -123,16 +140,28 @@ export class MachineDO extends DurableObject {
     const newestIndexed = this.ctx.storage.sql
       .exec<{ seq: number | null }>(`SELECT MAX(last_seq) AS seq FROM session`)
       .toArray()[0]?.seq ?? null;
-    if (newestEvent !== newestIndexed) {
+    if (newestEvent !== null && (newestIndexed === null || newestEvent > newestIndexed)) {
       // `DO UPDATE`, not `DO NOTHING`: a session the old binary kept writing
       // to is already indexed, with a `last_seq` left behind. That one is not
       // missing, it is stale, and it ranks too low to be evicted in turn.
-      // `MAX` so a repair can only ever move the value forward.
+      //
+      // The assignment is `excluded.last_seq`, not `MAX(...)` of the two.
+      // Everywhere else a mark may only move forward, because the code has no
+      // better source than the value it already holds. Here it does: the
+      // subquery IS `MAX(seq)` over that session's surviving rows, which is
+      // what `last_seq` is defined to be. Taking the larger of the two would
+      // preserve a value that is wrong in the other direction, and the branch
+      // only raises `last_seq` — so such a row could never be corrected.
       this.ctx.storage.sql.exec(
         `INSERT INTO session (session_id, last_seq)
            SELECT session_id, MAX(seq) FROM event GROUP BY session_id
-         ON CONFLICT(session_id) DO UPDATE SET last_seq = MAX(last_seq, excluded.last_seq)`
+         ON CONFLICT(session_id) DO UPDATE SET last_seq = excluded.last_seq`
       );
+      // The repair seeds whatever `event` holds, which after a rollback can
+      // be more sessions than the cap allows — and every other caller of
+      // this is on the append path, which a DO that has gone quiet never
+      // reaches. Same argument as the mark cap below, same ~40 rows.
+      this.trimSessions();
     }
     // **The mark cap needs one enforcement point that does not depend on a
     // new session appearing.** `noteEviction` runs the trim only when it
@@ -141,12 +170,17 @@ export class MachineDO extends DurableObject {
     // any OTHER reason stays over cap indefinitely. Lowering
     // `maxEvictionMarks` in a deploy is exactly that: before the gate the
     // next append re-capped the table, and the gate silently took that away.
-    // Here it costs one statement per wake instead of one per append: ~405
-    // rows with the mark table full, against ~248 for an append. A DO would
-    // have to wake more than ten thousand times a day for that to matter, and
-    // a DO waking that often is already handling enough appends to dominate
-    // it.
-    this.trimEvictionMarks();
+    // **Wakes are not rare, so this is counted before it is done.** A
+    // hibernating DO is re-constructed by an arriving event, so at low
+    // traffic there is roughly one wake per append and the wake path is
+    // billed alongside it, not amortised against it. The trim reads ~405
+    // rows with the mark table full; `COUNT(*)` over the primary key reads
+    // `maxEvictionMarks` and answers whether it needs to run at all, which
+    // in every state but the one this exists for is no.
+    const marks = this.ctx.storage.sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM eviction`)
+      .toArray()[0]?.n ?? 0;
+    if (marks > MachineDO.maxEvictionMarks) this.trimEvictionMarks();
   }
 
   /** Test seam: re-enter the wake path exactly as a second construction
@@ -336,9 +370,9 @@ export class MachineDO extends DurableObject {
    *  past the cap — all of them, which matters on the first append after
    *  `maxSessions` is lowered. Nothing sheds sessions at wake time; that
    *  asymmetry with the mark cap is deliberate, because only the mark cap
-   *  lost its per-append enforcement to a gate. The ordering is total and the choice deterministic because
-   *  `event.seq` is a single global AUTOINCREMENT, so no two sessions can
-   *  share a `last_seq`. */
+   *  lost its per-append enforcement to a gate. The ordering is total and the
+   *  choice deterministic because `event.seq` is a single global
+   *  AUTOINCREMENT, so no two sessions can share a `last_seq`. */
   private trimSessions(): void {
     const doomed = this.ctx.storage.sql
       .exec<{ session_id: string }>(

@@ -308,9 +308,17 @@ DELETE FROM event WHERE session_id NOT IN (
 
 **wake ごとに走るので安さが要る。** `MAX(seq)` は INTEGER PRIMARY KEY で 1 行、`MAX(last_seq)` は最大 20 行。`event` の grouped scan は実際にずれているときだけ。無条件に走らせると wake ごとに約 4,000 行で、**hibernation したDO はイベント到着のたびに起きる**ので、この修正が消したのと同じ形の請求になる。実測: wake 全体で 422 行（うち 405 はマーク trim）。
 
-**`if (seeded === 0)` はコストのガードではなくクラッシュのガードだった。** 中身は裸の `INSERT ... SELECT` なので、索引がすでにある DO で走らせると `UNIQUE constraint failed` を投げる。しかも場所が `blockConcurrencyWhile` の中なので、**構築が失敗してその Mac の全ルートが毎 wake 落ちる**。コメントは「空なら scan はタダ」としか書いておらず、コストの最適化に見えていた。`ON CONFLICT(session_id) DO NOTHING` を足して投げないようにし、ガードはコストの話に戻した。
+**この判定に至る前、ガードは `if (seeded === 0)`（索引が空か）で、それはコストのガードではなくクラッシュのガードだった。** 中身が裸の `INSERT ... SELECT` なので、索引がすでにある DO で走らせると `UNIQUE constraint failed` を投げる。場所が `blockConcurrencyWhile` の中なので、**構築が失敗してその Mac の全ルートが毎 wake 落ちる**。コメントは「空なら scan はタダ」としか書いておらず、最適化に見えていた。今は `ON CONFLICT ... DO UPDATE` なので投げない。
 
 **false 分岐にテストが 1 本も無かった。** backfill に到達するテストが全部 `rebuildSessionIndex()` 経由で、あれは先に `DELETE FROM session` するので true 分岐しか通らない。**普通の wake が通る側**を踏むには、索引を消さずに `ensureSchema()` を呼び直すシームが要る（`rerunWakePath()`）。
+
+### wake パスにも rows_read の天井を張る
+
+**この修正は wake に仕事を載せた** — ドリフト判定、ずれたときの修復スキャン、マーク上限の受け皿、修復後のセッション上限。そして計器は append パスにしか付いていなかった。ドリフト判定を `if (true)` に変えて 4,000 行のスキャンを毎 wake 走らせても **116 本全部緑**。この PR が消したのと同じ形のバグが、1 つ隣の経路で見えなくなっていた。
+
+**hibernation した DO はイベント到着ごとに構築し直される**ので、低トラフィックでは wake と append がほぼ 1:1 で並んで課金される。だから天井は append のそれと同じ桁に置く。実測: wake 222 行（判定 21 + マーク数え 200 + スキーマ）、append 248 行。
+
+判定は **`!==` ではなく「`event` が先行しているとき」**。修復は `last_seq` を上げる方向にしか動かないので、索引が `event` より先に行っている状態を `!==` で拾うと、直せないまま毎 wake スキャンを走らせ続ける吸収状態になる。今のコードに到達経路は無いが、無いからこそ誰も気づかない。
 
 **backfill テストは 1 セッション 1 イベントだと `MAX` と `MIN` を区別できない。** 全部の集約が同じ値になるので、`MIN(seq)` に変えても緑のまま通る（実測）。本番では「最初に喋ったセッション」を最新扱いすることになる。**どれか 1 セッションに 2 件目を足す**と両者が分かれる。
 
@@ -361,7 +369,7 @@ git rebase origin/main --update-refs
 | | |
 |---|---|
 | Swift テスト | 136 |
-| worker テスト | 116 |
+| worker テスト | 118 |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 
 床は `.github/workflows/ci.yml` の `EXPECTED_TESTS` / `EXPECTED_SWIFT_TESTS`。**exit code だけでは足りない** — 0 件走っても exit 0 になる経路が両方にある。

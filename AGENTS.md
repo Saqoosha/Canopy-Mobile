@@ -302,6 +302,10 @@ DELETE FROM event WHERE session_id NOT IN (
 
 **既存 DO には backfill が要る。** `session` は後から足したので、動いている DO はイベントを持っていて索引を持っていない。索引が空のときだけ `INSERT INTO session SELECT session_id, MAX(seq) FROM event GROUP BY session_id` を 1 回。これが無いと、**すでにディスクにあるセッションについてセッション数の上限だけが効かなくなる** — エラーは出ない。1 セッション 200 件の上限は `trimSessionEvents` が `event` を直接見るので生きたまま。増えるのは保持されるセッションの本数。
 
+**`if (seeded === 0)` はコストのガードではなくクラッシュのガードだった。** 中身は裸の `INSERT ... SELECT` なので、索引がすでにある DO で走らせると `UNIQUE constraint failed` を投げる。しかも場所が `blockConcurrencyWhile` の中なので、**構築が失敗してその Mac の全ルートが毎 wake 落ちる**。コメントは「空なら scan はタダ」としか書いておらず、コストの最適化に見えていた。`ON CONFLICT(session_id) DO NOTHING` を足して投げないようにし、ガードはコストの話に戻した。
+
+**false 分岐にテストが 1 本も無かった。** backfill に到達するテストが全部 `rebuildSessionIndex()` 経由で、あれは先に `DELETE FROM session` するので true 分岐しか通らない。**普通の wake が通る側**を踏むには、索引を消さずに `ensureSchema()` を呼び直すシームが要る（`rerunWakePath()`）。
+
 **backfill テストは 1 セッション 1 イベントだと `MAX` と `MIN` を区別できない。** 全部の集約が同じ値になるので、`MIN(seq)` に変えても緑のまま通る（実測）。本番では「最初に喋ったセッション」を最新扱いすることになる。**どれか 1 セッションに 2 件目を足す**と両者が分かれる。
 
 ### vitest が 1Password のロックで空振りする
@@ -351,7 +355,7 @@ git rebase origin/main --update-refs
 | | |
 |---|---|
 | Swift テスト | 136 |
-| worker テスト | 114 |
+| worker テスト | 115 |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 
 床は `.github/workflows/ci.yml` の `EXPECTED_TESTS` / `EXPECTED_SWIFT_TESTS`。**exit code だけでは足りない** — 0 件走っても exit 0 になる経路が両方にある。

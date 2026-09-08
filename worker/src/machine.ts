@@ -92,12 +92,22 @@ export class MachineDO extends DurableObject {
     // an event it never stops being true; that costs one row, because an
     // empty `event` makes the scan free.
     //
+    // **This guard is not an optimisation — without it the DO cannot wake.**
+    // It reads like one, and the sentence above only talks about cost, but
+    // the statement it guards is a bare `INSERT`: run it against storage that
+    // already has index rows and it raises `UNIQUE constraint failed`, inside
+    // `blockConcurrencyWhile`, which fails construction and takes every route
+    // for that Mac down on every wake. `ON CONFLICT DO NOTHING` below means
+    // that is no longer true, so the guard is back to being about cost — but
+    // both are kept, because one of them being load-bearing was invisible.
+    //
     // **The guard asks "is the index empty", not "is the index complete".**
     // A binary that writes `event` without maintaining `session` — the one
     // this replaces — running against storage that already has an index
     // leaves sessions the cap can never see, and this will not repair them.
-    // Reaching that state needs a rollback or a split-version deployment;
-    // any such session self-heals on its next append.
+    // Reaching that state needs a rollback or a split-version deployment. A
+    // session that appends again heals itself; one that has gone quiet keeps
+    // its rows for good, and while it does, `maxSessions` is not a bound.
     // `LIMIT 1`, not `COUNT(*)`: the question is whether any row exists, and
     // a count reads the whole table to answer it — the pattern this whole
     // change is about, one row where twenty were being read.
@@ -107,7 +117,8 @@ export class MachineDO extends DurableObject {
     if (seeded === 0) {
       this.ctx.storage.sql.exec(
         `INSERT INTO session (session_id, last_seq)
-           SELECT session_id, MAX(seq) FROM event GROUP BY session_id`
+           SELECT session_id, MAX(seq) FROM event GROUP BY session_id
+         ON CONFLICT(session_id) DO NOTHING`
       );
     }
     // **The mark cap needs one enforcement point that does not depend on a
@@ -125,9 +136,25 @@ export class MachineDO extends DurableObject {
     this.trimEvictionMarks();
   }
 
+  /** Test seam: re-enter the wake path exactly as a second construction
+   *  would, over whatever this DO already holds.
+   *
+   *  Separate from `rebuildSessionIndex` because that one empties the index
+   *  first, so every test that used it took the migration's TRUE branch and
+   *  the false branch — the one an ordinary wake takes, and the one that used
+   *  to throw — had no coverage at all. */
+  rerunWakePath(): void {
+    this.ensureSchema();
+  }
+
   /** Test seam: put this DO back in the state a deployment from before the
    *  `session` index left behind — events on disk, no index — and re-run the
-   *  whole wake path over it, migration and cap enforcement both. */
+   *  whole wake path over it, migration and cap enforcement both.
+   *
+   *  This and `rerunWakePath` are public because a `DurableObject` subclass
+   *  has no other way to expose one, matching `forgetInMemoryState` below.
+   *  Nothing routes to them: every entry point in `index.ts` reaches this
+   *  class through `stub.fetch`. */
   rebuildSessionIndex(): void {
     this.ctx.storage.sql.exec(`DELETE FROM session`);
     this.ensureSchema();

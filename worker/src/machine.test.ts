@@ -395,10 +395,16 @@ describe("session event ring buffer", () => {
   // degrades to reporting no gap, which is the safe direction.
   it("bounds the eviction mark table, dropping the oldest marks first", async () => {
     const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-mark-cap"));
-    await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
       const total = MachineDO.maxEvictionMarks + MachineDO.maxSessions + 10;
       for (let i = 0; i < total; i++) instance.appendEvent(ev(`s${i}`, "x"));
-      // Evicted earliest, so its mark is the first to go.
+      // **The size is asserted here, in the test whose subject it is.** It was
+      // pinned only by a fixture precondition in the cost test — scaffolding
+      // someone could reasonably loosen, taking the mark cap with it.
+      expect(
+        state.storage.sql
+          .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM eviction`).toArray()[0].n
+      ).toBe(MachineDO.maxEvictionMarks);
       expect(instance.eventsSince("s0", 0).evictedThrough).toBe(0);
       // Evicted too, but recently enough that its mark is still held.
       const recent = total - MachineDO.maxSessions - 1;
@@ -471,6 +477,30 @@ describe("session event ring buffer", () => {
           .exec(`SELECT 1 FROM eviction WHERE session_id = ?`, `old${over - 1}`)
           .toArray().length
       ).toBe(1);
+    });
+  });
+
+  // **The migration guard is a crash guard, and its false branch had no
+  // test.** Every test that reached the backfill went through
+  // `rebuildSessionIndex`, which empties the index first — so all of them
+  // took the TRUE branch, and removing the guard entirely left the whole file
+  // green while making `ensureSchema` raise `UNIQUE constraint failed` on any
+  // DO that has ever stored an event. That throw is inside
+  // `blockConcurrencyWhile`: the Durable Object fails to construct, and every
+  // route for that Mac fails, on every wake.
+  it("wakes again over storage it has already migrated", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-rewake"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      instance.appendEvent(ev("s1", "a"));
+      instance.appendEvent(ev("s1", "b"));
+      instance.appendEvent(ev("s2", "a"));
+      const before = state.storage.sql
+        .exec(`SELECT session_id, last_seq FROM session ORDER BY session_id`).toArray();
+      instance.rerunWakePath();
+      expect(
+        state.storage.sql
+          .exec(`SELECT session_id, last_seq FROM session ORDER BY session_id`).toArray()
+      ).toEqual(before);
     });
   });
 

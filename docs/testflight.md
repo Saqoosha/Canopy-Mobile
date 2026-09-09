@@ -45,6 +45,13 @@ asc web auth login --apple-id a@saqoo.sh
 
 キーは `76DV838N2N` = "Saqoosha-Personal-Mac"、ADMIN ロール。issuer ID は `asc web api-keys view --key-id 76DV838N2N` で取れる（`asc web auth status` の `publicProviderId` と同じ値）。**`--key-type individual` では通らない** — team キーなので issuer ID が必須。
 
+**`asc web apps create --version` は効かない。** `0.1.0` を渡したのにアプリは `1.0` で作られた（理由は未確認 — iris が既定値を使うのか、作成時にこのフラグを見ないのか切り分けていない）。App Store のバージョンはビルドの `CFBundleShortVersionString` と一致していないとビルドを紐付けられないので、作成後に直す。
+
+```bash
+asc versions list --app 6810164313          # version-id を取る
+asc versions update --version-id <ID> --version "0.1.0"
+```
+
 **`POST /v1/apps` は存在しない。** Apple の公式 API はアプリレコードを作れず、Admin ロールのキーでも `403 FORBIDDEN_ERROR — does not allow CREATE` が返る。だから `asc web apps create` は private な iris エンドポイントを web セッションで叩いている（`asc` はそれを `web` グループに隔離して不公式だと明示している）。要望は FB24429185 で未回答。調査の全文は [research/2026-09-09-asc-automation-2026.md](../research/2026-09-09-asc-automation-2026.md)。
 
 ## 手順
@@ -143,5 +150,4 @@ app（`INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO`）と extension（`Sourc
 
 ## 残タスク
 
-- **App Store のバージョン欄が `1.0` のまま。** `asc web apps create --version 0.1.0` を渡したが `1.0` で作られた。TestFlight には影響しないが、審査に出す前に揃える
 - **`xcrun mcpbridge`（Xcode 26.3+ の Apple 純正 MCP）は未導入。** ローカルのビルド・LLDB・SwiftUI プレビューを MCP で公開する。ASC には触れない

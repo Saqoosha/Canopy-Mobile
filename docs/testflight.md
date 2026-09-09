@@ -147,7 +147,3 @@ Xcode から入れた開発ビルドは sandbox のデバイストークンを�
 ## 輸出コンプライアンス
 
 app（`INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO`）と extension（`Sources/CanopyMobileNotificationService/Info.plist`）の**両方**に入っている。これが無いとアップロードのたびに手で答えることになる。`false` が正しいのは、暗号は Apple 提供の `URLSession` HTTPS と Keychain しか使っていないから。独自の暗号、VPN、DRM を足したら見直す。
-
-## 残タスク
-
-- **`xcrun mcpbridge`（Xcode 26.3+ の Apple 純正 MCP）は未導入。** ローカルのビルド・LLDB・SwiftUI プレビューを MCP で公開する。ASC には触れない

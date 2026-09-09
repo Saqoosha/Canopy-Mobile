@@ -58,22 +58,31 @@ xcodebuild archive -project CanopyMobile.xcodeproj -scheme CanopyMobile \
   -archivePath "$ARCHIVE" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   -allowProvisioningUpdates
 
-# 2. アップロード（scripts/ExportOptions.plist が destination: upload）
+# 2. .ipa を出す（scripts/ExportOptions.plist は destination: export）
 xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath /tmp/canopy-export \
   -exportOptionsPlist scripts/ExportOptions.plist -allowProvisioningUpdates
 
-# 3. 届いたか確認（exit code を信用しない。下記）
-asc builds info --app 6810164313 --latest
+# 3. アップロード。処理完了まで待って、exit code で判定してよい
+asc builds upload --app 6810164313 --ipa /tmp/canopy-export/CanopyMobile.ipa \
+  --wait --verify-timeout 60s
 
 # 4. 内部テスターに配る（新しいビルドごとに要る）
 asc builds add-groups --app 6810164313 --latest --group dfd19ebb-1ca7-43c9-8d59-6ff83e98bd28
 ```
 
-`ExportOptions.plist` が `destination: upload` なので、**issuer ID なしで** Xcode にサインイン済みの Apple ID がそのままアップロードする。ローカルに `.ipa` を出して中身を見たいときだけ `export` に変える。
-
 グループは `hasAccessToAllBuilds: false` なので、**ビルドを上げるたびに手順 4 が要る**。
 
-`asc builds upload --app ID --ipa app.ipa` も存在する（WWDC25 の Build Upload API と思われる）。**未検証。** 通れば xcodebuild の export ごと不要になる。
+### アップロードに `asc` を使う理由
+
+`asc builds upload` は WWDC25 の Build Upload API を叩く。ASC API キーの JWT だけで動き、`altool` も Transporter も web セッションも経由しない。`--dry-run` を付けると presigned URL の予約だけして中身を見せる（PUT の本数、チャンクの offset と length、7 日の期限）。
+
+`xcodebuild -exportArchive` に `destination: upload` を書く道もあり、issuer ID なしで Xcode のサインイン済みアカウントが上げてくれる。**それでも `asc` を既定にしたのは exit code の信頼性のため。** xcodebuild のアップロードは `altool` に乗っていて、Xcode 26 の `altool` は成功後に HTTP 500 を返す、似た bundle ID があると別のアプリを選ぶ、という報告がある。`asc` は `--wait` で処理完了まで待ち、build id を返す。
+
+実測（4.4MB の `.ipa`、アップロードからビルド発見・処理完了まで込み）: **97 秒、exit 0**。同時に `asc builds list` が 2 件に増え、`internalBuildState: READY_FOR_BETA_TESTING` になっていることも確認した。
+
+`xcodebuild` の側で上げるときは **exit code を証拠にしない**。`Upload succeeded` を見たあとに `asc builds info --app 6810164313 --latest` で `processingState` と build number を突き合わせる。このチームには `sh.saqoo.canopy-app` と `sh.saqoo.pager-app` が並んでいるので、bundle ID の取り違えは他人事ではない。（初回アップロードでは実際には食い違わなかった。踏んでいない罠。）
+
+**export の段は消えない** — `asc builds upload` は `.ipa` を要求するので、archive → export → upload の 3 段は変わらない。得られるのは往復の短縮ではなく、判定の確かさと `.ipa` を手元で検証できること。
 
 ## ハマりどころ（実体験）
 
@@ -108,12 +117,6 @@ asc builds add-groups --app 6810164313 --latest --group dfd19ebb-1ca7-43c9-8d59-
 
 **判定に使うのは `distribution view` のほう。** ビルド到着そのものの判定は `asc builds info --app ID --latest` か、`asc status` の `No builds found` が消えるかで見る（実測 157 秒で出た）。
 
-### アップロードの exit code は証拠にならない
-
-Xcode 26 の `altool` は**成功後に HTTP 500 を返す**、**似た bundle ID があると別のアプリを選ぶ**という報告がある。このチームには `sh.saqoo.canopy-app` と `sh.saqoo.pager-app` が並んでいるので他人事ではない。`Upload succeeded` を見たら必ず `asc builds info --app 6810164313 --latest` で `processingState: VALID` と build number を突き合わせる。
-
-（2026-09-09 の初回アップロードでは実際には食い違わなかった。踏んでいない罠だが、確認のコストが安いので手順に残す。）
-
 ### `asc` の JSON はコマンドごとにトップレベルキーが違う
 
 `asc builds groups list` は `{"groups":[...]}`、`asc testflight groups list` は `{"data":[...]}`。`data` 決め打ちでパースすると**空に見えて「紐付いていない」と誤読する**。実際にそれで一度誤判定した。
@@ -140,6 +143,5 @@ app（`INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO`）と extension（`Sourc
 
 ## 残タスク
 
-- **`asc builds upload --ipa` が使えるか未検証。** 通れば archive → export の 2 段が 1 コマンドになる
 - **App Store のバージョン欄が `1.0` のまま。** `asc web apps create --version 0.1.0` を渡したが `1.0` で作られた。TestFlight には影響しないが、審査に出す前に揃える
 - **`xcrun mcpbridge`（Xcode 26.3+ の Apple 純正 MCP）は未導入。** ローカルのビルド・LLDB・SwiftUI プレビューを MCP で公開する。ASC には触れない

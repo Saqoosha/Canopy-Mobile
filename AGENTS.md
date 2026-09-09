@@ -20,6 +20,7 @@ Mac の [Canopy](https://github.com/Saqoosha/Canopy) で動いているセッシ
 | `Tests/` | swift-testing |
 | `scripts/relay-event-probe.mjs` | **デプロイ済みの** relay に対する end-to-end チェック |
 | `docs/secrets.md` | 1Password Environment とシークレットの流し込み |
+| `docs/testflight.md` | TestFlight 配信。`asc` CLI、ASC の台帳、署名と orientation の罠 |
 
 ## コマンド
 
@@ -44,6 +45,11 @@ xcrun devicectl list devices            # udid はここ
 
 # デプロイ済み relay の検証（後始末が要る。下記）
 node scripts/relay-event-probe.mjs
+
+# TestFlight（手順と罠の全文は docs/testflight.md）
+asc builds info --app 6810164313 --latest        # 届いたか。exit code は証拠にならない
+asc builds add-groups --app 6810164313 --latest \
+  --group dfd19ebb-1ca7-43c9-8d59-6ff83e98bd28   # 新しいビルドごとに要る
 ```
 
 `npm test` が緑でも `npx tsc --noEmit` は別に落ちうる。CI は両方回すので、テストだけ通して push すると CI で気付くことになる。
@@ -59,6 +65,8 @@ node scripts/relay-event-probe.mjs
 | Development team | `VCFY2GFR89` |
 | 実機 | iPhone Air "S" — `88CF0177-6AA8-5D02-926C-27E21B989A53` |
 | Mac の machine id | `IOPlatformUUID`。オーバーライドは無いので、**同じ Mac で 2 つの Canopy を起動すると同じ machine として publish し合い、roster が取り合いになる** |
+| App Store Connect | アプリ名 **Canopy for Saqoosha** / App ID `6810164313`。`Canopy Mobile` は他アカウントが使用中で 409。詳細は `docs/testflight.md` |
+| ASC API キー | `76DV838N2N`（team、ADMIN）。issuer ID は `69a6de6e-6653-47e3-e053-5b8c7c11a4d1`。`asc` が keychain に保持 |
 | シークレット | `docs/secrets.md` |
 | Workers プラン | **Paid**（2026-09-08 に無料枠を焼き切って切り替え）。無料枠の 1 日 500 万 rows_read / 10 万 rows_written はもう壁ではないが、その比（write は read の 50 倍高い）は課金でも同じなので設計判断には使う |
 
@@ -208,6 +216,8 @@ plutil -p <app>/Info.plist | grep -E "CFBundleIconName|CFBundleDisplayName|NSExt
 疑わしいときは `-derivedDataPath` を新しいディレクトリにする。アイコン周りの罠は `docs/app-icon.md` にもある（`Contents.json` の `size` を落とすと actool が黙って何も出さない、など）。
 
 **CI は捕まえない** — ワークフローが自分で `xcodegen generate` を走らせるので、CI では常に正しく見える。ローカルでだけ起きて、ローカルでだけ気づける。
+
+**生成 `Info.plist` は足りないキーを黙って落とす。** `GENERATE_INFOPLIST_FILE: YES` は `INFOPLIST_KEY_*` で明示したものしか書かない。`UISupportedInterfaceOrientations` を宣言し忘れると、ローカルの archive は warning だけ出して成功し、**App Store のアップロードが最後まで進んでから** 90474 で弾かれる。輸出コンプライアンスの `ITSAppUsesNonExemptEncryption` も同じ形の穴。どちらも `project.yml` で入れてある — 詳細と実測は `docs/testflight.md`。
 
 ### 配送済みの通知は、配送時点のアイコンと名前のまま
 

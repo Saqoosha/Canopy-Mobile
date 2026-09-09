@@ -43,6 +43,22 @@ targets:
         # drops GENERATE_INFOPLIST_FILE's keys, app icon included. Blanking it
         # puts the generated plist back.
         INFOPLIST_FILE: ""
+        # The extension's own Info.plist already carries this key; the app
+        # generates its plist, so it needs the INFOPLIST_KEY_ form. Without it
+        # every TestFlight upload stops to ask the export-compliance question
+        # by hand. False is accurate: the app uses URLSession HTTPS and the
+        # Keychain, both Apple-provided — revisit if it ever ships crypto of
+        # its own.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        # App Store validation rejects a bundle that declares no orientations
+        # (error 90474) whenever TARGETED_DEVICE_FAMILY includes iPad, because
+        # iPad multitasking needs all four. The generated Info.plist carries
+        # none by default, so the archive uploads clean and Apple fails it
+        # server-side — the local build only warns. iPhone stays portrait-only,
+        # which is what the UI is built for; iPad declares all four purely to
+        # satisfy that rule. Same split Pager uses.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
     dependencies:
       - target: CanopyMobileNotificationService
       - package: MarkdownUI

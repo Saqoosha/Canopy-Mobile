@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Xcode 15.3 renamed this from `app-store`. -->
+	<key>method</key>
+	<string>app-store-connect</string>
+	<!-- `upload` rather than `export`: xcodebuild uploads with the Apple ID
+	     already signed in to Xcode, so no App Store Connect API issuer ID is
+	     needed. Switch to `export` only to inspect the .ipa locally. -->
+	<key>destination</key>
+	<string>upload</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>teamID</key>
+	<string>VCFY2GFR89</string>
+	<key>uploadSymbols</key>
+	<true/>
+	<key>stripSwiftSymbols</key>
+	<true/>
+	<!-- The build number is passed to `xcodebuild archive` instead, so Xcode
+	     must not rewrite it here. -->
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+</dict>
+</plist>

@@ -118,6 +118,14 @@ Xcode 26 の `altool` は**成功後に HTTP 500 を返す**、**似た bundle I
 
 `asc builds groups list` は `{"groups":[...]}`、`asc testflight groups list` は `{"data":[...]}`。`data` 決め打ちでパースすると**空に見えて「紐付いていない」と誤読する**。実際にそれで一度誤判定した。
 
+## APNs は production 経路に切り替わる
+
+Xcode から入れた開発ビルドは sandbox のデバイストークンを登録し、**TestFlight と App Store のビルドは production のトークンを登録する**。relay は片方に固定していない — `worker/src/apns.ts` が `BadDeviceToken` を見て環境を切り替え、判定結果を `MACHINES` KV にキャッシュする。
+
+**2026-09-09、TestFlight から入れたビルドで通知が届くことを実測した。** それまで production 経路は一度も本番で通っていない（実機テストが全部 Xcode の development インストールだった）。届かない場合に疑うのは自動判定か KV キャッシュで、切り分けは Worker のログで付く。
+
+`aps-environment` を `project.yml` で production に変える必要は無い。上記のとおり export の再署名が入れてくれる。
+
 ## 検証で使える基準値
 
 | | |

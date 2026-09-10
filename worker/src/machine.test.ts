@@ -759,7 +759,7 @@ describe("session event ring buffer", () => {
       } finally {
         (sql as unknown as { exec: unknown }).exec = real;
       }
-      // Measured 222: one row for `MAX(seq)`, `maxSessions` for
+      // Measured 221 (2026-09-11): one row for `MAX(seq)`, `maxSessions` for
       // `MAX(last_seq)`, `maxEvictionMarks` to decide the mark trim is not
       // needed, and the schema statements. No scan of `event`, because
       // nothing has drifted.

@@ -107,6 +107,34 @@ cd worker && npx wrangler kv key delete --binding MACHINES --remote "machine:PRO
 | `maxSessions` | 20 |
 | `maxEvictionMarks` | 200。マークを失うと「欠落なし」に退化する（安全側） |
 
+### 画像はイベント行に乗らない —— R2 に居る
+
+`Read` した画像の行は `kind: "tool"` のまま、`image` フィールド（`width` /
+`height` / `bytes`）だけが増える。**バイトは R2** で、`GET /image?machine=&session=&event=&variant=full|thumb`。
+
+**`kind` を増やさなかったのは互換のため。** 新しい `kind` なら古い電話が
+`.other("image")` に落として「image: Read: shot.png」という行を描く。未知の
+フィールドは Codable が黙って無視するので、古い電話はいつものレンチ行になる。
+
+**relay は `image` の中身を見ない。** オブジェクトならそのまま `image` カラム
+（TEXT、JSON 文字列）に入れてそのまま返す。`kind` を enum で弾かないのと同じ
+向きの判断 —— Mac が先に出るので、ここで検証すると relay のデプロイが Canopy の
+新機能の前提条件になる。
+
+`image` カラムは後付けなので `ensureSchema` が `ALTER TABLE` する。存在判定は
+`SELECT image FROM event LIMIT 0` の成否 —— `PRAGMA table_info` と
+`sqlite_master` が DO の SQL で使えるかを測っていないため。定常状態は 0 行なので
+wake のコストに乗らない。
+
+**行は `tool_use` ではなく `tool_result` の時点で出る。** 画像は次のフレームに
+来るので、1 行に絵を付けるには結果を待つしかない。代償は 2 つ —— 行が Read の
+完了時に出ること、そして結果が来ないまま死んだ Read は行が消えること。
+
+アップロードは **2 枚とも成功してから行を出す**。行が出た = バイトは在る、と
+いう関係が、壊れたサムネイルの出ない唯一の根拠。失敗したら画像なしの素の行。
+
+設計と実測は `docs/session-images.md`。
+
 ## ハマりどころ（実体験）
 
 ### 送信側のバイナリに機能が無い
@@ -380,11 +408,11 @@ git rebase origin/main --update-refs
 
 | | |
 |---|---|
-| Swift テスト | 136 |
-| worker テスト | 118 |
+| Swift テスト | 142 |
+| worker テスト | 134 |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
-| DO の append 1 件 | 248 rows_read（3 つの上限すべて満杯）/ 210（生きているセッション 1 本） |
-| DO の wake 1 回 | 222 rows_read（ドリフト無し）|
+| DO の append 1 件 | 248 rows_read（3 つの上限すべて満杯、2026-09-11 実測）/ 210（生きているセッション 1 本） |
+| DO の wake 1 回 | 221 rows_read（ドリフト無し、2026-09-11 実測）|
 
 append と wake の数字は `machine.test.ts` の 2 本のコスト上限テストが 300 で pin している。手で測り直すときは **3 つの上限を全部埋める** — でないと 248 ではなく 249 が出て、しかもそれは嘘（上記「コストのテストは…」）。
 

@@ -68,6 +68,22 @@ R2 公称価格（実装時に確認する）: storage $0.015/GB-month、Class A
 
 保持は R2 のライフサイクルで **7 日**。リングバッファ 200 件は忙しい Mac なら数時間ぶんなので 7 日は十分に長い。期限切れをタップしたら「expired」を出す。
 
+設定したコマンド（2026-09-11、wrangler 4.128.0。フラグ名はバージョンで変わるので
+`npx wrangler r2 bucket lifecycle add --help` で確認してから合わせる）:
+
+```bash
+npx wrangler r2 bucket lifecycle add canopy-mobile-images expire-images --expire-days=7
+```
+
+確認:
+
+```bash
+npx wrangler r2 bucket lifecycle list canopy-mobile-images
+```
+
+`Default Multipart Abort Rule`（7 日、bucket 作成時からの既定）に加えて
+`expire-images`（7 日で失効）が出れば入っている。
+
 ## 電話側
 
 `SessionEventRecord` に optional なフィールドを足す（鍵、幅、高さ、バイト数）。無い relay からのイベントでも落ちないこと。
@@ -79,7 +95,7 @@ R2 公称価格（実装時に確認する）: storage $0.015/GB-month、Class A
 ## テスト
 
 - **Canopy**: `tool_result` → 画像イベントの純関数、拡張子判定、サムネイル寸法、結果に画像が無い場合の素の行、結果が来ない場合
-- **worker**: R2 の put/get、鍵の machine スコープ、認証、期限切れの 404、**コストテスト 248/222 が動かないこと**
+- **worker**: R2 の put/get、鍵の machine スコープ、認証、期限切れの 404、**コストテスト 248/221 が動かないこと**
 - **電話**: 新フィールドの寛容なデコード、画像行の描画、タップの拡大、キャッシュ
 
 ## リリース順

@@ -1810,7 +1810,7 @@ cd worker && npx wrangler r2 bucket lifecycle list canopy-mobile-images
 
 - [ ] **Step 2: rows_read の実測値を測り直して、ずれを直す**
 
-`machine.test.ts` の wake テストのコメントは `Measured 222` と書いてあるが、Task 2 で実測したら **221** だった（task-2 前の `machine.ts` に対しても 221 なので、この機能が持ち込んだずれではない）。AGENTS.md の `## 検証で使える基準値` も 222 と書いている。
+`machine.test.ts` の wake テストのコメントは `Measured 222` と書いてあるが、Task 2 で実測したら **221** だった（task-2 前の `machine.ts` に対しても 221 なので、この機能が持ち込んだずれではない）。AGENTS.md の `## 検証で使える基準値` も 222 と書いていた（両方 221 に直した）。
 
 ```bash
 cd worker && npx vitest run src/machine.test.ts -t "without reading the whole buffer"

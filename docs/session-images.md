@@ -99,7 +99,9 @@ npx wrangler r2 bucket lifecycle list canopy-mobile-images
 
 ## テスト
 
-- **Canopy**: `tool_result` → 画像イベントの純関数、拡張子判定、サムネイル寸法、結果に画像が無い場合の素の行、結果が来ない場合
+- **Canopy**: `tool_result` → 画像イベントの純関数（`imageResults` が画像の無い `tool_result` の id も返すこと、複数ブロック、失敗した Read の文字列 content）、拡張子判定、サムネイル寸法、pending の上限と `at` の持ち回り、`events(from:)` の envelope 経路
+
+**Canopy 側で書いていないもの**: `publishImageResultIfAny` 自体。素の行を出す分岐、再配送を安全にしている同期的な pending 除去、アップロード後の emit —— どれもテストが無い。**上の「結果に画像が無い場合」は純関数の層でしか固定されていない。** 固定するには `RosterPublisher` と `RosterImageUploader` を注入するシームが要り、Mac のアップロード経路について同じ判断で見送ったのと同じ理由で作っていない
 - **worker**: R2 の put/get、鍵の machine スコープ、認証、期限切れの 404、**コストテスト 248/221 が動かないこと**、`image` フィールドのバイト上限（超えたら drop しても INSERT が落ちない）、`image` カラムが無いテーブルからの `ALTER TABLE` マイグレーション
 - **電話**: 新フィールドの寛容なデコード、URL 構築とエスケープ、`SessionImageLoader` のネットワーク判定（非 200・空ボディ・同時リクエストの合流）を `URLProtocol` スタブで固定
 

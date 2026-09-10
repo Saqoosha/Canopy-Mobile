@@ -699,6 +699,8 @@ Expected: コンパイルエラー。`imageReadFileName` などが存在しな�
     let image: ImageInfo?
 ```
 
+既存の `init` に `image` を足すだけ。**`text` の行には触らない** —— cap は `make` の側でかかっていて、ここで `capped(text)` を挟むと二重にかかる。
+
 ```swift
     init(eventId: String, sessionId: String, resumeId: String?, kind: Kind, text: String,
          at: Date, image: ImageInfo? = nil) {
@@ -707,13 +709,11 @@ Expected: コンパイルエラー。`imageReadFileName` などが存在しな�
         self.sessionId = sessionId
         self.resumeId = resumeId
         self.kind = kind
-        self.text = capped(text)
+        self.text = text
         self.at = at
         self.image = image
     }
 ```
-
-**`text` の扱いを変えないこと。** 既存の `init` は `text` をそのまま入れていて、cap は `make` の側でかかっている。上の例で `capped(text)` と書いたのは誤り —— 既存のとおり `self.text = text` にする。
 
 `events(fromFrame:)` の `tool_use` ループを差し替える。
 
@@ -1515,7 +1515,37 @@ final class SessionImageLoader {
 
 - [ ] **Step 4: 行にサムネイルを足す**
 
-`Sources/SessionConversationView.swift`。`SessionEventBlock` は `machine` と `secret` を知らないので、まず親から渡す。呼び出し側（232 行の `SessionEventBlock(event: event)`）と `SessionConversationView` の既存プロパティを読んで、そこにある machine id と secret を渡す。
+`Sources/SessionConversationView.swift`。**`SessionConversationView` は既に `machine: String` を持っている**（77 行）。足りないのは 2 つだけ。
+
+```swift
+struct SessionConversationView: View {
+    let machine: String
+    /// 画像の取得先。**demo モードでは nil** —— `CanopyMobileApp.baseURL` が
+    /// そこで nil を返すので、fixture が生の relay と間違われることがない。
+    /// nil のときはサムネイルを描かない。
+    let base: URL?
+    let secret: String
+```
+
+呼び出し側は `Sources/CanopyMobileApp.swift` の `conversation(_:)`（622 行）。`machine: target.machine` の隣に足す。
+
+```swift
+        return SessionConversationView(
+            machine: target.machine,
+            base: baseURL,
+            secret: secret,
+```
+
+`baseURL` は同ファイルの `private var baseURL: URL?`（79 行）、`secret` は `@State private var secret: String`（59 行）。どちらも既にある。
+
+`SessionEventBlock(event: event)`（232 行）に 3 つ渡す。
+
+```swift
+                                SessionEventBlock(event: event, machine: machine,
+                                                  base: base, secret: secret)
+```
+
+`SessionEventBlock` にも同じ 3 つを `let` で足す。
 
 `case .tool` を差し替える。
 
@@ -1532,7 +1562,9 @@ final class SessionImageLoader {
                 .foregroundStyle(.tertiary)
                 // 画像を持つ行だけがここに来る。持たない行の見た目は
                 // 1 ピクセルも変わらない。
-                if let image = event.image {
+                // `base` が nil = demo モード。fixture に画像は無いし、
+                // 取りに行く先も無い。
+                if let image = event.image, let base {
                     SessionImageThumbnail(event: event, image: image,
                                           machine: machine, base: base, secret: secret)
                 }

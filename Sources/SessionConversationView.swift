@@ -76,6 +76,11 @@ enum ConversationRow: Identifiable {
 /// do next from a phone.
 struct SessionConversationView: View {
     let machine: String
+    /// 画像の取得先。**demo モードでは nil** —— `CanopyMobileApp.baseURL` が
+    /// そこで nil を返すので、fixture が生の relay と間違われることがない。
+    /// nil のときはサムネイルを描かない。
+    let base: URL?
+    let secret: String
     /// The LIVE session's id, minted per Canopy process. Replies and decisions
     /// are addressed with it, because only it can name a running session.
     let sessionId: String
@@ -229,7 +234,8 @@ struct SessionConversationView: View {
                             case .item(let item):
                                 MessageBlock(item: item, onDecision: onDecision, onAnswer: onAnswer)
                             case .event(let event):
-                                SessionEventBlock(event: event)
+                                SessionEventBlock(event: event, machine: machine,
+                                                  base: base, secret: secret)
                             }
                         }
                         Color.clear.frame(height: 1).id(bottomAnchor)
@@ -550,18 +556,31 @@ struct SessionConversationView: View {
 /// and only break up the flow.
 private struct SessionEventBlock: View {
     let event: SessionEventRecord
+    let machine: String
+    let base: URL?
+    let secret: String
 
     var body: some View {
         switch event.kind {
         case .tool:
-            HStack(spacing: 6) {
-                Image(systemName: "wrench.and.screwdriver")
-                    .font(.caption2)
-                Text(event.text)
-                    .font(.caption)
-                    .lineLimit(1)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "wrench.and.screwdriver")
+                        .font(.caption2)
+                    Text(event.text)
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.tertiary)
+                // 画像を持つ行だけがここに来る。持たない行の見た目は
+                // 1 ピクセルも変わらない。
+                // `base` が nil = demo モード。fixture に画像は無いし、
+                // 取りに行く先も無い。
+                if let image = event.image, let base {
+                    SessionImageThumbnail(event: event, image: image,
+                                          machine: machine, base: base, secret: secret)
+                }
             }
-            .foregroundStyle(.tertiary)
             .frame(maxWidth: .infinity, alignment: .leading)
         case .turnStart, .turnEnd:
             EmptyView()
@@ -607,6 +626,122 @@ private struct SessionEventBlock: View {
             .padding(14)
             .background(Color(.secondarySystemGroupedBackground),
                         in: RoundedRectangle(cornerRadius: 16))
+        }
+    }
+}
+
+/// 行に埋まるサムネイルと、タップで開く原寸。
+///
+/// **場所は絵より先に決まる。** `image.width` / `image.height` で縦横比を
+/// 決めてから読み込むので、絵が届いた瞬間に行の高さが飛ばない。
+private struct SessionImageThumbnail: View {
+    let event: SessionEventRecord
+    let image: SessionEventImage
+    let machine: String
+    let base: URL
+    let secret: String
+
+    @State private var thumbnail: Data?
+    @State private var failed = false
+    @State private var showingFull = false
+
+    private var aspect: CGFloat {
+        guard image.width > 0, image.height > 0 else { return 16.0 / 9.0 }
+        return CGFloat(image.width) / CGFloat(image.height)
+    }
+
+    var body: some View {
+        Group {
+            if let thumbnail, let ui = UIImage(data: thumbnail) {
+                Image(uiImage: ui)
+                    .resizable()
+                    .aspectRatio(aspect, contentMode: .fit)
+            } else if failed {
+                // 期限切れ(7 日)と一度も上がらなかったものを区別しない。
+                // 電話に出せる言葉は同じ。
+                Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                Rectangle()
+                    .fill(Color(.tertiarySystemFill))
+                    .aspectRatio(aspect, contentMode: .fit)
+            }
+        }
+        .frame(maxWidth: 220)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .onTapGesture { if thumbnail != nil { showingFull = true } }
+        .task {
+            guard thumbnail == nil, !failed,
+                  let url = SessionImageLoader.url(base: base, machine: machine,
+                                                   session: event.sessionId,
+                                                   event: event.eventId, variant: "thumb")
+            else { return }
+            if let data = await SessionImageLoader.shared.data(at: url, secret: secret) {
+                thumbnail = data
+            } else {
+                failed = true
+            }
+        }
+        .fullScreenCover(isPresented: $showingFull) {
+            SessionImageFullScreen(event: event, image: image, machine: machine,
+                                   base: base, secret: secret,
+                                   placeholder: thumbnail)
+        }
+    }
+}
+
+/// 原寸。**サムネイルを下に敷いてから原寸を読む** —— 435KB の取得中に
+/// 灰色を見せるより、ぼやけた絵から始まって差し替わるほうがよい。
+private struct SessionImageFullScreen: View {
+    let event: SessionEventRecord
+    let image: SessionEventImage
+    let machine: String
+    let base: URL
+    let secret: String
+    let placeholder: Data?
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var full: Data?
+    @State private var failed = false
+
+    private var shown: Data? { full ?? placeholder }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let shown, let ui = UIImage(data: shown) {
+                    ScrollView([.horizontal, .vertical]) {
+                        Image(uiImage: ui)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                    }
+                } else if failed {
+                    Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ProgressView()
+                }
+            }
+            .navigationTitle(event.text)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .task {
+            guard full == nil,
+                  let url = SessionImageLoader.url(base: base, machine: machine,
+                                                   session: event.sessionId,
+                                                   event: event.eventId, variant: "full")
+            else { return }
+            if let data = await SessionImageLoader.shared.data(at: url, secret: secret) {
+                full = data
+            } else if placeholder == nil {
+                failed = true
+            }
         }
     }
 }

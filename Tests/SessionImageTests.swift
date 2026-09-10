@@ -52,3 +52,31 @@ struct SessionEventImageTests {
         #expect(record.text == "Read: shot.png")
     }
 }
+
+struct SessionImageURLTests {
+    private let base = URL(string: "https://relay.example")!
+
+    @Test("The variant URL carries every id the relay needs")
+    func buildsTheURL() throws {
+        let url = try #require(SessionImageLoader.url(
+            base: base, machine: "M1", session: "s1", event: "e1", variant: "thumb"))
+        let items = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        let pairs = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value) })
+        #expect(url.path == "/image")
+        #expect(pairs["machine"] == "M1")
+        #expect(pairs["session"] == "s1")
+        #expect(pairs["event"] == "e1")
+        #expect(pairs["variant"] == "thumb")
+    }
+
+    // machine id は IOPlatformUUID で、セッション id は UUID。どちらも
+    // 今は安全な文字だけだが、エスケープを外すとクエリが壊れる形で
+    // 静かに 400 になる。
+    @Test("Ids are percent-escaped")
+    func escapesIds() throws {
+        let url = try #require(SessionImageLoader.url(
+            base: base, machine: "a b&c", session: "s1", event: "e1", variant: "full"))
+        #expect(!url.absoluteString.contains("a b"))
+        #expect(url.absoluteString.contains("a%20b") || url.absoluteString.contains("a+b"))
+    }
+}

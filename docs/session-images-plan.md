@@ -238,7 +238,7 @@ const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 - [ ] **Step 7: テストが通ることを確かめる**
 
 Run: `cd worker && npx vitest run src/index.test.ts -t "session images"`
-Expected: PASS（10 件）
+Expected: PASS（9 件）
 
 - [ ] **Step 8: 型検査**
 
@@ -827,10 +827,12 @@ MSG
                 return out as Data
             }
 
-            guard let wide = makePNG(width: 1440, height: 900) else {
-                record("image: fixture PNG could be built", false, "makePNG returned nil")
-                return (lines.joined(separator: "\n"), fail + 1)
-            }
+            // **`return` してはいけない。** ここは `runAllTests` の中なので、
+            // 早期 return はプローブ全体を打ち切って以降のアサーションを
+            // 黙って消す —— テスト数が減るだけで、理由はどこにも出ない。
+            let wide = makePNG(width: 1440, height: 900)
+            record("image: fixture PNG could be built", wide != nil, "makePNG returned nil")
+            if let wide {
 
             record("image: pixelSize reads the real dimensions",
                    RosterImageUploader.pixelSize(of: wide).map { $0 == (1440, 900) } ?? false)
@@ -860,8 +862,11 @@ MSG
             } else {
                 record("image: small fixture PNG could be built", false, "makePNG returned nil")
             }
+            }  // if let wide
         }
 ```
+
+**アサーションは 8 件**（`fixture PNG could be built` が増える）。`wide` が nil なら 1 件 FAIL して残りは走らないので合計は 8 にならないが、**それは意図した挙動** —— プローブ全体は続く。
 
 ファイル先頭の import に `import ImageIO`、`import CoreGraphics`、`import UniformTypeIdentifiers` が必要なら足す。
 
@@ -946,7 +951,7 @@ enum RosterImageUploader {
 - [ ] **Step 4: テストが通ることを確かめる**
 
 Run: Step 2 と同じビルド + プローブ
-Expected: `BUILD SUCCEEDED`、FAIL 0、新しい 7 件が PASS。
+Expected: `BUILD SUCCEEDED`、FAIL 0、新しい 8 件が PASS。
 
 - [ ] **Step 5: コミット**
 
@@ -1398,7 +1403,8 @@ MSG
 
 **Files:**
 - Create: `Sources/SessionImageLoader.swift`
-- Modify: `Sources/SessionConversationView.swift`（`SessionEventBlock` の `case .tool`、551-566 行）
+- Modify: `Sources/SessionConversationView.swift`（`SessionEventBlock` の `case .tool`、551-566 行。および `SessionConversationView` に `base` / `secret` を足す）
+- Modify: `Sources/CanopyMobileApp.swift`（`conversation(_:)`、622 行 —— 新しい 2 引数を渡す）
 - Modify: `Tests/SessionImageTests.swift`
 
 **Interfaces:**

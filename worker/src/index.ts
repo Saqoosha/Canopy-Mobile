@@ -28,6 +28,19 @@ function authorized(request: Request, env: Env): boolean {
  *  relay の上限で追い越せないようにしておく。 */
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 
+/** What GET is willing to *serve back* as its declared content type. PUT
+ *  stores whatever `Content-Type` arrives, unvalidated — see the comment on
+ *  the GET branch below for why the gate sits here instead. Mirrors the set
+ *  the Mac side already gates image uploads on. */
+const ALLOWED_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/bmp",
+  "image/avif",
+]);
+
 /** APNs rejects a payload over 4 KB outright, and the push is the only place
  *  the whole notification exists — Canopy caps its own text in bytes, but it
  *  cannot see the title, the ids, the category or the form that ride with it.
@@ -371,6 +384,27 @@ export default {
         if (!object) return json({ error: "not found" }, 404);
         const headers = new Headers();
         object.writeHttpMetadata(headers);
+        // PUT は Content-Type を検証せずそのまま R2 に置く — これは意図的
+        // (`worker/src/types.ts` の通り、relay は検証しないパイプで、Canopy
+        // が relay より先に出る以上、ここでの許可リストが次の画像形式追加の
+        // たびに relay デプロイを前提にしてしまう)。だから検証は書く側では
+        // なく、ここ GET が「ブラウザに実行させる」側でだけ行う。SHARED_SECRET
+        // を持つ相手が `text/html` に script を仕込んで PUT し、relay 自身の
+        // オリジンから配信させる stored XSS を塞ぐのが目的 — Mac も CLI の
+        // `tool_result` の `source.media_type` をそのまま転送するので、
+        // 上流の値がここまで無検証で届きうる。
+        // 電話は URLSession で生バイトを読むだけなので、以下 4 つはどれも
+        // 電話には効かない（ブラウザ向けのヘッダーは電話にとって不活性）。
+        const storedType = headers.get("Content-Type");
+        headers.set(
+          "Content-Type",
+          storedType && ALLOWED_IMAGE_TYPES.has(storedType) ? storedType : "application/octet-stream",
+        );
+        // 上のフィルタをすり抜けた/誤ラベルされたバイト列を、ブラウザに
+        // HTML や script として解釈させない三重の保険。
+        headers.set("X-Content-Type-Options", "nosniff");
+        headers.set("Content-Security-Policy", "default-src 'none'; sandbox");
+        headers.set("Content-Disposition", "attachment");
         // eventId は UUID で、同じキーの中身が変わることは無い。
         headers.set("Cache-Control", "private, max-age=31536000, immutable");
         return new Response(object.body, { headers });

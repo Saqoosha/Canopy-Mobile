@@ -683,16 +683,53 @@ describe("session images", () => {
     expect(new Uint8Array(await got.arrayBuffer())).toEqual(png);
   });
 
+  // ストア済みの Content-Type は無検証 (PUT はどんな文字列も受ける)。GET が
+  // それをそのまま返すと、SHARED_SECRET を持つ相手が text/html に script を
+  // 仕込んで relay 自身のオリジンから配信させられる (stored XSS)。allowlist
+  // に無い型は application/octet-stream に落ちる。
+  it("never serves back an unlisted Content-Type", async () => {
+    await put("machine=M8&session=s1&event=e1&variant=full", png, {
+      ...auth,
+      "Content-Type": "text/html",
+    });
+    const got = await SELF.fetch(
+      "https://relay/image?machine=M8&session=s1&event=e1&variant=full",
+      { headers: auth },
+    );
+    expect(got.headers.get("Content-Type")).toBe("application/octet-stream");
+  });
+
+  // 上のフィルタが誤動作しても、ブラウザにバイト列を実行させない三重の保険。
+  it("hardens the GET response against being rendered by a browser", async () => {
+    await put("machine=M9&session=s1&event=e1&variant=full", png, {
+      ...auth,
+      "Content-Type": "text/html",
+    });
+    const got = await SELF.fetch(
+      "https://relay/image?machine=M9&session=s1&event=e1&variant=full",
+      { headers: auth },
+    );
+    expect(got.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(got.headers.get("Content-Security-Policy")).toBe("default-src 'none'; sandbox");
+    expect(got.headers.get("Content-Disposition")).toBe("attachment");
+  });
+
   // full と thumb は別のオブジェクト。同じ event の下で衝突しない。
   it("keeps full and thumb apart", async () => {
     const thumb = new Uint8Array([0xff, 0xd8, 0xff]);
     await put("machine=M2&session=s1&event=e1&variant=full", png);
     await put("machine=M2&session=s1&event=e1&variant=thumb", thumb);
-    const got = await SELF.fetch(
+    const gotThumb = await SELF.fetch(
       "https://relay/image?machine=M2&session=s1&event=e1&variant=thumb",
       { headers: auth },
     );
-    expect(new Uint8Array(await got.arrayBuffer())).toEqual(thumb);
+    expect(new Uint8Array(await gotThumb.arrayBuffer())).toEqual(thumb);
+    // Both directions: writing thumb must not have clobbered or blocked full.
+    const gotFull = await SELF.fetch(
+      "https://relay/image?machine=M2&session=s1&event=e1&variant=full",
+      { headers: auth },
+    );
+    expect(new Uint8Array(await gotFull.arrayBuffer())).toEqual(png);
   });
 
   // 別の Mac が同じ session/event 名を使っても混ざらない。seq と違い

@@ -1034,7 +1034,13 @@ Expected: コンパイルエラー。`prunedImageReads` が存在しない。
                           variant: "full", body: full, mediaType: mediaType)
         async let b = put(target: target, sessionId: sessionId, eventId: eventId,
                           variant: "thumb", body: thumb, mediaType: "image/jpeg")
-        return await a && b
+        // `await a && b` は**コンパイルできない** —— `&&` の第 2 引数は
+        // `@autoclosure` で、その中に `async let` はキャプチャできない。
+        // 先に両方を素の `Bool` に await すれば避けられて、上の 2 本が
+        // 並行に走ることも変わらない。短絡が起きないのはむしろ正しい ——
+        // 「両方成功」が意味なので、片方を評価しない経路があってはいけない。
+        let (fullOK, thumbOK) = await (a, b)
+        return fullOK && thumbOK
     }
 
     /// `RosterNotifier.resolvedTarget` と同じ 3 つ組を同じ順で確かめる。
@@ -1206,7 +1212,15 @@ Expected: `BUILD SUCCEEDED`、FAIL 0、新しい 3 件が PASS。
 
 `xcodegen generate` を先に置くのは既定の作業手順。このタスクは新しいファイルを作らないので厳密には要らないが、走らせて損は無く、**忘れたときの失敗の形が「exit 0 で緑、ただし変更が入っていない」** なので、条件付きにしない。
 
-- [ ] **Step 6: 実機（この Mac）で 1 枚流して確かめる**
+- [ ] **Step 6: 実機（この Mac）で 1 枚流して確かめる —— Task 7 に畳む**
+
+**このステップは Task 7 Step 6 と一緒に 1 回で行う。** あちらの確認（電話にサムネイルが出て、タップで原寸）は、**Mac→R2 のアップロードが成功していなければ到達しない** —— 先にここだけ別に確かめると同じ経路を 2 回踏むことになる。Task 7 まで進んでから、下の手順を電話側の確認と同じセッションで走らせる。
+
+**この機能で唯一、自動テストが届かない検証がこれ。** 飛ばしたまま完了と呼ばない。
+
+<details>
+<summary>手順（Task 7 Step 6 で使う）</summary>
+
 
 Debug ビルドは別 bundle id（`sh.saqoo.Canopy.debug`）なので Release を止めずに立てられる。ただし **machine id は共通なので roster を取り合う** ——確認が済んだら閉じる。
 
@@ -1224,6 +1238,8 @@ cd worker && npx wrangler r2 object get canopy-mobile-images/<machine>/<session>
 ```
 
 `<machine>` は `ioreg -rd1 -c IOPlatformExpertDevice | grep IOPlatformUUID`。`<session>` と `<event>` はログから。
+
+</details>
 
 - [ ] **Step 7: コミット**
 
@@ -1736,6 +1752,10 @@ xcrun devicectl device install app --device 88CF0177-6AA8-5D02-926C-27E21B989A53
 ```
 
 Mac 側で画像を Read させ、会話画面にサムネイルが出てタップで原寸が出ることを見る。
+
+**Task 5 Step 6 の Mac 側の確認もここで一緒に行う。** 同じ 1 枚が Mac の `[event]` ログ → R2 → 電話の行、と通ることを 1 回で見る。R2 に載ったかの直接確認（`wrangler r2 object get … --file /tmp/thumb.jpg`）は Task 5 Step 6 の details に手順がある。
+
+**この 2 つが、この機能で自動テストが届かない唯一の検証。** 電話に絵が出るまでを人間が 1 回見るまで、完了と呼ばない。
 
 **戻るときは通知タップを使わない** —— App スイッチャーかホーム画面のアイコンから。通知タップは会話画面を積み直して `onAppear` を発火させる。
 

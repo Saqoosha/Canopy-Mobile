@@ -975,4 +975,78 @@ describe("event image pass-through", () => {
     const live = await liveFanoutOne({ sessionId: "s5", kind: "tool", text: "Read: shot.png", image });
     expect(live.image).toEqual(image);
   });
+
+  // `text` has had this cap since before images existed; `image` did not,
+  // and nothing else in the column's shape stops a huge value from reaching
+  // the INSERT below and throwing — taking the whole append down, the
+  // failure `maxImageJsonBytes` exists to prevent. This drives the JSON well
+  // past the 4 KiB cap without relying on any particular key, so removing
+  // the cap check (rather than just its threshold) is what this pins.
+  it("drops an oversized image field instead of throwing on the insert", async () => {
+    const huge = { width: 1, height: 1, bytes: 1, junk: "x".repeat(10_000) };
+    const back = await backfillOne({ sessionId: "s6", kind: "tool", text: "Read: huge.png", image: huge });
+    expect(back.image).toBeUndefined();
+    // The row itself must still exist — dropping the field, not the event.
+    expect(back.text).toBe("Read: huge.png");
+  });
+
+  // The boundary the field is actually expected to live near: three
+  // integers, comfortably under the cap. Guards against a fix that
+  // over-tightens `maxImageJsonBytes` and starts dropping ordinary images.
+  it("keeps an image field well under the cap", async () => {
+    const back = await backfillOne({ sessionId: "s7", kind: "tool", text: "Read: ok.png", image });
+    expect(back.image).toEqual(image);
+  });
+});
+
+// **The load-bearing assumption nothing else here reaches.** Every table any
+// other test in this file touches is created BY `ensureSchema`'s own
+// `CREATE TABLE IF NOT EXISTS`, which already declares the `image` column —
+// so `SELECT image FROM event LIMIT 0` always finds it and the ALTER branch
+// never runs. A Durable Object that predates this deploy is the one case
+// where the column really is missing, and the whole migration hinges on
+// `SELECT ... LIMIT 0` throwing rather than quietly returning zero rows on
+// such a table. `ensureSchema`'s own comment states this as a fact about
+// ordinary SQL, but nothing before this test exercised the missing-column
+// case against workerd's actual SQLite. If it does not throw, `hasImageColumn`
+// stays true and the seven-column INSERT in `appendEvent` throws on every
+// append for every Mac whose DO predates this deploy, with nothing in the UI
+// to say so.
+describe("image column migration", () => {
+  // Puts `event` back in the shape a pre-image-column deploy left it in —
+  // `DROP` and recreate without the column, since ALTER TABLE ... DROP
+  // COLUMN support in workerd's SQLite is exactly as unmeasured as the thing
+  // under test. `rerunWakePath` then re-enters `ensureSchema` exactly as a
+  // second construction would.
+  it("adds the image column to a table that predates it, and appends after", async () => {
+    const stub = env.MACHINE.get(env.MACHINE.idFromName("mac:ev-image-migrate"));
+    await runInDurableObject<MachineDO, void>(stub, async (instance, state) => {
+      state.storage.sql.exec(`DROP TABLE event`);
+      state.storage.sql.exec(
+        `CREATE TABLE event (
+           seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+           session_id TEXT NOT NULL,
+           event_id   TEXT NOT NULL,
+           resume_id  TEXT,
+           kind       TEXT NOT NULL,
+           text       TEXT NOT NULL,
+           created_at REAL NOT NULL
+         )`
+      );
+
+      instance.rerunWakePath();
+
+      // If the ALTER never ran, this throws "no such column: image" — every
+      // append lists all seven columns, image included — and both this
+      // assertion and the round-trip below fail.
+      const image = { width: 320, height: 200, bytes: 12_345 };
+      instance.appendEvent(ev("s1", "Read: before.png"));
+      instance.appendEvent({ ...ev("s1", "Read: shot.png"), image });
+
+      const events = instance.eventsSince("s1", 0).events;
+      expect(events.length).toBe(2);
+      expect(events[0].image).toBeUndefined();
+      expect(events[1].image).toEqual(image);
+    });
+  });
 });

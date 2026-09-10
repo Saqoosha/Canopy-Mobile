@@ -213,6 +213,18 @@ export class MachineDO extends DurableObject {
    *  and the two units differ on purpose — this one only has to be a bound,
    *  not the same bound. */
   static readonly maxEventTextLength = 8 * 1024;
+  /** Ceiling on `image`'s JSON, in bytes. Not a shape judgement — the relay
+   *  still never looks at what `image` means, only how big its encoding is —
+   *  so this does not revisit the "relay is a pipe" stance
+   *  `SessionEventMessage.image` documents; it is the same kind of bound
+   *  `maxEventTextLength` is for `text`, applied to a different column.
+   *
+   *  The field legitimately only ever holds three integers (~40 bytes), so
+   *  4 KiB is generous headroom, not a size this is expected to use. Without
+   *  a bound, a large enough value throws on the INSERT below and takes the
+   *  whole append down — the same failure `maxEventTextLength` exists to
+   *  keep `text` from causing. */
+  static readonly maxImageJsonBytes = 4 * 1024;
 
   /** Store one event and return the seq assigned to it, or null if it was
    *  refused.
@@ -247,8 +259,24 @@ export class MachineDO extends DurableObject {
     // because the column is TEXT and a bare string stored as-is would make
     // `JSON.parse` throw on the way back out. See `SessionEventMessage.image`
     // for why the shape itself is never validated further.
-    const image =
+    const imageJson =
       msg.image !== null && typeof msg.image === "object" ? JSON.stringify(msg.image) : null;
+    // Dropped, not truncated: unlike `text`, there is no substring of a JSON
+    // object that is still a valid one, so the only options are the whole
+    // value or nothing. Logged the same way `decodeImage` logs an
+    // undecodable value, for the same reason — the phone silently drawing a
+    // plain row is fine, silently losing data with nothing anywhere to say
+    // so is not.
+    let image = imageJson;
+    if (image !== null) {
+      const bytes = new TextEncoder().encode(image).length;
+      if (bytes > MachineDO.maxImageJsonBytes) {
+        console.error(
+          `event: image field is ${bytes} bytes, over the ${MachineDO.maxImageJsonBytes} cap; dropping`,
+        );
+        image = null;
+      }
+    }
     const rows = this.ctx.storage.sql
       .exec<{ seq: number }>(
         `INSERT INTO event (session_id, event_id, resume_id, kind, text, created_at, image)

@@ -428,8 +428,12 @@ Expected: PASS（5 件）
 
 - [ ] **Step 7: コスト上限が動いていないことを確かめる**
 
-Run: `cd worker && npx vitest run src/machine.test.ts -t "cost"`
-Expected: PASS。append 248 / wake 222 のまま 300 を下回る。
+Run: `cd worker && npx vitest run src/machine.test.ts -t "without reading the whole buffer"`
+Expected: 2 件 PASS。append と wake の rows_read が 300 を下回る。
+
+**`-t "cost"` では 0 件にマッチする。** タイトルは `appends an event without reading the whole buffer` と `wakes without reading the whole buffer` で、"cost" という語はどこにも入っていない。`-t` が何にもマッチしないと vitest は **0 件走って exit 0** —— このプロジェクトが「緑に見えて何も走っていない」として文書化しているのと同じ形。**必ず「2 件走った」を目で見る。**
+
+アサーションは `toBeLessThan(300)` で、特定の数を pin していない。上限が意味であって、実測値はコメントに書いてあるだけ。
 
 **上がっていたら止まって原因を書く。** `LIMIT 0` の SELECT が 0 行で返ることが前提で、そこが崩れたなら wake ごとに払う。数字を上げて通すのは禁止 —— この上限は `AGENTS.md` の incident そのもの。
 
@@ -1769,7 +1773,17 @@ cd worker && npx wrangler r2 bucket lifecycle --help
 cd worker && npx wrangler r2 bucket lifecycle list canopy-mobile-images
 ```
 
-- [ ] **Step 2: テスト数を測る**
+- [ ] **Step 2: rows_read の実測値を測り直して、ずれを直す**
+
+`machine.test.ts` の wake テストのコメントは `Measured 222` と書いてあるが、Task 2 で実測したら **221** だった（task-2 前の `machine.ts` に対しても 221 なので、この機能が持ち込んだずれではない）。AGENTS.md の `## 検証で使える基準値` も 222 と書いている。
+
+```bash
+cd worker && npx vitest run src/machine.test.ts -t "without reading the whole buffer"
+```
+
+テストが実際に出す数を読んで、**コメントと AGENTS.md の両方**をその数に直す。測った日付も書く。アサーションは `toBeLessThan(300)` のままにする —— 上限が意味であって、実測値を pin すると workerd の更新ごとに落ちる。
+
+- [ ] **Step 3: テスト数を測る**
 
 ```bash
 cd worker && npx vitest run 2>&1 | grep -E "Tests +[0-9]+ passed"
@@ -1779,13 +1793,13 @@ cd ~/repos/Personal/Canopy-Mobile && xcodebuild test -project CanopyMobile.xcode
   | grep -E "Test Suite .* passed|Executed [0-9]+ test"
 ```
 
-- [ ] **Step 3: 床を上げる**
+- [ ] **Step 4: 床を上げる**
 
 `.github/workflows/ci.yml` の `EXPECTED_TESTS`（118 から）と `EXPECTED_SWIFT_TESTS`（136 から）を **測った数** に書き換える。
 
 **推測で書かない。** 並行 PR がある場合の解決は足し算（AGENTS.md の「並行 PR と worktree」）。
 
-- [ ] **Step 4: Canopy-Mobile の AGENTS.md を直す**
+- [ ] **Step 5: Canopy-Mobile の AGENTS.md を直す**
 
 `## 検証で使える基準値` のテーブルを測った数に更新し、`## データの意味論` に節を足す。
 
@@ -1819,7 +1833,7 @@ wake のコストに乗らない。
 設計と実測は `docs/session-images.md`。
 ```
 
-- [ ] **Step 5: Canopy の AGENTS.md を直す**
+- [ ] **Step 6: Canopy の AGENTS.md を直す**
 
 `SessionEvent.swift` の行に、allowlist と広げ方を足す。
 
@@ -1832,7 +1846,7 @@ wake のコストに乗らない。
 `docs/session-images.md`。
 ```
 
-- [ ] **Step 6: 両方のリポジトリで全テストを回す**
+- [ ] **Step 7: 両方のリポジトリで全テストを回す**
 
 ```bash
 cd ~/repos/Personal/Canopy-Mobile/worker && npx vitest run && npx tsc --noEmit
@@ -1840,7 +1854,7 @@ cd ~/repos/Personal/Canopy && CANOPY_RUN_LOGIC_PROBE=1 ./build/Build/Products/De
 ```
 Expected: 全部 PASS、プローブは FAIL 0。
 
-- [ ] **Step 7: relay の end-to-end チェック**
+- [ ] **Step 8: relay の end-to-end チェック**
 
 ```bash
 cd worker && npx wrangler deploy && cd .. && node scripts/relay-event-probe.mjs
@@ -1854,7 +1868,7 @@ cd worker && npx wrangler kv key list --binding MACHINES --remote
 cd worker && npx wrangler kv key delete --binding MACHINES --remote "machine:PROBE-<id>"
 ```
 
-- [ ] **Step 8: コミット**
+- [ ] **Step 9: コミット**
 
 ```bash
 git add .github/workflows/ci.yml AGENTS.md docs/session-images.md

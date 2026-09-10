@@ -659,42 +659,61 @@ private struct SessionImageThumbnail: View {
         return CGFloat(image.width) / CGFloat(image.height)
     }
 
+    private static let byteCountFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }()
+
     var body: some View {
-        Group {
-            if let thumbnail {
-                Image(uiImage: thumbnail)
-                    .resizable()
-                    .aspectRatio(aspect, contentMode: .fit)
-            } else if failed {
-                // 期限切れ(7 日)と一度も上がらなかったものを区別しない。
-                // 電話に出せる言葉は同じ。タップで再試行できる。
-                Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
+        VStack(alignment: .leading, spacing: 2) {
+            Group {
+                if let thumbnail {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .aspectRatio(aspect, contentMode: .fit)
+                } else if failed {
+                    // 期限切れ(7 日)と一度も上がらなかったものを区別しない。
+                    // 電話に出せる言葉は同じ。タップで再試行できる。
+                    Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    Rectangle()
+                        .fill(Color(.tertiarySystemFill))
+                        .aspectRatio(aspect, contentMode: .fit)
+                }
+            }
+            .frame(maxWidth: 220)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            // 1 回のタップに 2 つの意味を state で振り分ける: 読み込み済みなら
+            // 原寸を開き、失敗していれば再試行する。この行は再利用されない
+            // (`VStack` であって `LazyVStack` ではない)ので、`.task` はもう
+            // 二度と走らない —— 再試行の入口はこのタップしか無い。
+            .onTapGesture {
+                if thumbnail != nil {
+                    showingFull = true
+                } else if failed {
+                    Task { await load() }
+                }
+            }
+            .task { await load() }
+            .fullScreenCover(isPresented: $showingFull) {
+                SessionImageFullScreen(event: event, image: image, machine: machine,
+                                       base: base, secret: secret,
+                                       placeholder: thumbnail)
+            }
+
+            // `image.bytes` はタップして原寸を取りに行く前から event 自身が
+            // 運んでいるので、サムネイルの読み込みを待たずに出せる —— タップ
+            // する前に大きさを見せる、という `SessionEventImage.bytes` の
+            // ドキュメント通りの使い方。失敗表示のときは大きさを言っても
+            // 意味が無いので出さない。
+            if !failed {
+                Text(Self.byteCountFormatter.string(fromByteCount: Int64(image.bytes)))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
-            } else {
-                Rectangle()
-                    .fill(Color(.tertiarySystemFill))
-                    .aspectRatio(aspect, contentMode: .fit)
             }
-        }
-        .frame(maxWidth: 220)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        // 1 回のタップに 2 つの意味を state で振り分ける: 読み込み済みなら
-        // 原寸を開き、失敗していれば再試行する。この行は再利用されない
-        // (`VStack` であって `LazyVStack` ではない)ので、`.task` はもう
-        // 二度と走らない —— 再試行の入口はこのタップしか無い。
-        .onTapGesture {
-            if thumbnail != nil {
-                showingFull = true
-            } else if failed {
-                Task { await load() }
-            }
-        }
-        .task { await load() }
-        .fullScreenCover(isPresented: $showingFull) {
-            SessionImageFullScreen(event: event, image: image, machine: machine,
-                                   base: base, secret: secret,
-                                   placeholder: thumbnail)
         }
     }
 

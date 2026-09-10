@@ -53,6 +53,126 @@ struct SessionEventImageTests {
     }
 }
 
+/// A stub for `URLProtocol` that lets a test answer a request without
+/// touching the network. Registered per-session (`URLSessionConfiguration
+/// .protocolClasses`), never globally, so tests in this file cannot race
+/// each other over the handler.
+///
+/// `URLProtocol`'s override points run on URLSession's own background queue,
+/// never the caller's — so the handler is stored behind a lock rather than as
+/// a plain static var, and its type is `@Sendable`.
+final class StubURLProtocol: URLProtocol {
+    struct Response: Sendable {
+        let statusCode: Int
+        let body: Data?
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var _handler: (@Sendable (URLRequest) -> Response)?
+
+    static var handler: (@Sendable (URLRequest) -> Response)? {
+        get { lock.withLock { _handler } }
+        set { lock.withLock { _handler = newValue } }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let handler = Self.handler, let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.unknown))
+            return
+        }
+        let answer = handler(request)
+        let response = HTTPURLResponse(url: url, statusCode: answer.statusCode,
+                                        httpVersion: "HTTP/1.1", headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if let body = answer.body {
+            client?.urlProtocol(self, didLoad: body)
+        }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+/// Thread-safe counter for asserting how many times the stub actually ran —
+/// the coalescing test's whole point is a number, not a value.
+final class CallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func increment() { lock.withLock { count += 1 } }
+    var value: Int { lock.withLock { count } }
+}
+
+/// **Test seams were refused everywhere else in this feature** (the SwiftUI
+/// views, the Mac's upload path) as overbuilding a one-shot feature. This
+/// file is the exception: `SessionImageLoader.data(at:secret:)` decides three
+/// things purely from the network response — a non-200 status, an empty body
+/// on a 200, and whether two callers for the same URL share one fetch — and
+/// this project already has a working test target and a ~30-line stub, so
+/// there is no cost trade to refuse.
+@Suite(.serialized)
+struct SessionImageLoaderNetworkTests {
+    private let url = URL(string: "https://relay.example/image")!
+
+    private func makeLoader(handler: @escaping @Sendable (URLRequest) -> StubURLProtocol.Response) async -> SessionImageLoader {
+        StubURLProtocol.handler = handler
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        return await SessionImageLoader(session: URLSession(configuration: config))
+    }
+
+    // Pins the status-code guard in `data(at:secret:)`. Removing that guard
+    // (treating any response as success) would return the 404 body here
+    // instead of nil.
+    @Test("A non-200 response is reported as unavailable")
+    func rejectsNon200() async {
+        let loader = await makeLoader { _ in .init(statusCode: 404, body: Data([1, 2, 3])) }
+        let data = await loader.data(at: url, secret: "shh")
+        #expect(data == nil)
+    }
+
+    // Pins `!data.isEmpty`. Removing just that clause (keeping the status
+    // check) would return `Data()` here instead of nil, and the caller would
+    // hand an empty buffer to `UIImage(data:)`, which itself returns nil —
+    // this guard is what turns that into the same "unavailable" state rather
+    // than a silently-failed decode with no distinguishing signal.
+    @Test("A 200 with an empty body is reported as unavailable")
+    func rejectsEmptyBody() async {
+        let loader = await makeLoader { _ in .init(statusCode: 200, body: Data()) }
+        let data = await loader.data(at: url, secret: "shh")
+        #expect(data == nil)
+    }
+
+    // The success path, so the two rejection tests above are pinning a
+    // narrowing of real data rather than of an always-nil function.
+    @Test("A 200 with a body returns that body")
+    func returnsSuccessfulData() async {
+        let payload = Data([9, 9, 9])
+        let loader = await makeLoader { _ in .init(statusCode: 200, body: payload) }
+        let data = await loader.data(at: url, secret: "shh")
+        #expect(data == payload)
+    }
+
+    // Pins `inFlight`. Removing the coalescing (always starting a fresh
+    // `Task`) would make the stub run twice — once per caller — instead of
+    // once.
+    @Test("Two concurrent requests for the same URL share one fetch")
+    func coalescesInFlightRequests() async {
+        let counter = CallCounter()
+        let loader = await makeLoader { _ in
+            counter.increment()
+            return .init(statusCode: 200, body: Data([1]))
+        }
+        async let first = loader.data(at: url, secret: "shh")
+        async let second = loader.data(at: url, secret: "shh")
+        _ = await (first, second)
+        #expect(counter.value == 1)
+    }
+}
+
 struct SessionImageURLTests {
     private let base = URL(string: "https://relay.example")!
 

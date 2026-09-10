@@ -21,6 +21,8 @@
 - 認証は既存の `SHARED_SECRET` の Bearer 1 本。新しい credential を作らない
 - relay は `image` の中身を検証しない。オブジェクトならそのまま保存し、そのまま返す
 - `docs/session-images.md` の設計から逸れる変更は、先にその文書を直す
+- **新しい `.swift` ファイルを作るタスクは、ビルドの前に `xcodegen generate` を走らせる。** `.xcodeproj` は gitignore された生成物なので、既にあるものは新しいファイルを知らない。両リポジトリの AGENTS.md がこの罠を書いている —— 古い pbxproj は**落ちずに exit 0 で成功する**ので、足したファイルがターゲットに入らないまま「緑」になる
+- **コミットメッセージの `Co-Authored-By` は、実際に書いたモデルの名前にする。** この計画がコミットメッセージ例に埋め込んでいる行は写経の対象ではない —— 委譲された実装は委譲先のモデルが書いたので、そのモデル名が正しい
 
 ---
 
@@ -1193,8 +1195,16 @@ Expected: コンパイルエラー。`prunedImageReads` が存在しない。
 
 - [ ] **Step 5: ビルドしてプローブを回す**
 
-Run: Task 4 と同じビルド + プローブ
+```bash
+cd ~/repos/Personal/Canopy && xcodegen generate && \
+  xcodebuild -project Canopy.xcodeproj -scheme Canopy -configuration Debug \
+  -derivedDataPath build build 2>&1 | tail -3 && \
+  CANOPY_RUN_LOGIC_PROBE=1 ./build/Build/Products/Debug/Canopy.app/Contents/MacOS/Canopy | tail -5
+```
+
 Expected: `BUILD SUCCEEDED`、FAIL 0、新しい 3 件が PASS。
+
+`xcodegen generate` を先に置くのは既定の作業手順。このタスクは新しいファイルを作らないので厳密には要らないが、走らせて損は無く、**忘れたときの失敗の形が「exit 0 で緑、ただし変更が入っていない」** なので、条件付きにしない。
 
 - [ ] **Step 6: 実機（この Mac）で 1 枚流して確かめる**
 

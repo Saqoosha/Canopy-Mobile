@@ -1,6 +1,20 @@
 import Foundation
 import Observation
 
+/// 1 枚の画像について、この電話が知っていること。
+///
+/// **バイトはここに無い。** R2 にあり、`GET /image?machine=&session=&event=&variant=`
+/// で取る。この値の存在が「この行には画像がある」を意味する。
+///
+/// `width` / `height` は原寸のピクセル数で、絵が届く前に正しい縦横比の場所を
+/// 確保するためにある。`bytes` は原寸のバイト数で、タップする前に大きさを
+/// 見せるため。
+struct SessionEventImage: Codable, Hashable, Sendable {
+    let width: Int
+    let height: Int
+    let bytes: Int
+}
+
 /// One thing that happened in a session, as the relay delivered it.
 ///
 /// `id` is the `eventId`, **not the `seq`**. The two identify different
@@ -17,8 +31,46 @@ struct SessionEventRecord: Codable, Identifiable, Hashable, Sendable {
     let kind: Kind
     let text: String
     let at: Date
+    /// 画像 Read の行だけが持つ。**`kind` は `tool` のまま** なので、この
+    /// フィールドを知らないビルドはいつものレンチ行を描く。
+    ///
+    /// **デコードは全体主義的でない。** 壊れた画像フィールド 1 件で
+    /// `SessionEventRecord` の init が throw すると、backfill は配列で
+    /// デコードされるので最大 `maxEventsPerSession` 件のページが丸ごと
+    /// 消える —— `Kind.other` が防いでいるのと同じ形が別のフィールドで
+    /// 復活する。だから読めなければ nil にして、行そのものは残す。
+    let image: SessionEventImage?
 
     var id: String { eventId }
+
+    init(seq: Int, eventId: String, sessionId: String, resumeId: String?, kind: Kind, text: String,
+         at: Date, image: SessionEventImage? = nil) {
+        self.seq = seq
+        self.eventId = eventId
+        self.sessionId = sessionId
+        self.resumeId = resumeId
+        self.kind = kind
+        self.text = text
+        self.at = at
+        self.image = image
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case seq, eventId, sessionId, resumeId, kind, text, at, image
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        seq = try c.decode(Int.self, forKey: .seq)
+        eventId = try c.decode(String.self, forKey: .eventId)
+        sessionId = try c.decode(String.self, forKey: .sessionId)
+        resumeId = try c.decodeIfPresent(String.self, forKey: .resumeId)
+        kind = try c.decode(Kind.self, forKey: .kind)
+        text = try c.decode(String.self, forKey: .text)
+        at = try c.decode(Date.self, forKey: .at)
+        // 上の全部と違って `try?`。理由はプロパティのドキュメントに。
+        image = try? c.decodeIfPresent(SessionEventImage.self, forKey: .image)
+    }
 
     /// What the event is.
     ///

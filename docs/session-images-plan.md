@@ -761,7 +761,7 @@ cd ~/repos/Personal/Canopy && xcodebuild -project Canopy.xcodeproj -scheme Canop
   -configuration Debug -derivedDataPath build build 2>&1 | tail -3 \
   && CANOPY_RUN_LOGIC_PROBE=1 ./build/Build/Products/Debug/Canopy.app/Contents/MacOS/Canopy
 ```
-Expected: `BUILD SUCCEEDED`、プローブは FAIL 0。新しい 14 件が PASS に並ぶ。
+Expected: `BUILD SUCCEEDED`、プローブは FAIL 0。新しい 13 件が PASS に並ぶ。
 
 - [ ] **Step 5: 既存のアサーションが 1 件も落ちていないことを確かめる**
 

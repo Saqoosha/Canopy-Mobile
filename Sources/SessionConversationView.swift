@@ -641,7 +641,16 @@ private struct SessionImageThumbnail: View {
     let base: URL
     let secret: String
 
-    @State private var thumbnail: Data?
+    /// Decoded once, at load time, and kept — not re-derived from `Data` on
+    /// every body evaluation. The events list is a plain `VStack`, not a
+    /// `LazyVStack` (see its own comment), so this view is never recycled;
+    /// re-decoding on every redraw would be wasted work for as long as the
+    /// conversation stays open.
+    @State private var thumbnail: UIImage?
+    /// Covers a failure that decode-once revealed was two different bugs:
+    /// the fetch itself failing, and bytes arriving that do not decode. A
+    /// bad decode used to fall through to the "still loading" branch and
+    /// spin forever, because nothing there ever set `failed`.
     @State private var failed = false
     @State private var showingFull = false
 
@@ -652,13 +661,13 @@ private struct SessionImageThumbnail: View {
 
     var body: some View {
         Group {
-            if let thumbnail, let ui = UIImage(data: thumbnail) {
-                Image(uiImage: ui)
+            if let thumbnail {
+                Image(uiImage: thumbnail)
                     .resizable()
                     .aspectRatio(aspect, contentMode: .fit)
             } else if failed {
                 // 期限切れ(7 日)と一度も上がらなかったものを区別しない。
-                // 電話に出せる言葉は同じ。
+                // 電話に出せる言葉は同じ。タップで再試行できる。
                 Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
@@ -670,23 +679,39 @@ private struct SessionImageThumbnail: View {
         }
         .frame(maxWidth: 220)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .onTapGesture { if thumbnail != nil { showingFull = true } }
-        .task {
-            guard thumbnail == nil, !failed,
-                  let url = SessionImageLoader.url(base: base, machine: machine,
-                                                   session: event.sessionId,
-                                                   event: event.eventId, variant: "thumb")
-            else { return }
-            if let data = await SessionImageLoader.shared.data(at: url, secret: secret) {
-                thumbnail = data
-            } else {
-                failed = true
+        // 1 回のタップに 2 つの意味を state で振り分ける: 読み込み済みなら
+        // 原寸を開き、失敗していれば再試行する。この行は再利用されない
+        // (`VStack` であって `LazyVStack` ではない)ので、`.task` はもう
+        // 二度と走らない —— 再試行の入口はこのタップしか無い。
+        .onTapGesture {
+            if thumbnail != nil {
+                showingFull = true
+            } else if failed {
+                Task { await load() }
             }
         }
+        .task { await load() }
         .fullScreenCover(isPresented: $showingFull) {
             SessionImageFullScreen(event: event, image: image, machine: machine,
                                    base: base, secret: secret,
                                    placeholder: thumbnail)
+        }
+    }
+
+    private func load() async {
+        guard thumbnail == nil,
+              let url = SessionImageLoader.url(base: base, machine: machine,
+                                               session: event.sessionId,
+                                               event: event.eventId, variant: "thumb")
+        else { return }
+        // 再試行の入口でもあるので、前回の失敗表示を読み込み中の見た目に
+        // 戻してから取りに行く。
+        failed = false
+        if let data = await SessionImageLoader.shared.data(at: url, secret: secret),
+           let ui = UIImage(data: data) {
+            thumbnail = ui
+        } else {
+            failed = true
         }
     }
 }
@@ -699,26 +724,49 @@ private struct SessionImageFullScreen: View {
     let machine: String
     let base: URL
     let secret: String
-    let placeholder: Data?
+    /// サムネイル行が既に持っているデコード済みの絵。原寸の取得中はこれを
+    /// 下に敷く。
+    let placeholder: UIImage?
 
     @Environment(\.dismiss) private var dismiss
-    @State private var full: Data?
+    @State private var full: UIImage?
+    /// **プレースホルダの有無で分岐しない。** 原寸の取得が失敗しても
+    /// サムネイルは消さないが、それは「原寸が取れた」ことにはならない
+    /// ので、`failed` は常に立てる。でないと期限切れの原寸をタップした
+    /// ユーザーは、引き伸ばされた 20KB のサムネイルを本物だと思って
+    /// 見続けることになる — エラーより悪い、気づけない状態。
     @State private var failed = false
 
-    private var shown: Data? { full ?? placeholder }
+    private var shown: UIImage? { full ?? placeholder }
 
     var body: some View {
         NavigationStack {
             Group {
-                if let shown, let ui = UIImage(data: shown) {
-                    ScrollView([.horizontal, .vertical]) {
-                        Image(uiImage: ui)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
+                if let shown {
+                    ZStack(alignment: .bottom) {
+                        ScrollView([.horizontal, .vertical]) {
+                            Image(uiImage: shown)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                        }
+                        // 原寸の取得だけが失敗した場合。サムネイルは
+                        // 見えたままだが、それが原寸ではないことを言う。
+                        // 文言はサムネイル行と同じ —— 期限切れと未アップ
+                        // ロードを電話は区別できない。
+                        if failed {
+                            Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
+                                .font(.caption)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(.thinMaterial, in: Capsule())
+                                .padding(.bottom, 24)
+                                .onTapGesture { Task { await load() } }
+                        }
                     }
                 } else if failed {
                     Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
                         .foregroundStyle(.secondary)
+                        .onTapGesture { Task { await load() } }
                 } else {
                     ProgressView()
                 }
@@ -731,17 +779,23 @@ private struct SessionImageFullScreen: View {
                 }
             }
         }
-        .task {
-            guard full == nil,
-                  let url = SessionImageLoader.url(base: base, machine: machine,
-                                                   session: event.sessionId,
-                                                   event: event.eventId, variant: "full")
-            else { return }
-            if let data = await SessionImageLoader.shared.data(at: url, secret: secret) {
-                full = data
-            } else if placeholder == nil {
-                failed = true
-            }
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard full == nil,
+              let url = SessionImageLoader.url(base: base, machine: machine,
+                                               session: event.sessionId,
+                                               event: event.eventId, variant: "full")
+        else { return }
+        failed = false
+        if let data = await SessionImageLoader.shared.data(at: url, secret: secret),
+           let ui = UIImage(data: data) {
+            full = ui
+        } else {
+            // プレースホルダの有無に関わらず立てる。理由は上の `failed`
+            // の doc comment。
+            failed = true
         }
     }
 }

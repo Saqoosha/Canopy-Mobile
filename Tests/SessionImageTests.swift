@@ -71,12 +71,17 @@ struct SessionImageURLTests {
 
     // machine id は IOPlatformUUID で、セッション id は UUID。どちらも
     // 今は安全な文字だけだが、エスケープを外すとクエリが壊れる形で
-    // 静かに 400 になる。
+    // 静かに 400 になる。`&` は特に危険 —— エスケープを外すと、そこで
+    // クエリが余分な 1 項目に分かれてしまう。ラウンドトリップで戻した
+    // 値が元の文字列と一致し、かつ項目数が 4 のままであることを見れば、
+    // スペースと `&` の両方のエスケープを同時に固定できる。
     @Test("Ids are percent-escaped")
     func escapesIds() throws {
         let url = try #require(SessionImageLoader.url(
             base: base, machine: "a b&c", session: "s1", event: "e1", variant: "full"))
-        #expect(!url.absoluteString.contains("a b"))
-        #expect(url.absoluteString.contains("a%20b") || url.absoluteString.contains("a+b"))
+        let items = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        #expect(items.count == 4)
+        let pairs = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value) })
+        #expect(pairs["machine"] == "a b&c")
     }
 }

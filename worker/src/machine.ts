@@ -40,12 +40,29 @@ export class MachineDO extends DurableObject {
          resume_id  TEXT,
          kind       TEXT NOT NULL,
          text       TEXT NOT NULL,
-         created_at REAL NOT NULL
+         created_at REAL NOT NULL,
+         image      TEXT
        )`
     );
     this.ctx.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS event_by_session ON event (session_id, seq)`
     );
+    // **後付けのカラム。`CREATE TABLE IF NOT EXISTS` は既存の表に列を
+    // 足さない** ので、動いている DO には無い。
+    //
+    // 存在判定を `PRAGMA table_info` や `sqlite_master` でやらないのは、
+    // DO の SQL がどちらを許すか測っていないから。`LIMIT 0` の SELECT は
+    // 普通の SQL で、列が無ければ投げ、あれば 0 行で返る —— 定常状態の
+    // コストがゼロ行なのが要点で、ここは wake ごとに走る。
+    let hasImageColumn = true;
+    try {
+      this.ctx.storage.sql.exec(`SELECT image FROM event LIMIT 0`).toArray();
+    } catch {
+      hasImageColumn = false;
+    }
+    if (!hasImageColumn) {
+      this.ctx.storage.sql.exec(`ALTER TABLE event ADD COLUMN image TEXT`);
+    }
     // What the ring buffer has thrown away, per session. Without it a
     // watcher cannot tell a dropped event from a seq that belonged to a
     // different session, because `seq` above is global to this Mac and a
@@ -226,11 +243,17 @@ export class MachineDO extends DurableObject {
     // conversation's order away. A missing timestamp sorts to the front, which
     // is wrong but bounded.
     const at = typeof msg.at === "number" && Number.isFinite(msg.at) ? msg.at : 0;
+    // The relay does not read inside `image` — only whether it is an object,
+    // because the column is TEXT and a bare string stored as-is would make
+    // `JSON.parse` throw on the way back out. See `SessionEventMessage.image`
+    // for why the shape itself is never validated further.
+    const image =
+      msg.image !== null && typeof msg.image === "object" ? JSON.stringify(msg.image) : null;
     const rows = this.ctx.storage.sql
       .exec<{ seq: number }>(
-        `INSERT INTO event (session_id, event_id, resume_id, kind, text, created_at)
-         VALUES (?, ?, ?, ?, ?, ?) RETURNING seq`,
-        msg.sessionId, msg.eventId, msg.resumeId ?? null, msg.kind, text, at
+        `INSERT INTO event (session_id, event_id, resume_id, kind, text, created_at, image)
+         VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING seq`,
+        msg.sessionId, msg.eventId, msg.resumeId ?? null, msg.kind, text, at, image
       )
       .toArray();
     const seq = rows[0]?.seq;
@@ -242,7 +265,8 @@ export class MachineDO extends DurableObject {
     // text and, with `at` missing, no `at` key at all — which fails the
     // phone's decode silently — while a backfill of the same event carried
     // 8 KiB of text and `at: 0`. Everything the phone sees now comes from
-    // one normalisation.
+    // one normalisation. `image` goes through the same decode as backfill's
+    // rows so the two routes cannot disagree about it either.
     return {
       type: "event",
       seq,
@@ -252,7 +276,23 @@ export class MachineDO extends DurableObject {
       kind: msg.kind,
       text,
       at,
+      image: this.decodeImage(image),
     };
+  }
+
+  /** Turn the `image` column's stored JSON string back into an object, or
+   *  `undefined` when there is none.
+   *
+   *  書いたのはこのコードなので普通は壊れていない。それでも投げないのは、
+   *  1 行のせいで最大 200 件のページが消えるのを避けるため。 */
+  private decodeImage(raw: string | null): unknown {
+    if (raw === null) return undefined;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      console.error("event: undecodable image column, dropping the field");
+      return undefined;
+    }
   }
 
   /** Record `seq` as this session's newest, then drop whatever is over the
@@ -411,8 +451,9 @@ export class MachineDO extends DurableObject {
       .exec<{
         seq: number; session_id: string; event_id: string;
         resume_id: string | null; kind: string; text: string; created_at: number;
+        image: string | null;
       }>(
-        `SELECT seq, session_id, event_id, resume_id, kind, text, created_at
+        `SELECT seq, session_id, event_id, resume_id, kind, text, created_at, image
            FROM event WHERE session_id = ? AND seq > ? ORDER BY seq ASC`,
         sessionId, after
       )
@@ -442,6 +483,7 @@ export class MachineDO extends DurableObject {
         kind: r.kind as SessionEventMessage["kind"],
         text: r.text,
         at: r.created_at,
+        image: this.decodeImage(r.image),
       })),
     };
   }

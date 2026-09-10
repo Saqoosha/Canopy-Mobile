@@ -1,7 +1,7 @@
 // worker/src/machine.test.ts
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
-import type { MachineSnapshot, SessionEventMessage } from "./types";
+import type { MachineSnapshot, SessionEventMessage, StoredSessionEvent } from "./types";
 import { MachineDO } from "./machine";
 
 const snapshot: MachineSnapshot = {
@@ -897,5 +897,82 @@ describe("session event ring buffer", () => {
       expect(instance.eventsSince("s1", 0).events.map((e) => e.text)).toEqual(["mine"]);
       expect(instance.eventsSince("s2", 0).events.map((e) => e.text)).toEqual(["yours"]);
     });
+  });
+});
+
+/** Append one event — `ev`'s fixed shape overridden with whatever `fields`
+ *  supplies (`kind`, `image`, ...) — and read it back through `eventsSince`,
+ *  the same call a phone's backfill makes. Extracted from the setup
+ *  "returns only what follows the seq a watcher asks from" and its
+ *  neighbours already use, rather than inventing a new way to drive the DO.
+ *  A fresh machine id per call keeps each case's session isolated the same
+ *  way the rest of this file's `it`s do. */
+async function backfillOne(
+  fields: Partial<SessionEventMessage> & { sessionId: string; text: string }
+): Promise<StoredSessionEvent> {
+  const stub = env.MACHINE.get(env.MACHINE.idFromName(`mac:img-${fields.sessionId}`));
+  return runInDurableObject<MachineDO, StoredSessionEvent>(stub, async (instance) => {
+    instance.appendEvent({ ...ev(fields.sessionId, fields.text), ...fields });
+    return instance.eventsSince(fields.sessionId, 0).events[0];
+  });
+}
+
+/** Same as `backfillOne`, but read the event off a REAL watcher socket via
+ *  `webSocketMessage` instead of `eventsSince` — the live fan-out path.
+ *  Extracted from "fans an incoming event out to watchers with its seq",
+ *  which explains above itself why a real socket is required here and a
+ *  stand-in is not: fan-out walks `ctx.getWebSockets()`, which only knows
+ *  about sockets the object actually accepted. */
+async function liveFanoutOne(
+  fields: Partial<SessionEventMessage> & { sessionId: string; text: string }
+): Promise<StoredSessionEvent> {
+  const stub = env.MACHINE.get(env.MACHINE.idFromName(`mac:img-live-${fields.sessionId}`));
+  const upgrade = await stub.fetch("https://do/watch", { headers: { Upgrade: "websocket" } });
+  const ws = upgrade.webSocket!;
+  ws.accept();
+  const received = new Promise<string>((resolve) => {
+    ws.addEventListener("message", (e) => resolve(e.data as string));
+  });
+  await runInDurableObject<MachineDO, void>(stub, async (instance) => {
+    instance.webSocketMessage(fakeWatcher().ws, JSON.stringify({ ...ev(fields.sessionId, fields.text), ...fields }));
+  });
+  return JSON.parse(await received) as StoredSessionEvent;
+}
+
+describe("event image pass-through", () => {
+  const image = { width: 1440, height: 900, bytes: 434831 };
+
+  it("returns an image field it was given, unchanged", async () => {
+    // 投入と取得は既存のヘルパで。`image` を持つイベントを 1 件 append し、
+    // backfill で読み戻す。
+    const back = await backfillOne({ sessionId: "s1", kind: "tool", text: "Read: shot.png", image });
+    expect(back.image).toEqual(image);
+  });
+
+  it("leaves an event with no image field without one", async () => {
+    const back = await backfillOne({ sessionId: "s2", kind: "assistant", text: "hi" });
+    expect(back.image).toBeUndefined();
+  });
+
+  // relay はパイプ。中身の形を判定しないので、知らないキーも通る。
+  // これが消えると Canopy が先に新フィールドを足せなくなる。
+  it("passes an image object with unknown keys through", async () => {
+    const exotic = { width: 1, height: 2, bytes: 3, rotation: 90 };
+    const back = await backfillOne({ sessionId: "s3", kind: "tool", text: "Read: x.png", image: exotic });
+    expect(back.image).toEqual(exotic);
+  });
+
+  // 非オブジェクトは落とす。ここだけは判定する —— 列は TEXT で、
+  // 文字列をそのまま入れると読み戻しで JSON.parse が投げる。
+  it("drops a non-object image field", async () => {
+    const back = await backfillOne({ sessionId: "s4", kind: "tool", text: "Read: x.png", image: "nope" });
+    expect(back.image).toBeUndefined();
+  });
+
+  // 同じイベントがライブと backfill で違うものになってはいけない。
+  // machine.ts の「STORED row, not the message that arrived」と同じ理由。
+  it("fans out the same image field it stores", async () => {
+    const live = await liveFanoutOne({ sessionId: "s5", kind: "tool", text: "Read: shot.png", image });
+    expect(live.image).toEqual(image);
   });
 });

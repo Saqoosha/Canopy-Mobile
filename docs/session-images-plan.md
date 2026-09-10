@@ -1440,7 +1440,7 @@ MSG
 **Interfaces:**
 - Consumes: Task 6 の `SessionEventRecord.image`、既存の `RosterClient` の `baseURL` / `secret` の取り回し
 - Produces:
-  - `SessionImageLoader.url(base:machine:session:event:variant:) -> URL?`
+  - `SessionImageLoader.url(base:machine:session:event:variant:) -> URL?` —— **`nonisolated`**（下記）
   - `@MainActor final class SessionImageLoader` —— `static let shared`、`func data(at url: URL, secret: String) async -> Data?`
 
 - [ ] **Step 1: 失敗するテストを書く**
@@ -1514,8 +1514,13 @@ final class SessionImageLoader {
     /// 同じ行が何度も現れる。
     private var inFlight: [URL: Task<Data?, Never>] = [:]
 
-    static func url(base: URL, machine: String, session: String,
-                    event: String, variant: String) -> URL? {
+    // **`nonisolated` が必須。** この型は `@MainActor` なので、付けないと
+    // 同期の swift-testing から呼べず `call to main actor-isolated static
+    // method ... in a synchronous nonisolated context` で落ちる。AGENTS.md に
+    // `PushRegistrar` で踏んだ同じ罠が載っている —— 純関数ならこれが正しい
+    // 記述でもある。
+    nonisolated static func url(base: URL, machine: String, session: String,
+                                event: String, variant: String) -> URL? {
         guard var components = URLComponents(url: base.appendingPathComponent("image"),
                                              resolvingAgainstBaseURL: false)
         else { return nil }

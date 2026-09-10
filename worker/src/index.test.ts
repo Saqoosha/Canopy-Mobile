@@ -662,3 +662,86 @@ describe("/notify puts the banner it builds into the push", () => {
     ).toBe("rm -rf build");
   });
 });
+
+describe("session images", () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const put = (query: string, body: BodyInit = png, headers: HeadersInit = auth) =>
+    SELF.fetch(`https://relay/image?${query}`, { method: "PUT", body, headers });
+
+  it("round-trips a variant and keeps its content type", async () => {
+    const res = await put("machine=M1&session=s1&event=e1&variant=full", png, {
+      ...auth,
+      "Content-Type": "image/png",
+    });
+    expect(res.status).toBe(200);
+    const got = await SELF.fetch(
+      "https://relay/image?machine=M1&session=s1&event=e1&variant=full",
+      { headers: auth },
+    );
+    expect(got.status).toBe(200);
+    expect(got.headers.get("Content-Type")).toBe("image/png");
+    expect(new Uint8Array(await got.arrayBuffer())).toEqual(png);
+  });
+
+  // full と thumb は別のオブジェクト。同じ event の下で衝突しない。
+  it("keeps full and thumb apart", async () => {
+    const thumb = new Uint8Array([0xff, 0xd8, 0xff]);
+    await put("machine=M2&session=s1&event=e1&variant=full", png);
+    await put("machine=M2&session=s1&event=e1&variant=thumb", thumb);
+    const got = await SELF.fetch(
+      "https://relay/image?machine=M2&session=s1&event=e1&variant=thumb",
+      { headers: auth },
+    );
+    expect(new Uint8Array(await got.arrayBuffer())).toEqual(thumb);
+  });
+
+  // 別の Mac が同じ session/event 名を使っても混ざらない。seq と違い
+  // eventId は UUID なので実際には衝突しないが、キーの機械スコープが
+  // 消えたことに気づく手段がこれしかない。
+  it("scopes the key by machine", async () => {
+    await put("machine=A&session=s1&event=e1&variant=full", png);
+    const other = await SELF.fetch(
+      "https://relay/image?machine=B&session=s1&event=e1&variant=full",
+      { headers: auth },
+    );
+    expect(other.status).toBe(404);
+  });
+
+  it("404s a variant that was never uploaded", async () => {
+    const res = await SELF.fetch(
+      "https://relay/image?machine=M3&session=s1&event=nope&variant=full",
+      { headers: auth },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("refuses an unknown variant", async () => {
+    const res = await put("machine=M4&session=s1&event=e1&variant=original");
+    expect(res.status).toBe(400);
+  });
+
+  it("refuses a request missing an id", async () => {
+    const res = await put("machine=M5&session=s1&variant=full");
+    expect(res.status).toBe(400);
+  });
+
+  // 認証は両方向に効く。GET だけ素通しだと、画像は URL を知る誰でも
+  // 読めることになる。
+  it("refuses an unauthenticated upload", async () => {
+    const res = await put("machine=M6&session=s1&event=e1&variant=full", png, {});
+    expect(res.status).toBe(401);
+  });
+
+  it("refuses an unauthenticated read", async () => {
+    const res = await SELF.fetch(
+      "https://relay/image?machine=M6&session=s1&event=e1&variant=full",
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("refuses an upload over the size cap", async () => {
+    const big = new Uint8Array(13 * 1024 * 1024);
+    const res = await put("machine=M7&session=s1&event=e1&variant=full", big);
+    expect(res.status).toBe(413);
+  });
+});

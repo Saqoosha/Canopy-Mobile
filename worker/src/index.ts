@@ -7,6 +7,7 @@ export { MachineDO };
 interface Env extends ApnsEnv, LlmEnv {
   MACHINE: DurableObjectNamespace;
   MACHINES: KVNamespace;
+  IMAGES: R2Bucket;
   SHARED_SECRET: string;
 }
 
@@ -20,6 +21,12 @@ function json(value: unknown, status = 200): Response {
 function authorized(request: Request, env: Env): boolean {
   return request.headers.get("Authorization") === `Bearer ${env.SHARED_SECRET}`;
 }
+
+/** 1 枚の上限、バイト。relay がバイトの捨て場になるのを防ぐだけの数字で、
+ *  Mac 側は 8MiB で自分を止める（`RosterImageUploader.maxFullBytes`）。
+ *  ここが緩いのは意図的 —— relay は Canopy より後から出るので、Mac の上限を
+ *  relay の上限で追い越せないようにしておく。 */
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 
 /** APNs rejects a payload over 4 KB outright, and the push is the only place
  *  the whole notification exists — Canopy caps its own text in bytes, but it
@@ -319,6 +326,56 @@ export default {
           }),
         })
       );
+    }
+    // Read された画像の原寸とサムネイル。**Durable Object を通らない。**
+    // イベント行は寸法しか運ばず、バイトはここにある —— 200 件のリング
+    // バッファに base64 を積むと DO 1 台で 5MB になり、バックフィル 1 ページ
+    // も同じ大きさの JSON になる。実測は docs/session-images.md。
+    if (url.pathname === "/image") {
+      const machine = url.searchParams.get("machine");
+      const session = url.searchParams.get("session");
+      const event = url.searchParams.get("event");
+      const variant = url.searchParams.get("variant");
+      // 名前を列挙するのは、キーがオブジェクトの置き場所そのものだから。
+      // 任意の文字列を通すと、呼び出し側の綴り間違いが「別のバケット領域に
+      // 静かに書かれて、二度と読まれないオブジェクト」になる。
+      if (variant !== "full" && variant !== "thumb") {
+        return json({ error: "variant must be full or thumb" }, 400);
+      }
+      if (!machine || !session || !event) {
+        return json({ error: "machine, session and event required" }, 400);
+      }
+      const key = `${machine}/${session}/${event}/${variant}`;
+      if (request.method === "PUT") {
+        const declared = request.headers.get("Content-Length");
+        if (declared && Number(declared) > MAX_IMAGE_BYTES) {
+          return json({ error: "image too large" }, 413);
+        }
+        // Content-Length を信じない二段目。チャンク転送では宣言が無く、
+        // 上の判定はそのとき何も守らない。
+        const body = await request.arrayBuffer();
+        if (body.byteLength > MAX_IMAGE_BYTES) {
+          return json({ error: "image too large" }, 413);
+        }
+        await env.IMAGES.put(key, body, {
+          httpMetadata: {
+            contentType: request.headers.get("Content-Type") ?? "application/octet-stream",
+          },
+        });
+        return json({ ok: true });
+      }
+      if (request.method === "GET") {
+        const object = await env.IMAGES.get(key);
+        // 期限切れ（7 日のライフサイクル）と一度も上がらなかったものは
+        // 区別しない。電話に出せる言葉は同じ「もう無い」だけ。
+        if (!object) return json({ error: "not found" }, 404);
+        const headers = new Headers();
+        object.writeHttpMetadata(headers);
+        // eventId は UUID で、同じキーの中身が変わることは無い。
+        headers.set("Cache-Control", "private, max-age=31536000, immutable");
+        return new Response(object.body, { headers });
+      }
+      return json({ error: "method not allowed" }, 405);
     }
     return new Response("not found", { status: 404 });
   },

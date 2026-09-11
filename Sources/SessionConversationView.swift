@@ -808,8 +808,12 @@ private struct SessionImageFullScreen: View {
                                                event: event.eventId, variant: "full")
         else { return }
         failed = false
+        // Through ImageIO with a pixel cap, not `UIImage(data:)` — the
+        // upload cap bounds encoded bytes, not pixels, so a highly
+        // compressible original could still decode at native resolution to
+        // hundreds of megabytes. See `SessionImageLoader.displayImage`.
         if let data = await SessionImageLoader.shared.data(at: url, secret: secret),
-           let ui = UIImage(data: data) {
+           let ui = SessionImageLoader.displayImage(from: data) {
             full = ui
         } else {
             // プレースホルダの有無に関わらず立てる。理由は上の `failed`

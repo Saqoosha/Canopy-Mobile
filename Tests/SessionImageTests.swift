@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import UIKit
 @testable import CanopyMobile
 
 struct SessionEventImageTests {
@@ -170,6 +171,73 @@ struct SessionImageLoaderNetworkTests {
         async let second = loader.data(at: url, secret: "shh")
         _ = await (first, second)
         #expect(counter.value == 1)
+    }
+}
+
+/// `SessionImageLoader.displayImage(from:maxPixelSize:)` — the full-screen
+/// view's decode path. It exists because the upload cap bounds encoded
+/// bytes, not pixels: `UIImage(data:)` decodes a highly compressible source
+/// at native resolution regardless of file size, and a source tens of
+/// thousands of pixels on a side can exhaust memory and get the app killed.
+/// Built in code rather than from committed fixtures, since a synthetic
+/// solid-color PNG at an arbitrary size is exactly what a highly
+/// compressible attack image looks like.
+struct SessionImageDisplayTests {
+    // `scale = 1` is load-bearing: the default renderer scale is the
+    // simulator's screen scale (3x here), so an "800 × 600" render without
+    // it is actually 2400 × 1800 pixels once encoded — a PNG stores pixel
+    // dimensions, not points, so that scale silently changes what source
+    // size these tests think they are feeding in.
+    private func syntheticPNG(width: Int, height: Int) -> Data {
+        let size = CGSize(width: width, height: height)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        let image = renderer.image { _ in
+            UIColor.red.setFill()
+            UIRectFill(CGRect(origin: .zero, size: size))
+        }
+        return image.pngData()!
+    }
+
+    // Pins the pixel cap actually being applied. Decoding this source with
+    // `UIImage(data:)` instead (no cap at all) would return 6000 × 3000 here,
+    // not 4096 × 2048 — the memory-exhaustion bug this fix exists to close.
+    @Test("A large source is downsampled to the cap, aspect ratio preserved")
+    func downsamplesALargeSource() throws {
+        let data = syntheticPNG(width: 6000, height: 3000)
+        let image = try #require(SessionImageLoader.displayImage(from: data))
+        #expect(image.size.width == 4096)
+        #expect(image.size.height == 2048)
+    }
+
+    // Pins the outcome the `min(longEdge, maxPixelSize)` clamp exists for: a
+    // source smaller than the cap is untouched, not enlarged.
+    //
+    // **This does not currently catch removing the clamp.** Verified
+    // directly (a standalone script against `CGImageSourceCreateThumbnailAtIndex`,
+    // bypassing this codebase entirely): on this runtime, ImageIO's own
+    // thumbnail generator already refuses to upscale past the source's
+    // native size even when handed the bare `maxPixelSize` with no `min` at
+    // all — so this test would still pass with the clamp deleted. It is
+    // kept anyway because it pins the behaviour actually promised to the
+    // user (a small image opens unscaled) independent of which line
+    // currently provides it, and because that ImageIO behaviour is not
+    // documented and not a fact worth trusting to hold across OS versions.
+    @Test("A small source is returned at its own size, not scaled up")
+    func doesNotUpscaleASmallSource() throws {
+        let data = syntheticPNG(width: 800, height: 600)
+        let image = try #require(SessionImageLoader.displayImage(from: data))
+        #expect(image.size.width == 800)
+        #expect(image.size.height == 600)
+    }
+
+    // Same failure behaviour as before this fix: bytes that don't decode are
+    // a load failure ("Image unavailable", tap to retry), not a crash.
+    @Test("Bytes that are not an image return nil")
+    func rejectsNonImageBytes() throws {
+        let data = Data([0x00, 0x01, 0x02, 0x03])
+        #expect(SessionImageLoader.displayImage(from: data) == nil)
     }
 }
 

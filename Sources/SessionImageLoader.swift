@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import UIKit
 
 /// R2 に置かれた画像を取ってくる。
 ///
@@ -60,6 +62,62 @@ final class SessionImageLoader {
             URLQueryItem(name: "variant", value: variant),
         ]
         return components.url
+    }
+
+    /// Decode for on-screen display, through ImageIO rather than
+    /// `UIImage(data:)`.
+    ///
+    /// **The upload cap is on encoded bytes, not pixels.** A mostly-flat PNG
+    /// compresses hard, so a file well under the 8MiB upload cap can still be
+    /// tens of thousands of pixels on a side. `UIImage(data:)` decodes at
+    /// native resolution regardless — a 20,000 × 20,000 source needs about
+    /// 1.6GB at 4 bytes a pixel, which gets the app killed. Asking ImageIO for
+    /// a thumbnail instead makes it downsample during decode, so the peak
+    /// memory is bounded by the cap actually passed, not by the source.
+    ///
+    /// **4096 is chosen so the zoom stays useful for what this view is for.**
+    /// A screenshot of a 4K display (3840 × 2160) decodes untouched, and
+    /// reading small text in a screenshot is the main reason to open the
+    /// full-size view at all — a tighter cap such as the screen size would
+    /// defeat that. 4096² × 4 bytes is about 67MB, which is safe. Only
+    /// sources larger than the cap are reduced.
+    ///
+    /// `nonisolated` for the same reason as `url(...)` above: a pure function
+    /// on this `@MainActor` type, called from a synchronous test.
+    nonisolated static func displayImage(from data: Data, maxPixelSize: Int = 4096) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        // The source's own long edge, read from its header without decoding
+        // any pixels. Falls back to the cap itself when the properties don't
+        // carry a size, which asks ImageIO for exactly `maxPixelSize` below —
+        // still a decode, just not a size-aware one.
+        var longEdge = maxPixelSize
+        if let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let width = properties[kCGImagePropertyPixelWidth] as? Int,
+           let height = properties[kCGImagePropertyPixelHeight] as? Int {
+            longEdge = max(width, height)
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            // Honours EXIF orientation, so a photo taken sideways is not
+            // decoded sideways.
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            // **`min`, not the bare cap.** The Mac side of this feature
+            // (`RosterImageUploader.thumbnail(from:)`) resizes by computing
+            // a target size from the cap and clamps it the same way, because
+            // its own resize path DOES scale a small source up when nothing
+            // stops it. Measured directly against `CGImageSourceCreateThumbnailAtIndex`
+            // on this runtime, ImageIO's own thumbnail generator already
+            // refuses to enlarge past the source's native size even with the
+            // bare cap — so the `min` costs nothing and is not, on this API,
+            // load-bearing. It stays anyway: a smaller, more obviously
+            // correct expression of the intent ("never ask for more than the
+            // source has") that does not depend on that framework detail
+            // holding across OS versions.
+            kCGImageSourceThumbnailMaxPixelSize: min(longEdge, maxPixelSize),
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+        return UIImage(cgImage: cgImage)
     }
 
     func data(at url: URL, secret: String) async -> Data? {

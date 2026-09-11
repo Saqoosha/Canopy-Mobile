@@ -76,6 +76,11 @@ enum ConversationRow: Identifiable {
 /// do next from a phone.
 struct SessionConversationView: View {
     let machine: String
+    /// 画像の取得先。**demo モードでは nil** —— `CanopyMobileApp.baseURL` が
+    /// そこで nil を返すので、fixture が生の relay と間違われることがない。
+    /// nil のときはサムネイルを描かない。
+    let base: URL?
+    let secret: String
     /// The LIVE session's id, minted per Canopy process. Replies and decisions
     /// are addressed with it, because only it can name a running session.
     let sessionId: String
@@ -229,7 +234,8 @@ struct SessionConversationView: View {
                             case .item(let item):
                                 MessageBlock(item: item, onDecision: onDecision, onAnswer: onAnswer)
                             case .event(let event):
-                                SessionEventBlock(event: event)
+                                SessionEventBlock(event: event, machine: machine,
+                                                  base: base, secret: secret)
                             }
                         }
                         Color.clear.frame(height: 1).id(bottomAnchor)
@@ -550,18 +556,31 @@ struct SessionConversationView: View {
 /// and only break up the flow.
 private struct SessionEventBlock: View {
     let event: SessionEventRecord
+    let machine: String
+    let base: URL?
+    let secret: String
 
     var body: some View {
         switch event.kind {
         case .tool:
-            HStack(spacing: 6) {
-                Image(systemName: "wrench.and.screwdriver")
-                    .font(.caption2)
-                Text(event.text)
-                    .font(.caption)
-                    .lineLimit(1)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "wrench.and.screwdriver")
+                        .font(.caption2)
+                    Text(event.text)
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.tertiary)
+                // 画像を持つ行だけがここに来る。持たない行の見た目は
+                // 1 ピクセルも変わらない。
+                // `base` が nil = demo モード。fixture に画像は無いし、
+                // 取りに行く先も無い。
+                if let image = event.image, let base {
+                    SessionImageThumbnail(event: event, image: image,
+                                          machine: machine, base: base, secret: secret)
+                }
             }
-            .foregroundStyle(.tertiary)
             .frame(maxWidth: .infinity, alignment: .leading)
         case .turnStart, .turnEnd:
             EmptyView()
@@ -607,6 +626,199 @@ private struct SessionEventBlock: View {
             .padding(14)
             .background(Color(.secondarySystemGroupedBackground),
                         in: RoundedRectangle(cornerRadius: 16))
+        }
+    }
+}
+
+/// 行に埋まるサムネイルと、タップで開く原寸。
+///
+/// **場所は絵より先に決まる。** `image.width` / `image.height` で縦横比を
+/// 決めてから読み込むので、絵が届いた瞬間に行の高さが飛ばない。
+private struct SessionImageThumbnail: View {
+    let event: SessionEventRecord
+    let image: SessionEventImage
+    let machine: String
+    let base: URL
+    let secret: String
+
+    /// Decoded once, at load time, and kept — not re-derived from `Data` on
+    /// every body evaluation. The events list is a plain `VStack`, not a
+    /// `LazyVStack` (see its own comment), so this view is never recycled;
+    /// re-decoding on every redraw would be wasted work for as long as the
+    /// conversation stays open.
+    @State private var thumbnail: UIImage?
+    /// Covers a failure that decode-once revealed was two different bugs:
+    /// the fetch itself failing, and bytes arriving that do not decode. A
+    /// bad decode used to fall through to the "still loading" branch and
+    /// spin forever, because nothing there ever set `failed`.
+    @State private var failed = false
+    @State private var showingFull = false
+
+    private var aspect: CGFloat {
+        guard image.width > 0, image.height > 0 else { return 16.0 / 9.0 }
+        return CGFloat(image.width) / CGFloat(image.height)
+    }
+
+    private static let byteCountFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Group {
+                if let thumbnail {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .aspectRatio(aspect, contentMode: .fit)
+                } else if failed {
+                    // 期限切れ(7 日)と一度も上がらなかったものを区別しない。
+                    // 電話に出せる言葉は同じ。タップで再試行できる。
+                    Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    Rectangle()
+                        .fill(Color(.tertiarySystemFill))
+                        .aspectRatio(aspect, contentMode: .fit)
+                }
+            }
+            .frame(maxWidth: 220)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            // 1 回のタップに 2 つの意味を state で振り分ける: 読み込み済みなら
+            // 原寸を開き、失敗していれば再試行する。この行は再利用されない
+            // (`VStack` であって `LazyVStack` ではない)ので、`.task` はもう
+            // 二度と走らない —— 再試行の入口はこのタップしか無い。
+            .onTapGesture {
+                if thumbnail != nil {
+                    showingFull = true
+                } else if failed {
+                    Task { await load() }
+                }
+            }
+            .task { await load() }
+            .fullScreenCover(isPresented: $showingFull) {
+                SessionImageFullScreen(event: event, image: image, machine: machine,
+                                       base: base, secret: secret,
+                                       placeholder: thumbnail)
+            }
+
+            // `image.bytes` はタップして原寸を取りに行く前から event 自身が
+            // 運んでいるので、サムネイルの読み込みを待たずに出せる —— タップ
+            // する前に大きさを見せる、という `SessionEventImage.bytes` の
+            // ドキュメント通りの使い方。失敗表示のときは大きさを言っても
+            // 意味が無いので出さない。
+            if !failed {
+                Text(Self.byteCountFormatter.string(fromByteCount: Int64(image.bytes)))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func load() async {
+        guard thumbnail == nil,
+              let url = SessionImageLoader.url(base: base, machine: machine,
+                                               session: event.sessionId,
+                                               event: event.eventId, variant: "thumb")
+        else { return }
+        // 再試行の入口でもあるので、前回の失敗表示を読み込み中の見た目に
+        // 戻してから取りに行く。
+        failed = false
+        if let data = await SessionImageLoader.shared.data(at: url, secret: secret),
+           let ui = UIImage(data: data) {
+            thumbnail = ui
+        } else {
+            failed = true
+        }
+    }
+}
+
+/// 原寸。**サムネイルを下に敷いてから原寸を読む** —— 435KB の取得中に
+/// 灰色を見せるより、ぼやけた絵から始まって差し替わるほうがよい。
+private struct SessionImageFullScreen: View {
+    let event: SessionEventRecord
+    let image: SessionEventImage
+    let machine: String
+    let base: URL
+    let secret: String
+    /// サムネイル行が既に持っているデコード済みの絵。原寸の取得中はこれを
+    /// 下に敷く。
+    let placeholder: UIImage?
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var full: UIImage?
+    /// **プレースホルダの有無で分岐しない。** 原寸の取得が失敗しても
+    /// サムネイルは消さないが、それは「原寸が取れた」ことにはならない
+    /// ので、`failed` は常に立てる。でないと期限切れの原寸をタップした
+    /// ユーザーは、引き伸ばされた 20KB のサムネイルを本物だと思って
+    /// 見続けることになる — エラーより悪い、気づけない状態。
+    @State private var failed = false
+
+    private var shown: UIImage? { full ?? placeholder }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let shown {
+                    ZStack(alignment: .bottom) {
+                        ScrollView([.horizontal, .vertical]) {
+                            Image(uiImage: shown)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                        }
+                        // 原寸の取得だけが失敗した場合。サムネイルは
+                        // 見えたままだが、それが原寸ではないことを言う。
+                        // 文言はサムネイル行と同じ —— 期限切れと未アップ
+                        // ロードを電話は区別できない。
+                        if failed {
+                            Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
+                                .font(.caption)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(.thinMaterial, in: Capsule())
+                                .padding(.bottom, 24)
+                                .onTapGesture { Task { await load() } }
+                        }
+                    }
+                } else if failed {
+                    Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
+                        .foregroundStyle(.secondary)
+                        .onTapGesture { Task { await load() } }
+                } else {
+                    ProgressView()
+                }
+            }
+            .navigationTitle(event.text)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard full == nil,
+              let url = SessionImageLoader.url(base: base, machine: machine,
+                                               session: event.sessionId,
+                                               event: event.eventId, variant: "full")
+        else { return }
+        failed = false
+        // Through ImageIO with a pixel cap, not `UIImage(data:)` — the
+        // upload cap bounds encoded bytes, not pixels, so a highly
+        // compressible original could still decode at native resolution to
+        // hundreds of megabytes. See `SessionImageLoader.displayImage`.
+        if let data = await SessionImageLoader.shared.data(at: url, secret: secret),
+           let ui = SessionImageLoader.displayImage(from: data) {
+            full = ui
+        } else {
+            // プレースホルダの有無に関わらず立てる。理由は上の `failed`
+            // の doc comment。
+            failed = true
         }
     }
 }

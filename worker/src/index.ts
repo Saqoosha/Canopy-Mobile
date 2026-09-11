@@ -7,6 +7,7 @@ export { MachineDO };
 interface Env extends ApnsEnv, LlmEnv {
   MACHINE: DurableObjectNamespace;
   MACHINES: KVNamespace;
+  IMAGES: R2Bucket;
   SHARED_SECRET: string;
 }
 
@@ -20,6 +21,25 @@ function json(value: unknown, status = 200): Response {
 function authorized(request: Request, env: Env): boolean {
   return request.headers.get("Authorization") === `Bearer ${env.SHARED_SECRET}`;
 }
+
+/** 1 枚の上限、バイト。relay がバイトの捨て場になるのを防ぐだけの数字で、
+ *  Mac 側は 8MiB で自分を止める（`RosterImageUploader.maxFullBytes`）。
+ *  ここが緩いのは意図的 —— relay は Canopy より後から出るので、Mac の上限を
+ *  relay の上限で追い越せないようにしておく。 */
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+
+/** What GET is willing to *serve back* as its declared content type. PUT
+ *  stores whatever `Content-Type` arrives, unvalidated — see the comment on
+ *  the GET branch below for why the gate sits here instead. Mirrors the set
+ *  the Mac side already gates image uploads on. */
+const ALLOWED_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/bmp",
+  "image/avif",
+]);
 
 /** APNs rejects a payload over 4 KB outright, and the push is the only place
  *  the whole notification exists — Canopy caps its own text in bytes, but it
@@ -319,6 +339,77 @@ export default {
           }),
         })
       );
+    }
+    // Read された画像の原寸とサムネイル。**Durable Object を通らない。**
+    // イベント行は寸法しか運ばず、バイトはここにある —— 200 件のリング
+    // バッファに base64 を積むと DO 1 台で 5MB になり、バックフィル 1 ページ
+    // も同じ大きさの JSON になる。実測は docs/session-images.md。
+    if (url.pathname === "/image") {
+      const machine = url.searchParams.get("machine");
+      const session = url.searchParams.get("session");
+      const event = url.searchParams.get("event");
+      const variant = url.searchParams.get("variant");
+      // 名前を列挙するのは、キーがオブジェクトの置き場所そのものだから。
+      // 任意の文字列を通すと、呼び出し側の綴り間違いが「別のバケット領域に
+      // 静かに書かれて、二度と読まれないオブジェクト」になる。
+      if (variant !== "full" && variant !== "thumb") {
+        return json({ error: "variant must be full or thumb" }, 400);
+      }
+      if (!machine || !session || !event) {
+        return json({ error: "machine, session and event required" }, 400);
+      }
+      const key = `${machine}/${session}/${event}/${variant}`;
+      if (request.method === "PUT") {
+        const declared = request.headers.get("Content-Length");
+        if (declared && Number(declared) > MAX_IMAGE_BYTES) {
+          return json({ error: "image too large" }, 413);
+        }
+        // Content-Length を信じない二段目。チャンク転送では宣言が無く、
+        // 上の判定はそのとき何も守らない。
+        const body = await request.arrayBuffer();
+        if (body.byteLength > MAX_IMAGE_BYTES) {
+          return json({ error: "image too large" }, 413);
+        }
+        await env.IMAGES.put(key, body, {
+          httpMetadata: {
+            contentType: request.headers.get("Content-Type") ?? "application/octet-stream",
+          },
+        });
+        return json({ ok: true });
+      }
+      if (request.method === "GET") {
+        const object = await env.IMAGES.get(key);
+        // 期限切れ（7 日のライフサイクル）と一度も上がらなかったものは
+        // 区別しない。電話に出せる言葉は同じ「もう無い」だけ。
+        if (!object) return json({ error: "not found" }, 404);
+        const headers = new Headers();
+        object.writeHttpMetadata(headers);
+        // PUT は Content-Type を検証せずそのまま R2 に置く — これは意図的
+        // (`worker/src/types.ts` の通り、relay は検証しないパイプで、Canopy
+        // が relay より先に出る以上、ここでの許可リストが次の画像形式追加の
+        // たびに relay デプロイを前提にしてしまう)。だから検証は書く側では
+        // なく、ここ GET が「ブラウザに実行させる」側でだけ行う。SHARED_SECRET
+        // を持つ相手が `text/html` に script を仕込んで PUT し、relay 自身の
+        // オリジンから配信させる stored XSS を塞ぐのが目的 — Mac も CLI の
+        // `tool_result` の `source.media_type` をそのまま転送するので、
+        // 上流の値がここまで無検証で届きうる。
+        // 電話は URLSession で生バイトを読むだけなので、以下 4 つはどれも
+        // 電話には効かない（ブラウザ向けのヘッダーは電話にとって不活性）。
+        const storedType = headers.get("Content-Type");
+        headers.set(
+          "Content-Type",
+          storedType && ALLOWED_IMAGE_TYPES.has(storedType) ? storedType : "application/octet-stream",
+        );
+        // 上のフィルタをすり抜けた/誤ラベルされたバイト列を、ブラウザに
+        // HTML や script として解釈させない三重の保険。
+        headers.set("X-Content-Type-Options", "nosniff");
+        headers.set("Content-Security-Policy", "default-src 'none'; sandbox");
+        headers.set("Content-Disposition", "attachment");
+        // eventId は UUID で、同じキーの中身が変わることは無い。
+        headers.set("Cache-Control", "private, max-age=31536000, immutable");
+        return new Response(object.body, { headers });
+      }
+      return json({ error: "method not allowed" }, 405);
     }
     return new Response("not found", { status: 404 });
   },

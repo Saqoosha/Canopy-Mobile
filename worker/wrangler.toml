@@ -26,6 +26,13 @@ new_sqlite_classes = ["MachineDO"]
 binding = "MACHINES"
 id = "34a34a05b2194af6b9f2c89847a57ea1"
 
+# Read された画像の原寸とサムネイル。イベント行は寸法だけを運び、バイトは
+# ここにある。キーは <machine>/<sessionId>/<eventId>/<full|thumb>。
+# 保持は 7 日のライフサイクル規則（Task 8）。
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "canopy-mobile-images"
+
 # APNS_AUTH_KEY (the .p8 private key contents) is set separately via
 # `npx wrangler secret put APNS_AUTH_KEY` — never committed here.
 [vars]

@@ -180,6 +180,14 @@ export interface SessionEventMessage {
    *  `Date` by default. **Never mix an epoch-milliseconds value in here** —
    *  the phone decodes it straight back into a `Date`. */
   at: number;
+  /** Read された画像の寸法。**relay はこの中身を見ない** —— オブジェクトなら
+   *  そのまま保存してそのまま返す。Canopy が先に出るので、ここで形を検証
+   *  すると relay のデプロイが Mac の新機能の前提条件になる（`kind` を
+   *  enum で弾かないのと同じ向きの判断）。
+   *
+   *  バイトは R2 にある。`GET /image?machine=&session=&event=&variant=`。
+   *  このフィールドの存在が「この行には画像がある」を意味する。 */
+  image?: unknown;
 }
 
 /** A stored event on its way to a watcher: the message plus the relay's own

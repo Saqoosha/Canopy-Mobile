@@ -621,6 +621,8 @@ struct CanopyMobileApp: App {
         let pane = livePane(for: target)
         return SessionConversationView(
             machine: target.machine,
+            base: baseURL,
+            secret: secret,
             sessionId: target.sessionId,
             resumeId: target.resumeId,
             // **The roster's title wins over the one frozen into the route.**

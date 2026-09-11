@@ -41,7 +41,8 @@ xcodebuild -project CanopyMobile.xcodeproj -scheme CanopyMobile -configuration D
   -allowProvisioningUpdates build
 xcrun devicectl device install app --device <device-udid> \
   build-device/Build/Products/Debug-iphoneos/CanopyMobile.app
-xcrun devicectl list devices            # udid はここ
+xcrun devicectl list devices            # udid はここ。`available (paired)` は Developer Mode を含まない —
+                                        # 無効ならビルドが "Developer Mode disabled" で落ちる（設定 → プライバシーとセキュリティ、要再起動）
 
 # デプロイ済み relay の検証（後始末が要る。下記）
 node scripts/relay-event-probe.mjs
@@ -107,19 +108,75 @@ cd worker && npx wrangler kv key delete --binding MACHINES --remote "machine:PRO
 | `maxSessions` | 20 |
 | `maxEvictionMarks` | 200。マークを失うと「欠落なし」に退化する（安全側） |
 
+### 画像はイベント行に乗らない —— R2 に居る
+
+`Read` した画像の行は `kind: "tool"` のまま、`image` フィールド（`width` /
+`height` / `bytes`）だけが増える。**バイトは R2** で、`GET /image?machine=&session=&event=&variant=full|thumb`。
+
+**`kind` を増やさなかったのは互換のため。** 新しい `kind` なら古い電話が
+`.other("image")` に落として「image: Read: shot.png」という行を描く。未知の
+フィールドは Codable が黙って無視するので、古い電話はいつものレンチ行になる。
+
+**relay は `image` の中身を見ない。** オブジェクトならそのまま `image` カラム
+（TEXT、JSON 文字列）に入れてそのまま返す。`kind` を enum で弾かないのと同じ
+向きの判断 —— Mac が先に出るので、ここで検証すると relay のデプロイが Canopy の
+新機能の前提条件になる。
+
+`image` カラムは後付けなので `ensureSchema` が `ALTER TABLE` する。存在判定は
+`SELECT image FROM event LIMIT 0` の成否 —— `PRAGMA table_info` と
+`sqlite_master` が DO の SQL で使えるかを測っていないため。定常状態は 0 行なので
+wake のコストに乗らない。
+
+**行は `tool_use` ではなく `tool_result` の時点で出る。** 画像は次のフレームに
+来るので、1 行に絵を付けるには結果を待つしかない。代償は行が Read の完了時に
+出ること。結果が来ないまま死んだ Read は、上限に達するまではその行が出ない。
+上限で追い出された分には素のレンチ行が出る（ファイル名は出さず、件数だけログに
+残る）。
+
+**結果が来た Read は必ず 1 行になる。** `imageResults(inFrame:)` が 1 フレームの
+`tool_result` を全部拾って、見つかった画像とペアで返す —— 失敗した Read
+（`content` が配列でなく文字列で来る）も、1 フレームに複数の画像 Read の結果が
+乗る場合も、これで解決される側に入る。前者は行そのものが出ない、後者は 1 件を
+除いて画像なしの行になる、という 2 つの穴が `firstImageResult` にはあったが、
+どちらも塞いだ。経緯は `docs/session-images.md` の「相関」節。
+
+アップロードは **2 枚とも成功してから行を出す**。行が出た = バイトは在る、と
+いう関係が、壊れたサムネイルの出ない唯一の根拠。失敗したら画像なしの素の行。
+
+**`image` の JSON にも `text` と同じ形のバイト上限がある**
+（`MachineDO.maxImageJsonBytes`、4KiB）。`text` と違って `.slice` できる値では
+ないので、超えたら丸ごと drop してログに残す —— サイズの上限であって形の
+判断ではないので、relay が `image` の中身を検証しない方針とは矛盾しない。
+
+設計と実測は `docs/session-images.md`。
+
 ## ハマりどころ（実体験）
 
 ### 送信側のバイナリに機能が無い
 
-**症状**: 電話に push は届くが、ストリームのイベントが 1 件も来ない。socket は繋がっている。
+**電話側は正しいのに、Mac で走っている Canopy がその機能を持たない。** 症状は機能ごとに違う形で出る。
 
-**原因**: インストール済みの Canopy がその機能を持たないリリース版だった。push は `/notify` の HTTP POST で WebSocket を使わないので、**push だけ生きているのはこの形の指紋**。
+- **イベントストリーム**: push は届くが、ストリームのイベントが 1 件も来ない。push は `/notify` の HTTP POST で WebSocket を使わないので、**push だけ生きているのがこの形の指紋**
+- **画像**: レンチ行は出るのに、画像 Read の行にサムネイルが付かない。R2 にも何も上がっていない。**ストリームは生きていて、画像の半分だけ無い** —— 2.30.0 はストリームを持つが画像を持たない
 
-**確認**: Mac 側で `[event]` のログ行が出ているかを見る。roster の接続行があるのに `[event]` が 0 なら送信側。
+**確認**: まず走っているのがどのバイナリか。`/Applications/Canopy.app` ならリリース版で、ブランチの機能は入っていない。次に Mac 側で `[event]` のログ行を見る。roster の接続行があるのに `[event]` が 0 なら送信側。
+
+```bash
+ps -eo pid,command | grep "Canopy.app/Contents/MacOS/Canopy" | grep -v grep
+```
 
 **境目は 2.28.0。** イベントストリーム（`04ab152`）は 2.27.0 の**次**のコミットなので、2.27.0 にも 2.26.1 にも入っていない。全 Mac が 2.28.0 以上なら、この指紋が出たときの原因はバージョンではない。
 
-**回避**: Canopy の Debug ビルド（`sh.saqoo.Canopy.debug`、別 bundle id）を隣に立てればリリース版を止めずに検証できる。ただし machine id は共通なので roster を取り合う。
+**Mac 側の新機能を実機で確かめるには、Mac がそのブランチのビルドで動いている必要がある。** 見落としやすいのは、**検証を回しているセッション自体がリリース版の中に居ると、そこからは駆動できない**こと —— そのセッションで画像を Read しても、送るのはリリース版。
+
+**回避**: worktree の Debug ビルド（`sh.saqoo.Canopy.debug`、別 bundle id）を `open -n` で隣に立て、**その中で新しいセッションを開いて**操作する。リリース版は止めない。machine id は共通なので roster を取り合う —— 終わったら閉じる。同じプロセス名が 2 つ動くので、ログは `Canopy[<pid>` で絞る。
+
+**電話の画面は iPhone Mirroring から撮れる。** 全画面より窓に絞るほうが読める。Mirroring が閉じていると `osascript` がプロセスを見つけられず、`screencapture` は `-R requires a valid rect` で落ちる —— 黙って全画面を撮ることはない。
+
+```bash
+R=$(osascript -e 'tell application "System Events" to tell process "iPhone Mirroring" to get {position, size} of window 1' | tr -d ' ')
+/usr/sbin/screencapture -x -R"$R" phone.png
+```
 
 ### `log show` は `.debug` レベルを出さない
 
@@ -289,7 +346,7 @@ plutil -p <app>/Info.plist | grep -E "CFBundleIconName|CFBundleDisplayName|NSExt
 2. **セッションを上限ちょうどで止めていた。** 上限 200 で止めるとそのセッションはまだ evict していないのでマークを持たず、次の 1 件が「唯一のマーク trim」を払う。定常状態を測るなら **上限 +1 件まで**入れる
 3. **「1/5/20 セッションでフラット」は fixture の性質だった。** churn フェーズが `session` を上限まで埋めるので、そのあと何セッション動かしても 20 行のまま
 
-**wake パスにも同じ天井が要る。** この修正は wake に仕事を載せた（ドリフト判定・修復スキャン・マーク上限の受け皿・修復後のセッション上限）のに、計器は append パスにしか無かった。ドリフト判定を `if (true)` にして 4,000 行のスキャンを毎 wake 走らせても全テスト緑。**hibernation した DO はイベント到着ごとに構築し直される**ので、低トラフィックでは wake と append がほぼ 1:1 で並んで課金される。天井は append と同じ桁に置く。実測 wake 222 行。
+**wake パスにも同じ天井が要る。** この修正は wake に仕事を載せた（ドリフト判定・修復スキャン・マーク上限の受け皿・修復後のセッション上限）のに、計器は append パスにしか無かった。ドリフト判定を `if (true)` にして 4,000 行のスキャンを毎 wake 走らせても全テスト緑。**hibernation した DO はイベント到着ごとに構築し直される**ので、低トラフィックでは wake と append がほぼ 1:1 で並んで課金される。天井は append と同じ桁に置く。実測 wake 221 行。
 
 **backfill テストは 1 セッション 1 イベントだと `MAX` と `MIN` を区別できない。** 全部の集約が同じ値になるので `MIN(seq)` に変えても緑。どれか 1 セッションに 2 件目を足すと分かれる。
 
@@ -338,6 +395,12 @@ plutil -p <app>/Info.plist | grep -E "CFBundleIconName|CFBundleDisplayName|NSExt
 
 `worker/.dev.vars` は 1Password の mount（FIFO）へのシンボリックリンク。1Password がロックされていると open でブロックし、vitest-pool-workers がタイムアウトして **exit 0 で "no tests"** を出す。緑に見える。テスト数の床（下記）がこれを捕まえる。
 
+**新しい worktree には `.dev.vars` が無い。** gitignore されたシンボリックリンクなので、worktree を切っても付いてこない。本体と同じリンク先を張り直す（無いときの vitest の挙動は未確認）。
+
+```bash
+ln -s ~/.claude/1p-mounts/canopy-mobile.env worker/.dev.vars
+```
+
 ### Mac で打ったプロンプトも `user` イベントになる（検証済み）
 
 `publishSessionEvents` は `handleShimMessage(type: "webview_message")` = **CLI → webview 方向でしか呼ばれない**。webview で打った入力は逆方向なので、コードを読むだけだと「Mac 入力はイベントにならない」と読める。
@@ -380,11 +443,11 @@ git rebase origin/main --update-refs
 
 | | |
 |---|---|
-| Swift テスト | 136 |
-| worker テスト | 118 |
+| Swift テスト | 149（2026-09-11 実測） |
+| worker テスト | 137（2026-09-11 実測） |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
-| DO の append 1 件 | 248 rows_read（3 つの上限すべて満杯）/ 210（生きているセッション 1 本） |
-| DO の wake 1 回 | 222 rows_read（ドリフト無し）|
+| DO の append 1 件 | 248 rows_read（3 つの上限すべて満杯、2026-09-11 実測）/ 210（生きているセッション 1 本） |
+| DO の wake 1 回 | 221 rows_read（ドリフト無し、2026-09-11 実測）|
 
 append と wake の数字は `machine.test.ts` の 2 本のコスト上限テストが 300 で pin している。手で測り直すときは **3 つの上限を全部埋める** — でないと 248 ではなく 249 が出て、しかもそれは嘘（上記「コストのテストは…」）。
 

@@ -41,7 +41,8 @@ xcodebuild -project CanopyMobile.xcodeproj -scheme CanopyMobile -configuration D
   -allowProvisioningUpdates build
 xcrun devicectl device install app --device <device-udid> \
   build-device/Build/Products/Debug-iphoneos/CanopyMobile.app
-xcrun devicectl list devices            # udid はここ
+xcrun devicectl list devices            # udid はここ。`available (paired)` は Developer Mode を含まない —
+                                        # 無効ならビルドが "Developer Mode disabled" で落ちる（設定 → プライバシーとセキュリティ、要再起動）
 
 # デプロイ済み relay の検証（後始末が要る。下記）
 node scripts/relay-event-probe.mjs
@@ -153,15 +154,29 @@ wake のコストに乗らない。
 
 ### 送信側のバイナリに機能が無い
 
-**症状**: 電話に push は届くが、ストリームのイベントが 1 件も来ない。socket は繋がっている。
+**電話側は正しいのに、Mac で走っている Canopy がその機能を持たない。** 症状は機能ごとに違う形で出る。
 
-**原因**: インストール済みの Canopy がその機能を持たないリリース版だった。push は `/notify` の HTTP POST で WebSocket を使わないので、**push だけ生きているのはこの形の指紋**。
+- **イベントストリーム**: push は届くが、ストリームのイベントが 1 件も来ない。push は `/notify` の HTTP POST で WebSocket を使わないので、**push だけ生きているのがこの形の指紋**
+- **画像**: レンチ行は出るのに、画像 Read の行にサムネイルが付かない。R2 にも何も上がっていない。**ストリームは生きていて、画像の半分だけ無い** —— 2.30.0 はストリームを持つが画像を持たない
 
-**確認**: Mac 側で `[event]` のログ行が出ているかを見る。roster の接続行があるのに `[event]` が 0 なら送信側。
+**確認**: まず走っているのがどのバイナリか。`/Applications/Canopy.app` ならリリース版で、ブランチの機能は入っていない。次に Mac 側で `[event]` のログ行を見る。roster の接続行があるのに `[event]` が 0 なら送信側。
+
+```bash
+ps -eo pid,command | grep "Canopy.app/Contents/MacOS/Canopy" | grep -v grep
+```
 
 **境目は 2.28.0。** イベントストリーム（`04ab152`）は 2.27.0 の**次**のコミットなので、2.27.0 にも 2.26.1 にも入っていない。全 Mac が 2.28.0 以上なら、この指紋が出たときの原因はバージョンではない。
 
-**回避**: Canopy の Debug ビルド（`sh.saqoo.Canopy.debug`、別 bundle id）を隣に立てればリリース版を止めずに検証できる。ただし machine id は共通なので roster を取り合う。
+**Mac 側の新機能を実機で確かめるには、Mac がそのブランチのビルドで動いている必要がある。** 見落としやすいのは、**検証を回しているセッション自体がリリース版の中に居ると、そこからは駆動できない**こと —— そのセッションで画像を Read しても、送るのはリリース版。
+
+**回避**: worktree の Debug ビルド（`sh.saqoo.Canopy.debug`、別 bundle id）を `open -n` で隣に立て、**その中で新しいセッションを開いて**操作する。リリース版は止めない。machine id は共通なので roster を取り合う —— 終わったら閉じる。同じプロセス名が 2 つ動くので、ログは `Canopy[<pid>` で絞る。
+
+**電話の画面は iPhone Mirroring から撮れる。** 全画面より窓に絞るほうが読める。Mirroring が閉じていると `osascript` がプロセスを見つけられず、`screencapture` は `-R requires a valid rect` で落ちる —— 黙って全画面を撮ることはない。
+
+```bash
+R=$(osascript -e 'tell application "System Events" to tell process "iPhone Mirroring" to get {position, size} of window 1' | tr -d ' ')
+/usr/sbin/screencapture -x -R"$R" phone.png
+```
 
 ### `log show` は `.debug` レベルを出さない
 
@@ -379,6 +394,12 @@ plutil -p <app>/Info.plist | grep -E "CFBundleIconName|CFBundleDisplayName|NSExt
 ### vitest が 1Password のロックで空振りする
 
 `worker/.dev.vars` は 1Password の mount（FIFO）へのシンボリックリンク。1Password がロックされていると open でブロックし、vitest-pool-workers がタイムアウトして **exit 0 で "no tests"** を出す。緑に見える。テスト数の床（下記）がこれを捕まえる。
+
+**新しい worktree には `.dev.vars` が無い。** gitignore されたシンボリックリンクなので、worktree を切っても付いてこない。本体と同じリンク先を張り直す（無いときの vitest の挙動は未確認）。
+
+```bash
+ln -s ~/.claude/1p-mounts/canopy-mobile.env worker/.dev.vars
+```
 
 ### Mac で打ったプロンプトも `user` イベントになる（検証済み）
 

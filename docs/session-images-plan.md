@@ -859,8 +859,10 @@ MSG
             record("image: thumbnail refuses non-image bytes",
                    RosterImageUploader.thumbnail(from: Data("not an image".utf8)) == nil)
 
-            // 上限より小さい画像は拡大しない。320 を下回る絵を 320 に伸ばすと
-            // バイトが増えるだけで、行に出る大きさは変わらない。
+            // **これは `thumbnail(from:)` の `min` クランプを pin していない。**
+            // ImageIO はクランプが無くても元の寸法を超えて拡大しない（macOS で
+            // 実測: 100×60 に上限 320 を渡しても 100×60）ので、クランプを消しても
+            // このアサーションは通る。pin しているのは結果のほう。
             if let small = makePNG(width: 100, height: 60) {
                 record("image: an already-small image is not upscaled",
                        RosterImageUploader.pixelSize(of: RosterImageUploader.thumbnail(from: small) ?? Data())
@@ -922,10 +924,11 @@ enum RosterImageUploader {
         return (width, height)
     }
 
-    /// 長辺 `thumbnailMaxPixelSize` の JPEG。**元より大きくはしない** ——
-    /// `kCGImageSourceCreateThumbnailFromImageIfAbsent` ではなく `Always` を
-    /// 使うと小さい絵も上限まで引き伸ばされ、バイトが増えるだけで行に出る
-    /// 大きさは変わらない。
+    /// 長辺 `thumbnailMaxPixelSize` の JPEG。**元より大きくはしない** —— ただし
+    /// それを保証しているのは下の `min` ではなく ImageIO 自身。
+    /// `CGImageSourceCreateThumbnailAtIndex` は `Always` を付けても元の寸法を
+    /// 超えて拡大しない（macOS と iOS で実測）。`min` はその挙動に依存しない
+    /// 書き方として残しているだけで、load-bearing ではない。
     static func thumbnail(from data: Data) -> Data? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let size = pixelSize(of: data)

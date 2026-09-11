@@ -101,15 +101,14 @@ final class SessionImageLoader {
             // Honours EXIF orientation, so a photo taken sideways is not
             // decoded sideways.
             kCGImageSourceCreateThumbnailWithTransform: true,
-            // **`min`, not the bare cap.** The Mac side of this feature
-            // (`RosterImageUploader.thumbnail(from:)`) resizes by computing
-            // a target size from the cap and clamps it the same way, because
-            // its own resize path DOES scale a small source up when nothing
-            // stops it. Measured directly against `CGImageSourceCreateThumbnailAtIndex`
-            // on this runtime, ImageIO's own thumbnail generator already
-            // refuses to enlarge past the source's native size even with the
-            // bare cap — so the `min` costs nothing and is not, on this API,
-            // load-bearing. It stays anyway: a smaller, more obviously
+            // **`min`, not the bare cap — but not because ImageIO would
+            // otherwise upscale.** Measured on both this runtime and macOS:
+            // `CGImageSourceCreateThumbnailAtIndex` refuses to enlarge past the
+            // source's native size even when handed the bare cap (a 100×60
+            // source asked for 320 or 1000 comes back 100×60). The Mac side's
+            // `RosterImageUploader.thumbnail(from:)` uses the same call and the
+            // same clamp, so neither is load-bearing there either — the
+            // `min` costs nothing. It stays anyway: a smaller, more obviously
             // correct expression of the intent ("never ask for more than the
             // source has") that does not depend on that framework detail
             // holding across OS versions.

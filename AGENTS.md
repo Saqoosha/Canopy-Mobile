@@ -435,7 +435,7 @@ git rebase origin/main --update-refs
 
 **`## 検証で使える基準値` のテーブルは、並行 PR が必ずコンフリクトする。** Swift 行と worker 行が隣接しているので、テスト数を動かす PR が 2 本あれば必ずぶつかる。`ci.yml` の `EXPECTED_*` も同じ。**解決は足し算** — 両方入るなら 109 と 97 ではなく 111。1 本ずつマージして残りを rebase するのが結局いちばん速い。
 
-**worktree 隔離セッションは `main` を動かせない。** `git fetch origin main:main` は `refusing to fetch into branch 'refs/heads/main' checked out at <本体>` で落ちる。checkout 中のブランチはその worktree からしか動かせないので、**本体の更新は人間の `git pull` が要る**。`gh pr merge --delete-branch` も同じ理由で `fatal: 'main' is already used by worktree` を出すが、**マージ自体は成功している** — この行だけ見て失敗と判断しない。
+**worktree 隔離セッションは `main` を動かせない。** `git fetch origin main:main` は `refusing to fetch into branch 'refs/heads/main' checked out at <本体>` で落ちる。checkout 中のブランチはその worktree からしか動かせないので、**本体の更新は `ExitWorktree` で抜けてから `git pull`**。隔離が解けるまで本体には触れない。**`gh pr merge` はリポジトリの外から `--repo Saqoosha/Canopy-Mobile` で呼ぶ** —— そうすると gh はリモートのマージとブランチ削除だけをして、ローカルの `main` をチェックアウトしようとしない。worktree の中から呼ぶと `fatal: 'main' is already used by worktree` を出す（マージ自体は成功しているが、その行だけ見ると失敗に見える）。成否は exit code ではなく `gh pr view --json state,mergedAt` で見る。
 
 **`--force-with-lease` は URL 直指定の push では効かない。** リモート追跡 ref を名前で解決できず `stale info` で拒否される。`--force-with-lease=<branch>:<sha>` と明示する。sha は記憶で書かない（`cannot parse expected object name` で落ちる）— `git rev-parse origin/<branch>` で取る。
 

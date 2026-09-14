@@ -38,6 +38,16 @@ final class MirrorLink {
     private let token: String
     private var pendingAssets: [String: CheckedContinuation<(data: Data, mime: String), Error>] = [:]
     private var failed = false
+    /// The replay the Mac started fetching at attach; the page's own get_session_request is answered with it.
+    private var prefetchId: String?
+    private var prefetched: [String: Any]?
+    private var pageSessionRequestId: String?
+    private var abandonedPrefetchId: String?
+    /// The page's own transcript request, once the prefetch was given up on.
+    private var pageSessionResponseId: String?
+    /// Frames that arrived after the Mac took the prefetch snapshot, held so the page sees the transcript first.
+    private var framesBehindPrefetch: [Data] = []
+    private var prefetchFallback: Task<Void, Never>?
     private var closed = false
     private var waitingDeadline: Task<Void, Never>?
     private var lastWaitingError: NWError?
@@ -73,17 +83,70 @@ final class MirrorLink {
         guard !closed else { return }
         closed = true
         waitingDeadline?.cancel()
+        prefetchFallback?.cancel()
+        framesBehindPrefetch = []
         connection.cancel()
         failPendingAssets()
     }
 
     func send(_ object: [String: Any]) {
-        guard !closed, let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        if claimsPageSessionRequest(object) { return }
+        guard !closed, !failed, let data = try? JSONSerialization.data(withJSONObject: object) else { return }
         connection.send(content: data + Data([0x0A]), completion: .contentProcessed { error in
             if let error {
                 logger.error("send failed: \(error.localizedDescription, privacy: .public)")
             }
         })
+    }
+
+    /// True when `object` is the page's first get_session_request and the prefetched replay will answer it.
+    private func claimsPageSessionRequest(_ object: [String: Any]) -> Bool {
+        guard prefetchId != nil, pageSessionRequestId == nil,
+              object["type"] as? String == "request",
+              let request = object["request"] as? [String: Any],
+              request["type"] as? String == "get_session_request",
+              request["sessionId"] as? String == sessionId,
+              let requestId = object["requestId"] as? String
+        else { return false }
+        pageSessionRequestId = requestId
+        if prefetched != nil {
+            deliverPrefetched()
+        } else {
+            // A prefetch the Mac never answers must not leave the page without its transcript.
+            prefetchFallback = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled, let self, let pending = self.prefetchId else { return }
+                logger.error("prefetched replay did not arrive; asking the Mac directly")
+                // Remembered so a late arrival is dropped rather than handed to the page under an id it never issued.
+                self.abandonedPrefetchId = pending
+                self.prefetchId = nil
+                // Held frames stay held until the Mac answers this request, or the page would
+                // apply them and then have the older transcript land on top.
+                self.pageSessionResponseId = object["requestId"] as? String
+                self.send(object)
+            }
+        }
+        return true
+    }
+
+    private func deliverPrefetched() {
+        guard var frame = prefetched, let requestId = pageSessionRequestId,
+              var message = frame["message"] as? [String: Any]
+        else { return }
+        prefetchFallback?.cancel()
+        prefetchId = nil
+        prefetched = nil
+        message["requestId"] = requestId
+        frame["message"] = message
+        guard let data = try? JSONSerialization.data(withJSONObject: frame) else { return }
+        onFrame?(String(decoding: data, as: UTF8.self))
+        flushFramesBehindPrefetch()
+    }
+
+    private func flushFramesBehindPrefetch() {
+        let waiting = framesBehindPrefetch
+        framesBehindPrefetch = []
+        for line in waiting { onFrame?(String(decoding: line, as: UTF8.self)) }
     }
 
     func requestAsset(path: String) async throws -> (data: Data, mime: String) {
@@ -105,7 +168,7 @@ final class MirrorLink {
         case .ready:
             waitingDeadline?.cancel()
             logger.notice("connected; attaching \(self.sessionId, privacy: .public)")
-            send(["type": "attach", "sessionId": sessionId, "token": token])
+            send(["type": "attach", "sessionId": sessionId, "token": token, "prefetch": true])
             receive()
             // The Mac answers attach at once; a silent Mac would otherwise leave the view connecting forever.
             waitingDeadline = Task { [weak self] in
@@ -166,6 +229,7 @@ final class MirrorLink {
                 guard let source = entry["source"] as? String else { return nil }
                 return (source, entry["atDocumentStart"] as? Bool ?? false)
             }
+            prefetchId = (object["prefetchedSessionRequestId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             let version = (object["extensionVersion"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             logger.notice("attach_ok with \(scripts.count) user scripts, extension \(version ?? "unknown", privacy: .public)")
             onAttached?(Attached(html: html, userScripts: scripts, extensionVersion: version))
@@ -184,6 +248,43 @@ final class MirrorLink {
                 continuation.resume(throwing: AssetError.refused(object["error"] as? String ?? "unreadable"))
             }
         default:
+            if let pending = pageSessionResponseId,
+               (object["message"] as? [String: Any])?["requestId"] as? String == pending
+            {
+                pageSessionResponseId = nil
+                onFrame?(String(decoding: line, as: UTF8.self))
+                flushFramesBehindPrefetch()
+                return
+            }
+            if pageSessionResponseId != nil,
+               (object["message"] as? [String: Any])?["type"] as? String != "response"
+            {
+                framesBehindPrefetch.append(line)
+                return
+            }
+            if let abandoned = abandonedPrefetchId,
+               (object["message"] as? [String: Any])?["requestId"] as? String == abandoned
+            {
+                abandonedPrefetchId = nil
+                return
+            }
+            if let prefetchId, let message = object["message"] as? [String: Any] {
+                if message["type"] as? String == "response" {
+                    if message["requestId"] as? String == prefetchId {
+                        prefetched = object
+                        if pageSessionRequestId != nil { deliverPrefetched() }
+                        return
+                    }
+                    // Every other response answers a request the page made itself — init among
+                    // them, and the page cannot ask for its transcript until that one lands.
+                    onFrame?(String(decoding: line, as: UTF8.self))
+                    return
+                }
+                // What the session did after the snapshot waits for it, or the page would
+                // apply an older transcript over newer turns.
+                framesBehindPrefetch.append(line)
+                return
+            }
             onFrame?(String(decoding: line, as: UTF8.self))
         }
     }
@@ -192,6 +293,7 @@ final class MirrorLink {
         guard !failed, !closed else { return }
         failed = true
         waitingDeadline?.cancel()
+        prefetchFallback?.cancel()
         logger.error("\(reason, privacy: .public)")
         connection.cancel()
         failPendingAssets()
@@ -209,16 +311,23 @@ final class MirrorLink {
 final class LineBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var data = Data()
+    /// Bytes of `data` already known to hold no newline, so a multi-megabyte line is scanned once, not once per chunk.
+    private var scanned = 0
 
     func append(_ chunk: Data) -> [Data] {
         lock.lock()
         defer { lock.unlock() }
         data.append(chunk)
         var lines: [Data] = []
-        while let newline = data.firstIndex(of: 0x0A) {
-            lines.append(data[data.startIndex..<newline])
-            data.removeSubrange(data.startIndex...newline)
+        var lineStart = data.startIndex
+        var searchFrom = data.startIndex + scanned
+        while let newline = data[searchFrom...].firstIndex(of: 0x0A) {
+            lines.append(Data(data[lineStart..<newline]))
+            lineStart = newline + 1
+            searchFrom = lineStart
         }
+        if lineStart > data.startIndex { data = Data(data[lineStart...]) }
+        scanned = data.count
         return lines
     }
 }

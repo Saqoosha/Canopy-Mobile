@@ -62,12 +62,13 @@ struct CanopyMobileApp: App {
     @State private var demoURL = "https://demo.invalid"
     @State private var showingSettings = false
     @State private var launchMirror: LaunchMirror? = LaunchMirror.fromEnvironment()
+    /// The Macs whose sessions open live. A demo run keeps an empty, unsaved table.
+    @State private var mirrorStore = MirrorConnectionStore(defaults: CanopyDemo.isEnabled ? nil : .standard)
 
     // ONE destination for the whole app. A roster row, a History row and a
-    // notification tap all push `SessionConversationView` for the same
-    // session, so there is a single place that shows what a session has said
-    // and a single place to answer it — including an unanswered permission
-    // ask, which renders Allow/Deny inline in that stream. The reply sheet
+    // notification tap all push `LiveFirstConversation` for the same session:
+    // the Mac's own view when it answers, `SessionConversationView` otherwise
+    // — the latter renders an unanswered permission ask as Allow/Deny inline. The reply sheet
     // and the notification detail this replaced were two more screens saying
     // subsets of the same thing, and keeping them in step was already a
     // review finding once.
@@ -170,11 +171,12 @@ struct CanopyMobileApp: App {
                     }
                 }
                 .sheet(isPresented: $showingSettings) {
-                    SettingsView(rosterUrl: CanopyDemo.isEnabled ? $demoURL : $rosterUrl, secret: $secret)
+                    SettingsView(rosterUrl: CanopyDemo.isEnabled ? $demoURL : $rosterUrl, secret: $secret,
+                                 mirrorStore: mirrorStore, machineNames: machineNames)
                 }
             }
             .fullScreenCover(item: $launchMirror) { launch in
-                MirrorLiveView(address: launch.address, sessionId: launch.sessionId, title: "Live", token: launch.token)
+                MirrorLiveView(target: launch.target, sessionId: launch.sessionId, title: "Live")
             }
             .task {
                 // BEFORE the refresh, not after: a tap that arrived while this
@@ -617,62 +619,30 @@ struct CanopyMobileApp: App {
         }
     }
 
+    /// The roster's name for each Mac, for Settings to label stored connections.
+    private var machineNames: [String: String] {
+        snapshots.mapValues(\.displayName)
+    }
+
     private func conversation(_ target: ConversationTarget) -> some View {
         // Resolved once and used twice, for the header's title as well as its
         // dot. Both are the same question — what does the roster say about
         // this session right now — and looking it up separately invited them
         // to answer it differently.
         let pane = livePane(for: target)
-        return SessionConversationView(
-            machine: target.machine,
-            base: baseURL,
-            secret: secret,
-            sessionId: target.sessionId,
-            resumeId: target.resumeId,
-            // **The roster's title wins over the one frozen into the route.**
-            // A tap that beats the first directory fetch has no title to name
-            // the session with and opens under a placeholder (see
-            // `handleReplyRequested`); the roster lands a moment later, and
-            // before this the header went on reading "Session" for the rest of
-            // that navigation while the subtitle beside it updated. The dot
-            // was already resolved per render for exactly this reason — the
-            // title was the one field left frozen.
-            title: pane?.title ?? target.title,
-            subtitle: target.subtitle,
-            // Looked up on every re-render rather than captured into the
-            // target, so the header tracks the roster instead of freezing at
-            // the moment the row was tapped. You open a session BECAUSE it
-            // raised its hand; it can finish while you are reading, and a
-            // frozen dot would still say "asking". nil when the roster does
-            // not list this session — the header then shows no dot at all,
-            // because grey means idle here and "we don't know" is not idle.
-            pane: pane,
-            onDecision: { item, decision in
-                try await sendDecision(item: item, decision: decision)
-            },
-            // An answered form is an allow carrying the picked labels. Same
-            // method, same single wire path as Allow/Deny — see
-            // `RosterClient.sendDecision`'s note on why there is only one.
-            onAnswer: { item, answers in
-                try await sendDecision(item: item, decision: "allow", answers: answers,
-                                       recordAs: answers.values.sorted().joined(separator: " · "))
-            },
-            onSend: { text, replyId in
-                try await sendReply(machine: target.machine,
-                                    sessionId: target.sessionId, text: text, replyId: replyId)
-            },
-            eventStore: eventStore,
-            // Asked on this machine's own socket. A machine with no live
-            // socket simply gets no answer, which is the same state as being
-            // offline — the stored notifications still render.
-            onRequestBackfill: { sessionId, seq in
-                requestBackfill(sessionId: sessionId, since: seq,
-                                using: sockets[target.machine])
-            }
-        )
-        // Recorded here rather than inside the view so the view keeps no
-        // opinion about the app's socket table — it asks, and something else
-        // decides whether the ask can be delivered yet.
+        let live = mirrorStore.target(for: target.machine)
+        let title = pane?.title ?? target.title
+        return LiveFirstConversation(
+            // The Mac matches on resumeId; a session without one cannot attach.
+            live: target.resumeId == nil ? nil : live,
+            sessionId: target.resumeId ?? target.sessionId,
+            title: title
+        ) { liveUnavailable in
+            offlineConversation(target, pane: pane, title: title, live: live, liveUnavailable: liveUnavailable)
+        }
+        // Recorded on the wrapper, live branch included, so `SessionConversationView`
+        // keeps no opinion about the app's socket table — it asks, and something
+        // else decides whether the ask can be delivered yet.
         //
         // Cleared only when the id still matches. SwiftUI runs the incoming
         // view's `onAppear` before the outgoing view's `onDisappear` when one
@@ -702,6 +672,59 @@ struct CanopyMobileApp: App {
                 viewedSession.current = nil
             }
         }
+    }
+
+    private func offlineConversation(_ target: ConversationTarget, pane: PaneRow?, title: String,
+                                     live: MirrorTarget?, liveUnavailable: String?) -> some View {
+        SessionConversationView(
+            machine: target.machine,
+            base: baseURL,
+            secret: secret,
+            sessionId: target.sessionId,
+            resumeId: target.resumeId,
+            // **The roster's title wins over the one frozen into the route.**
+            // A tap that beats the first directory fetch has no title to name
+            // the session with and opens under a placeholder (see
+            // `handleReplyRequested`); the roster lands a moment later, and
+            // before this the header went on reading "Session" for the rest of
+            // that navigation while the subtitle beside it updated. The dot
+            // was already resolved per render for exactly this reason — the
+            // title was the one field left frozen.
+            title: title,
+            subtitle: target.subtitle,
+            // Looked up on every re-render rather than captured into the
+            // target, so the header tracks the roster instead of freezing at
+            // the moment the row was tapped. You open a session BECAUSE it
+            // raised its hand; it can finish while you are reading, and a
+            // frozen dot would still say "asking". nil when the roster does
+            // not list this session — the header then shows no dot at all,
+            // because grey means idle here and "we don't know" is not idle.
+            pane: pane,
+            live: live,
+            liveUnavailable: liveUnavailable,
+            onDecision: { item, decision in
+                try await sendDecision(item: item, decision: decision)
+            },
+            // An answered form is an allow carrying the picked labels. Same
+            // method, same single wire path as Allow/Deny — see
+            // `RosterClient.sendDecision`'s note on why there is only one.
+            onAnswer: { item, answers in
+                try await sendDecision(item: item, decision: "allow", answers: answers,
+                                       recordAs: answers.values.sorted().joined(separator: " · "))
+            },
+            onSend: { text, replyId in
+                try await sendReply(machine: target.machine,
+                                    sessionId: target.sessionId, text: text, replyId: replyId)
+            },
+            eventStore: eventStore,
+            // Asked on this machine's own socket. A machine with no live
+            // socket simply gets no answer, which is the same state as being
+            // offline — the stored notifications still render.
+            onRequestBackfill: { sessionId, seq in
+                requestBackfill(sessionId: sessionId, since: seq,
+                                using: sockets[target.machine])
+            }
+        )
     }
 }
 

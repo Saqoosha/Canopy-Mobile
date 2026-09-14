@@ -3,7 +3,6 @@ import Foundation
 /// The Mac's live-mirror address and password, as copied from Canopy's Settings.
 struct MirrorConnectionInfo: Equatable {
     static let scheme = "canopy-mirror"
-    static let tokenKeychainKey = "mirrorToken"
 
     let host: String
     let port: UInt16
@@ -11,7 +10,7 @@ struct MirrorConnectionInfo: Equatable {
     /// The Mac's roster machine id, so Live is offered only on its sessions; empty from an older Mac.
     let machine: String
 
-    /// `host:port`, the form stored in `@AppStorage("mirrorAddress")`.
+    /// `host:port`, the form `MirrorConnectionStore` keeps per machine.
     var address: String { "\(host):\(port)" }
 
     /// Parses `canopy-mirror://<host>:<port>?token=<password>&machine=<id>`, tolerating surrounding whitespace.

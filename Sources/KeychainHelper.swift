@@ -33,6 +33,32 @@ enum KeychainHelper {
         return addStatus
     }
 
+    /// Replaces the value in place, or adds it; unlike `save`, a failure leaves the old value standing.
+    @discardableResult
+    static func upsert(key: String, value: String) -> OSStatus {
+        guard let data = value.data(using: .utf8) else { return errSecParam }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+        ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        guard updateStatus == errSecItemNotFound else {
+            if updateStatus != errSecSuccess {
+                NSLog("KeychainHelper.upsert: SecItemUpdate failed status=%d key=%@", updateStatus, key)
+            }
+            return updateStatus
+        }
+        var addQuery = query
+        addQuery[kSecValueData as String] = data
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        if addStatus != errSecSuccess {
+            NSLog("KeychainHelper.upsert: SecItemAdd failed status=%d key=%@", addStatus, key)
+        }
+        return addStatus
+    }
+
     static func load(key: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

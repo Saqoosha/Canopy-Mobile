@@ -43,6 +43,8 @@ final class MirrorLink {
     private var prefetched: [String: Any]?
     private var pageSessionRequestId: String?
     private var abandonedPrefetchId: String?
+    /// The page's own transcript request, once the prefetch was given up on.
+    private var pageSessionResponseId: String?
     /// Frames that arrived after the Mac took the prefetch snapshot, held so the page sees the transcript first.
     private var framesBehindPrefetch: [Data] = []
     private var prefetchFallback: Task<Void, Never>?
@@ -118,8 +120,10 @@ final class MirrorLink {
                 // Remembered so a late arrival is dropped rather than handed to the page under an id it never issued.
                 self.abandonedPrefetchId = pending
                 self.prefetchId = nil
+                // Held frames stay held until the Mac answers this request, or the page would
+                // apply them and then have the older transcript land on top.
+                self.pageSessionResponseId = object["requestId"] as? String
                 self.send(object)
-                self.flushFramesBehindPrefetch()
             }
         }
         return true
@@ -244,6 +248,20 @@ final class MirrorLink {
                 continuation.resume(throwing: AssetError.refused(object["error"] as? String ?? "unreadable"))
             }
         default:
+            if let pending = pageSessionResponseId,
+               (object["message"] as? [String: Any])?["requestId"] as? String == pending
+            {
+                pageSessionResponseId = nil
+                onFrame?(String(decoding: line, as: UTF8.self))
+                flushFramesBehindPrefetch()
+                return
+            }
+            if pageSessionResponseId != nil,
+               (object["message"] as? [String: Any])?["type"] as? String != "response"
+            {
+                framesBehindPrefetch.append(line)
+                return
+            }
             if let abandoned = abandonedPrefetchId,
                (object["message"] as? [String: Any])?["requestId"] as? String == abandoned
             {

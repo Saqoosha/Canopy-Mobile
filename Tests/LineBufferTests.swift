@@ -13,6 +13,7 @@ struct LineBufferTests {
         #expect(text(buffer.append(Data("\":4}\n".utf8))) == ["{\"d\":4}"])
     }
 
+    /// The bound is generous on purpose: the old accumulator took seconds here, so anything near a second is the quadratic scan coming back.
     @Test func aMultiMegabyteLineInSmallChunksIsAssembledInLinearTime() {
         let buffer = LineBuffer()
         let payload = Data(repeating: 0x61, count: 3_000_000) + Data([0x0A])

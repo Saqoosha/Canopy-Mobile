@@ -126,6 +126,11 @@ struct MirrorWebView: UIViewRepresentable {
             self.link = link
         }
 
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            // A reload after a web content crash starts an empty page again; frames must wait for it too.
+            pageIsReady = false
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             pageIsReady = true
             let waiting = queued

@@ -10,6 +10,8 @@ final class MirrorLink {
     struct Attached {
         let html: String
         let userScripts: [(source: String, atDocumentStart: Bool)]
+        /// The Mac's extension version, the key its assets are cached under; nil from a Mac that sent none.
+        let extensionVersion: String?
     }
 
     enum AssetError: Error, LocalizedError {
@@ -164,8 +166,9 @@ final class MirrorLink {
                 guard let source = entry["source"] as? String else { return nil }
                 return (source, entry["atDocumentStart"] as? Bool ?? false)
             }
-            logger.notice("attach_ok with \(scripts.count) user scripts")
-            onAttached?(Attached(html: html, userScripts: scripts))
+            let version = (object["extensionVersion"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            logger.notice("attach_ok with \(scripts.count) user scripts, extension \(version ?? "unknown", privacy: .public)")
+            onAttached?(Attached(html: html, userScripts: scripts, extensionVersion: version))
         case "attach_error":
             waitingDeadline?.cancel()
             switch object["message"] as? String {

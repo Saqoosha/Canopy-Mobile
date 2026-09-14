@@ -12,11 +12,13 @@ final class MirrorAssetSchemeHandler: NSObject, WKURLSchemeHandler {
 
     private weak var link: MirrorLink?
     private let entryHTML: String
+    private let cache: MirrorAssetCache?
     private var live: Set<ObjectIdentifier> = []
 
-    init(link: MirrorLink, entryHTML: String) {
+    init(link: MirrorLink, entryHTML: String, cache: MirrorAssetCache?) {
         self.link = link
         self.entryHTML = entryHTML
+        self.cache = cache
     }
 
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
@@ -28,10 +30,15 @@ final class MirrorAssetSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
         let path = String(url.path.drop { $0 == "/" })
+        if let cached = cache?.load(path: path) {
+            finish(task, key: key, data: cached.data, mime: cached.mime, url: url)
+            return
+        }
         Task { @MainActor in
             do {
                 guard let link else { throw MirrorLink.AssetError.closed }
                 let asset = try await link.requestAsset(path: path)
+                cache?.store(path: path, data: asset.data, mime: asset.mime)
                 finish(task, key: key, data: asset.data, mime: asset.mime, url: url)
             } catch {
                 logger.error("asset \(path, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
@@ -64,7 +71,9 @@ struct MirrorWebView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.setURLSchemeHandler(MirrorAssetSchemeHandler(link: link, entryHTML: attached.html), forURLScheme: MirrorAssetSchemeHandler.scheme)
+        config.setURLSchemeHandler(
+            MirrorAssetSchemeHandler(link: link, entryHTML: attached.html, cache: MirrorAssetCache(version: attached.extensionVersion)),
+            forURLScheme: MirrorAssetSchemeHandler.scheme)
         let ucc = config.userContentController
         // iOS zooms into a focused input under 16px, pushing the composer off screen.
         ucc.addUserScript(WKUserScript(

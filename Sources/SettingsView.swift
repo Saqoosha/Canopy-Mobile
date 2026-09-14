@@ -8,6 +8,10 @@ import SwiftUI
 struct SettingsView: View {
     @Binding var rosterUrl: String
     @Binding var secret: String
+    /// The Macs whose sessions open live; pastes add to it, Forget removes from it.
+    let mirrorStore: MirrorConnectionStore
+    /// The roster's name per machine id, so a stored Mac is labelled by name rather than UUID.
+    let machineNames: [String: String]
     /// Whether the secure field has been typed into since this sheet opened.
     /// `secret` is seeded from the Keychain, so every commit path — Return,
     /// tabbing away, Done — otherwise re-saves a value that is already there,
@@ -18,8 +22,6 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var secretFieldFocused: Bool
     @State private var hasStoredSecret = false
-    @AppStorage("mirrorAddress") private var mirrorAddress = ""
-    @AppStorage("mirrorMachine") private var mirrorMachine = ""
     @State private var mirrorPasteError: String?
 
     var body: some View {
@@ -69,29 +71,37 @@ struct SettingsView: View {
                     }
                 }
                 Section {
-                    if mirrorAddress.isEmpty {
+                    if mirrorStore.isEmpty {
                         Label("Not set up", systemImage: "rectangle.on.rectangle.slash")
                             .foregroundStyle(.secondary)
-                    } else {
-                        Label(mirrorAddress, systemImage: "rectangle.on.rectangle")
+                    }
+                    ForEach(mirrorStore.entries.machines, id: \.self) { machine in
+                        HStack {
+                            Label {
+                                VStack(alignment: .leading) {
+                                    Text(machineNames[machine] ?? (machine.isEmpty ? "Any Mac" : machine))
+                                    Text(mirrorStore.entries.address(for: machine) ?? "")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            } icon: {
+                                Image(systemName: "rectangle.on.rectangle")
+                            }
+                            Spacer()
+                            Button("Forget", role: .destructive) {
+                                mirrorPasteError = nil
+                                mirrorStore.forget(machine: machine)
+                            }
+                            .buttonStyle(.borderless)
+                        }
                     }
                     Button("Paste Connection from Mac") { pasteMirrorConnection() }
                     if let mirrorPasteError {
                         Text(mirrorPasteError).font(.caption).foregroundStyle(.red)
                     }
-                    if !mirrorAddress.isEmpty {
-                        Button("Forget This Mac", role: .destructive) {
-                            mirrorPasteError = nil
-                            guard !CanopyDemo.isEnabled else { return }
-                            mirrorAddress = ""
-                            mirrorMachine = ""
-                            KeychainHelper.delete(key: MirrorConnectionInfo.tokenKeychainKey)
-                        }
-                    }
                 } header: {
                     Text("Live mirror")
                 } footer: {
-                    Text("In Canopy on the Mac, open Settings › Mobile, turn on “Let the iPhone open live sessions” and choose Copy Connection for iPhone. Both devices must be on the same tailnet.")
+                    Text("In Canopy on the Mac, open Settings › Mobile, turn on “Let the iPhone open live sessions” and choose Copy Connection for iPhone. Each Mac is stored separately; a session opens live when its Mac answers, and shows the last known conversation when it does not. Both devices must be on the same tailnet.")
                 }
                 if CanopyDemo.isEnabled {
                     Section {
@@ -140,15 +150,12 @@ struct SettingsView: View {
             mirrorPasteError = "That is not a Canopy connection (expected canopy-mirror://…)."
             return
         }
-        // Same guard as commitSecret: a demo run must not touch the real Keychain or address.
-        guard !CanopyDemo.isEnabled else { mirrorPasteError = nil; return }
-        let status = KeychainHelper.save(key: MirrorConnectionInfo.tokenKeychainKey, value: info.token)
+        // The demo store is inert, so a demo run cannot touch the real Keychain or table.
+        let status = mirrorStore.save(info)
         guard status == errSecSuccess else {
             mirrorPasteError = "Could not store the password (\(status))."
             return
         }
         mirrorPasteError = nil
-        mirrorAddress = info.address
-        mirrorMachine = info.machine
     }
 }

@@ -1,19 +1,16 @@
 import SwiftUI
 
-/// The Mac's own session view, attached live over a direct connection.
+/// The Mac's own session view, attached live over a direct connection, as a full-screen cover.
 struct MirrorLiveView: View {
-    let address: String
+    let target: MirrorTarget
     let sessionId: String
     let title: String
-    /// nil reads the password the Settings paste stored in the Keychain.
-    var token: String? = nil
 
     @Environment(\.dismiss) private var dismiss
-    @State private var model = MirrorLiveModel()
 
     var body: some View {
         NavigationStack {
-            content
+            MirrorLiveContent(target: target, sessionId: sessionId, onUnavailable: nil)
                 .navigationTitle(title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -22,15 +19,32 @@ struct MirrorLiveView: View {
                     }
                 }
         }
-        .task { model.start(address: address, sessionId: sessionId, token: token ?? KeychainHelper.load(key: MirrorConnectionInfo.tokenKeychainKey)) }
-        .onDisappear { model.close() }
+    }
+}
+
+/// The attach lifecycle and the three things it can show, without any chrome, so a cover and a pushed screen share it.
+struct MirrorLiveContent: View {
+    let target: MirrorTarget
+    let sessionId: String
+    /// Called once when the connection fails or drops; nil keeps the failure on screen instead.
+    let onUnavailable: ((String) -> Void)?
+
+    @State private var model = MirrorLiveModel()
+
+    var body: some View {
+        content
+            .task { model.start(target: target, sessionId: sessionId) }
+            .onDisappear { model.close() }
+            .onChange(of: model.failure) { _, reason in
+                if let reason { onUnavailable?(reason) }
+            }
     }
 
     @ViewBuilder
     private var content: some View {
         switch model.phase {
         case .connecting:
-            ProgressView("Connecting to \(address)…")
+            ProgressView("Connecting to \(target.address)…")
         case .attached(let attached):
             if let link = model.link {
                 MirrorWebView(link: link, attached: attached)
@@ -54,12 +68,14 @@ final class MirrorLiveModel {
     private(set) var phase: Phase = .connecting
     private(set) var link: MirrorLink?
 
-    func start(address: String, sessionId: String, token: String?) {
+    var failure: String? {
+        if case .failed(let reason) = phase { return reason }
+        return nil
+    }
+
+    func start(target: MirrorTarget, sessionId: String) {
         guard link == nil else { return }
-        guard let token, !token.isEmpty else {
-            phase = .failed("No password stored. Paste the connection from Canopy's Settings.")
-            return
-        }
+        let address = target.address
         guard let colon = address.lastIndex(of: ":"),
               let port = UInt16(address[address.index(after: colon)...]), port != 0,
               !address[..<colon].isEmpty
@@ -67,7 +83,7 @@ final class MirrorLiveModel {
             phase = .failed("Address must be host:port")
             return
         }
-        let link = MirrorLink(host: String(address[..<colon]), port: port, sessionId: sessionId, token: token)
+        let link = MirrorLink(host: String(address[..<colon]), port: port, sessionId: sessionId, token: target.token)
         link.onAttached = { [weak self] attached in
             self?.phase = .attached(attached)
         }
@@ -85,20 +101,24 @@ final class MirrorLiveModel {
     }
 }
 
-/// `CANOPY_MIRROR_ATTACH="<IPv4>:<port>/<sessionId>"` opens a live session at launch for testing; `CANOPY_MIRROR_TOKEN` overrides the stored password.
+/// `CANOPY_MIRROR_ATTACH="<IPv4>:<port>/<sessionId>"` opens a live session at launch for testing; `CANOPY_MIRROR_TOKEN` supplies the password.
 struct LaunchMirror: Identifiable {
     let id = UUID()
     let address: String
     let sessionId: String
-    var token: String? { ProcessInfo.processInfo.environment["CANOPY_MIRROR_TOKEN"] }
+    let token: String
 
     static func fromEnvironment() -> LaunchMirror? {
-        guard let raw = ProcessInfo.processInfo.environment["CANOPY_MIRROR_ATTACH"],
-              let slash = raw.firstIndex(of: "/")
+        let env = ProcessInfo.processInfo.environment
+        guard let raw = env["CANOPY_MIRROR_ATTACH"],
+              let slash = raw.firstIndex(of: "/"),
+              let token = env["CANOPY_MIRROR_TOKEN"], !token.isEmpty
         else { return nil }
         let address = String(raw[..<slash])
         let sessionId = String(raw[raw.index(after: slash)...])
         guard !address.isEmpty, !sessionId.isEmpty else { return nil }
-        return LaunchMirror(address: address, sessionId: sessionId)
+        return LaunchMirror(address: address, sessionId: sessionId, token: token)
     }
+
+    var target: MirrorTarget { MirrorTarget(address: address, token: token) }
 }

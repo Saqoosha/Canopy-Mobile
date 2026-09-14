@@ -55,6 +55,13 @@ final class MirrorLink {
                 MainActor.assumeIsolated { self?.handle(state) }
             }
         }
+        // Runs from the first packet, not from `.waiting`: a Mac with no listener leaves the
+        // connection in `.preparing` and reports neither `.waiting` nor `.failed` (measured).
+        waitingDeadline = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled else { return }
+            self?.fail("Cannot reach the Mac: no answer in 10 s.")
+        }
         connection.start(queue: queue)
     }
 
@@ -103,14 +110,8 @@ final class MirrorLink {
                 self?.fail("The Mac did not answer the attach.")
             }
         case .waiting(let error):
-            // Transient: NWConnection keeps retrying. Give it 10 s (local-network prompt, VPN coming up) before failing.
+            // Transient: NWConnection keeps retrying under the deadline `start()` armed.
             logger.notice("waiting: \(error.localizedDescription, privacy: .public)")
-            guard waitingDeadline == nil else { return }
-            waitingDeadline = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(10))
-                guard !Task.isCancelled else { return }
-                self?.fail("Cannot reach the Mac: \(error.localizedDescription)")
-            }
         case .failed(let error):
             fail("Connection failed: \(error.localizedDescription)")
         default:

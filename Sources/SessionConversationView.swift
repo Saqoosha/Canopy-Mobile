@@ -97,8 +97,10 @@ struct SessionConversationView: View {
     /// "asking". A nil pane draws no dot — grey means idle in this palette,
     /// and "the roster doesn't list it" is not idle.
     let pane: PaneRow?
-    @AppStorage("mirrorAddress") private var mirrorAddress = ""
-    @AppStorage("mirrorMachine") private var mirrorMachine = ""
+    /// Where a live attach would go; nil when no paste covers this Mac.
+    let live: MirrorTarget?
+    /// Why the live attempt that preceded this view gave up, shown on a banner; nil when there was none.
+    let liveUnavailable: String?
     @State private var showingLive = false
     /// Throwing, because a decision that was not recorded has to reach the
     /// card that offered it. See `MessageBlock.decide`.
@@ -341,14 +343,25 @@ struct SessionConversationView: View {
         .background(Color(.systemGroupedBackground))
         .safeAreaInset(edge: .bottom) { composer }
         .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .top) {
+            if let liveUnavailable {
+                Text("Live unavailable: \(liveUnavailable)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .background(.bar)
+            }
+        }
         .fullScreenCover(isPresented: $showingLive) {
-            MirrorLiveView(address: mirrorAddress, sessionId: resumeId ?? sessionId, title: title)
+            if let live, let resumeId {
+                MirrorLiveView(target: live, sessionId: resumeId, title: title)
+            }
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                // The Mac matches on resumeId; a row without one cannot attach. Only the paired Mac's sessions
-                // (an older Mac sends no machine id, and is then offered everywhere as before).
-                if !mirrorAddress.isEmpty, resumeId != nil, mirrorMachine.isEmpty || mirrorMachine == machine {
+                // The Mac matches on resumeId; a row without one cannot attach.
+                if live != nil, resumeId != nil {
                     Button {
                         showingLive = true
                     } label: {

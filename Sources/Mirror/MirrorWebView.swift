@@ -80,10 +80,11 @@ struct MirrorWebView: UIViewRepresentable {
         }
         let webView = prepared.webView
         webView.navigationDelegate = context.coordinator
-        let coordinator = context.coordinator
-        link.onFrame = { [weak webView] line in
+        link.onFrame = { [weak webView, weak coordinator = context.coordinator] line in
             // The page cannot receive a postMessage until its own scripts run; frames that
-            // arrive first — the prefetched replay's own live events — wait for didFinish.
+            // arrive first wait for didFinish. Weak, or the coordinator's own `deliver`
+            // would hold this closure and neither would ever be released.
+            guard let coordinator else { return }
             guard coordinator.pageIsReady else {
                 coordinator.queued.append(line)
                 return
@@ -96,7 +97,7 @@ struct MirrorWebView: UIViewRepresentable {
                 if let error { logger.error("deliver failed: \(error.localizedDescription, privacy: .public)") }
             }
         }
-        coordinator.deliver = link.onFrame
+        context.coordinator.deliver = link.onFrame
         webView.load(URLRequest(url: MirrorAssetSchemeHandler.entryURL))
         DispatchQueue.main.async { MirrorWebViewPool.warm() }
         return webView
@@ -109,6 +110,8 @@ struct MirrorWebView: UIViewRepresentable {
             webView.configuration.userContentController.removeScriptMessageHandler(forName: name)
         }
         coordinator.link?.onFrame = nil
+        coordinator.deliver = nil
+        coordinator.queued = []
     }
 
     @MainActor

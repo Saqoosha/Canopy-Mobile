@@ -43,6 +43,8 @@ final class MirrorLink {
     private var prefetched: [String: Any]?
     private var pageSessionRequestId: String?
     private var abandonedPrefetchId: String?
+    /// Frames that arrived after the Mac took the prefetch snapshot, held so the page sees the transcript first.
+    private var framesBehindPrefetch: [Data] = []
     private var prefetchFallback: Task<Void, Never>?
     private var closed = false
     private var waitingDeadline: Task<Void, Never>?
@@ -80,6 +82,7 @@ final class MirrorLink {
         closed = true
         waitingDeadline?.cancel()
         prefetchFallback?.cancel()
+        framesBehindPrefetch = []
         connection.cancel()
         failPendingAssets()
     }
@@ -116,6 +119,7 @@ final class MirrorLink {
                 self.abandonedPrefetchId = pending
                 self.prefetchId = nil
                 self.send(object)
+                self.flushFramesBehindPrefetch()
             }
         }
         return true
@@ -132,6 +136,13 @@ final class MirrorLink {
         frame["message"] = message
         guard let data = try? JSONSerialization.data(withJSONObject: frame) else { return }
         onFrame?(String(decoding: data, as: UTF8.self))
+        flushFramesBehindPrefetch()
+    }
+
+    private func flushFramesBehindPrefetch() {
+        let waiting = framesBehindPrefetch
+        framesBehindPrefetch = []
+        for line in waiting { onFrame?(String(decoding: line, as: UTF8.self)) }
     }
 
     func requestAsset(path: String) async throws -> (data: Data, mime: String) {
@@ -239,12 +250,21 @@ final class MirrorLink {
                 abandonedPrefetchId = nil
                 return
             }
-            if let prefetchId,
-               let message = object["message"] as? [String: Any],
-               message["type"] as? String == "response", message["requestId"] as? String == prefetchId
-            {
-                prefetched = object
-                if pageSessionRequestId != nil { deliverPrefetched() }
+            if let prefetchId, let message = object["message"] as? [String: Any] {
+                if message["type"] as? String == "response" {
+                    if message["requestId"] as? String == prefetchId {
+                        prefetched = object
+                        if pageSessionRequestId != nil { deliverPrefetched() }
+                        return
+                    }
+                    // Every other response answers a request the page made itself — init among
+                    // them, and the page cannot ask for its transcript until that one lands.
+                    onFrame?(String(decoding: line, as: UTF8.self))
+                    return
+                }
+                // What the session did after the snapshot waits for it, or the page would
+                // apply an older transcript over newer turns.
+                framesBehindPrefetch.append(line)
                 return
             }
             onFrame?(String(decoding: line, as: UTF8.self))

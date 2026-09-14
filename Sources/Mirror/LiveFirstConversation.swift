@@ -16,7 +16,8 @@ struct LiveFirstConversation<Offline: View>: View {
     @State private var fallback: Fallback?
     /// Bumped to rebuild the live view with a fresh link; iOS closes the socket while the app is in the background.
     @State private var attempt = 0
-    @State private var wasInBackground = false
+    /// Whether the live view was on screen when the app left the foreground.
+    @State private var wasLiveInBackground = false
     @Environment(\.scenePhase) private var scenePhase
 
     private enum Fallback: Equatable {
@@ -27,22 +28,19 @@ struct LiveFirstConversation<Offline: View>: View {
     var body: some View {
         content
             // iOS closes the socket while the app is in the background, but the app only
-            // hears about it after it is active again — after this handler has run. So
-            // a return from the background rebuilds the live view outright rather than
-            // waiting for the drop; a view the user switched to offline themselves stays.
+            // hears about it after it is active again — after this handler has run. So a
+            // return from the background rebuilds the live view outright rather than
+            // waiting for the drop. Only when live was showing: the offline view may hold
+            // a half-typed reply, and rebuilding it would throw that away.
             .onChange(of: scenePhase) { _, phase in
                 switch phase {
                 case .background:
-                    wasInBackground = true
+                    wasLiveInBackground = live != nil && fallback == nil
                 case .active:
-                    let dropped: Bool
-                    if case .unavailable = fallback { dropped = true } else { dropped = false }
-                    guard wasInBackground || dropped else { return }
-                    wasInBackground = false
-                    if fallback != .chosen {
-                        fallback = nil
-                        attempt += 1
-                    }
+                    guard wasLiveInBackground else { return }
+                    wasLiveInBackground = false
+                    fallback = nil
+                    attempt += 1
                 default:
                     break
                 }
@@ -52,7 +50,10 @@ struct LiveFirstConversation<Offline: View>: View {
     @ViewBuilder
     private var content: some View {
         if let live, fallback == nil {
+            let current = attempt
             MirrorLiveContent(target: live, sessionId: sessionId) { reason in
+                // A drop reported by a live view that has already been replaced.
+                guard current == attempt else { return }
                 fallback = .unavailable(reason)
             }
             .id(attempt)

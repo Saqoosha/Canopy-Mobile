@@ -4,9 +4,13 @@ import Testing
 
 struct MirrorConnectionInfoTests {
     @Test func parsesTheStringCanopyCopies() {
-        let info = MirrorConnectionInfo.parse("canopy-mirror://100.116.127.93:8770?token=Ab_-9z")
-        #expect(info == MirrorConnectionInfo(host: "100.116.127.93", port: 8770, token: "Ab_-9z"))
+        let info = MirrorConnectionInfo.parse("canopy-mirror://100.116.127.93:8770?token=Ab_-9z&machine=C211-MBP")
+        #expect(info == MirrorConnectionInfo(host: "100.116.127.93", port: 8770, token: "Ab_-9z", machine: "C211-MBP"))
         #expect(info?.address == "100.116.127.93:8770")
+    }
+
+    @Test func acceptsAnOlderMacWithoutAMachineId() {
+        #expect(MirrorConnectionInfo.parse("canopy-mirror://100.64.0.1:8770?token=t")?.machine == "")
     }
 
     @Test func toleratesWhitespaceFromAPaste() {

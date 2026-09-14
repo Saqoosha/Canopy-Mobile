@@ -98,6 +98,7 @@ struct SessionConversationView: View {
     /// and "the roster doesn't list it" is not idle.
     let pane: PaneRow?
     @AppStorage("mirrorAddress") private var mirrorAddress = ""
+    @AppStorage("mirrorMachine") private var mirrorMachine = ""
     @State private var showingLive = false
     /// Throwing, because a decision that was not recorded has to reach the
     /// card that offered it. See `MessageBlock.decide`.
@@ -345,8 +346,9 @@ struct SessionConversationView: View {
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                // The Mac matches on resumeId; a row without one cannot attach.
-                if !mirrorAddress.isEmpty, resumeId != nil {
+                // The Mac matches on resumeId; a row without one cannot attach. Only the paired Mac's sessions
+                // (an older Mac sends no machine id, and is then offered everywhere as before).
+                if !mirrorAddress.isEmpty, resumeId != nil, mirrorMachine.isEmpty || mirrorMachine == machine {
                     Button {
                         showingLive = true
                     } label: {

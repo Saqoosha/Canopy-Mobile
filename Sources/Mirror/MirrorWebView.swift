@@ -133,7 +133,7 @@ struct MirrorWebView: UIViewRepresentable {
                     link?.send(body)
                 }
             case "consoleLog":
-                logger.notice("[js] \(String(describing: message.body), privacy: .public)")
+                logger.notice("[js] \(String(describing: message.body), privacy: .private)")
             case "canopyLink":
                 if let text = message.body as? String, let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased()) {
                     UIApplication.shared.open(url)

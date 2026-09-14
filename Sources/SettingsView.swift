@@ -19,6 +19,7 @@ struct SettingsView: View {
     @FocusState private var secretFieldFocused: Bool
     @State private var hasStoredSecret = false
     @AppStorage("mirrorAddress") private var mirrorAddress = ""
+    @AppStorage("mirrorMachine") private var mirrorMachine = ""
     @State private var mirrorPasteError: String?
 
     var body: some View {
@@ -83,6 +84,7 @@ struct SettingsView: View {
                             mirrorPasteError = nil
                             guard !CanopyDemo.isEnabled else { return }
                             mirrorAddress = ""
+                            mirrorMachine = ""
                             KeychainHelper.delete(key: MirrorConnectionInfo.tokenKeychainKey)
                         }
                     }
@@ -147,5 +149,6 @@ struct SettingsView: View {
         }
         mirrorPasteError = nil
         mirrorAddress = info.address
+        mirrorMachine = info.machine
     }
 }

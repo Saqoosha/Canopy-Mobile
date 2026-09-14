@@ -81,6 +81,11 @@ final class MirrorLink {
         return try await withCheckedThrowingContinuation { continuation in
             pendingAssets[id] = continuation
             send(["type": "asset_request", "id": id, "path": path])
+            // A request the Mac never answers must not hold the page's loader forever.
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(30))
+                self?.pendingAssets.removeValue(forKey: id)?.resume(throwing: AssetError.refused("timed out"))
+            }
         }
     }
 
@@ -88,10 +93,15 @@ final class MirrorLink {
         switch state {
         case .ready:
             waitingDeadline?.cancel()
-            waitingDeadline = nil
             logger.notice("connected; attaching \(self.sessionId, privacy: .public)")
             send(["type": "attach", "sessionId": sessionId, "token": token])
             receive()
+            // The Mac answers attach at once; a silent Mac would otherwise leave the view connecting forever.
+            waitingDeadline = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(10))
+                guard !Task.isCancelled else { return }
+                self?.fail("The Mac did not answer the attach.")
+            }
         case .waiting(let error):
             // Transient: NWConnection keeps retrying. Give it 10 s (local-network prompt, VPN coming up) before failing.
             logger.notice("waiting: \(error.localizedDescription, privacy: .public)")
@@ -140,6 +150,8 @@ final class MirrorLink {
         else { return }
         switch object["type"] as? String {
         case "attach_ok":
+            waitingDeadline?.cancel()
+            waitingDeadline = nil
             guard let html = object["html"] as? String, !html.isEmpty else {
                 fail("The Mac sent an empty page. Update Canopy on the Mac.")
                 return
@@ -151,6 +163,7 @@ final class MirrorLink {
             logger.notice("attach_ok with \(scripts.count) user scripts")
             onAttached?(Attached(html: html, userScripts: scripts))
         case "attach_error":
+            waitingDeadline?.cancel()
             switch object["message"] as? String {
             case "unauthorized": fail("The Mac rejected the password. Copy the connection again from Canopy's Settings.")
             case "no such session": fail("This session is not running on the Mac.")

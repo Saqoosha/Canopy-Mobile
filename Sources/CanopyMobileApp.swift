@@ -61,7 +61,7 @@ struct CanopyMobileApp: App {
     /// the field on a demo run cannot rewrite the real stored URL.
     @State private var demoURL = "https://demo.invalid"
     @State private var showingSettings = false
-    @State private var launchMirror: LaunchMirror? = LaunchMirror.fromEnvironment()
+    @State private var launchMirror: LaunchMirror?
     /// The Macs whose sessions open live. A demo run keeps an empty, unsaved table.
     @State private var mirrorStore = MirrorConnectionStore(defaults: CanopyDemo.isEnabled ? nil : .standard)
 
@@ -179,6 +179,8 @@ struct CanopyMobileApp: App {
                 MirrorLiveView(target: launch.target, sessionId: launch.sessionId, title: "Live")
             }
             .task {
+                MirrorWebViewPool.warm()
+                launchMirror = LaunchMirror.fromEnvironment()
                 // BEFORE the refresh, not after: a tap that arrived while this
                 // scene did not exist yet is the whole reason `pendingTap`
                 // exists, and making it wait on a network round trip would put

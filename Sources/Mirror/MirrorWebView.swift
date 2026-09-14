@@ -10,16 +10,11 @@ final class MirrorAssetSchemeHandler: NSObject, WKURLSchemeHandler {
     static let scheme = "canopy-asset"
     static let entryURL = URL(string: "canopy-asset://ext/__entry.html")!
 
-    private weak var link: MirrorLink?
-    private let entryHTML: String
-    private let cache: MirrorAssetCache?
+    /// Set when the pooled webview is handed to an attach; nil while it waits in the pool.
+    weak var link: MirrorLink?
+    var entryHTML = ""
+    var cache: MirrorAssetCache?
     private var live: Set<ObjectIdentifier> = []
-
-    init(link: MirrorLink, entryHTML: String, cache: MirrorAssetCache?) {
-        self.link = link
-        self.entryHTML = entryHTML
-        self.cache = cache
-    }
 
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
         guard let url = task.request.url else { return }
@@ -70,17 +65,12 @@ struct MirrorWebView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(link: link) }
 
     func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.setURLSchemeHandler(
-            MirrorAssetSchemeHandler(link: link, entryHTML: attached.html, cache: MirrorAssetCache(version: attached.extensionVersion)),
-            forURLScheme: MirrorAssetSchemeHandler.scheme)
-        let ucc = config.userContentController
-        // iOS zooms into a focused input under 16px, pushing the composer off screen.
-        ucc.addUserScript(WKUserScript(
-            source: "document.querySelector('meta[name=viewport]')?.setAttribute('content','width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover')",
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: true
-        ))
+        let prepared = MirrorWebViewPool.take()
+        prepared.handler.link = link
+        prepared.handler.entryHTML = attached.html
+        prepared.handler.cache = MirrorAssetCache(version: attached.extensionVersion)
+        prepared.proxy.target = context.coordinator
+        let ucc = prepared.webView.configuration.userContentController
         for script in attached.userScripts {
             ucc.addUserScript(WKUserScript(
                 source: script.source,
@@ -88,13 +78,7 @@ struct MirrorWebView: UIViewRepresentable {
                 forMainFrameOnly: true
             ))
         }
-        let proxy = WeakMessageProxy(target: context.coordinator)
-        for name in Self.handlerNames {
-            ucc.add(proxy, name: name)
-        }
-
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.isInspectable = true
+        let webView = prepared.webView
         webView.navigationDelegate = context.coordinator
         link.onFrame = { [weak webView] line in
             // As a string literal, not source: JSON allows U+2028/2029 where JavaScript source does not.
@@ -106,6 +90,7 @@ struct MirrorWebView: UIViewRepresentable {
             }
         }
         webView.load(URLRequest(url: MirrorAssetSchemeHandler.entryURL))
+        DispatchQueue.main.async { MirrorWebViewPool.warm() }
         return webView
     }
 
@@ -154,14 +139,57 @@ struct MirrorWebView: UIViewRepresentable {
     }
 }
 
+/// One webview built and started ahead of a live attach, with its scheme and message handlers already registered, so a tap only fills in the page.
+@MainActor
+enum MirrorWebViewPool {
+    struct Prepared {
+        let webView: WKWebView
+        let handler: MirrorAssetSchemeHandler
+        let proxy: WeakMessageProxy
+    }
+
+    private static var spare: Prepared?
+
+    static func warm() {
+        guard spare == nil else { return }
+        spare = make()
+    }
+
+    /// The pooled webview, or a fresh one when the pool is empty. Each is used for one attach only.
+    static func take() -> Prepared {
+        if let ready = spare {
+            spare = nil
+            return ready
+        }
+        return make()
+    }
+
+    private static func make() -> Prepared {
+        let config = WKWebViewConfiguration()
+        let handler = MirrorAssetSchemeHandler()
+        config.setURLSchemeHandler(handler, forURLScheme: MirrorAssetSchemeHandler.scheme)
+        let ucc = config.userContentController
+        // iOS zooms into a focused input under 16px, pushing the composer off screen.
+        ucc.addUserScript(WKUserScript(
+            source: "document.querySelector('meta[name=viewport]')?.setAttribute('content','width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover')",
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        ))
+        let proxy = WeakMessageProxy()
+        for name in MirrorWebView.handlerNames {
+            ucc.add(proxy, name: name)
+        }
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.isInspectable = true
+        webView.loadHTMLString("<!doctype html><title></title>", baseURL: nil)
+        return Prepared(webView: webView, handler: handler, proxy: proxy)
+    }
+}
+
 /// `WKUserContentController` retains its handlers; a weak proxy keeps the coordinator collectable.
 @MainActor
-private final class WeakMessageProxy: NSObject, WKScriptMessageHandler {
+final class WeakMessageProxy: NSObject, WKScriptMessageHandler {
     weak var target: (any WKScriptMessageHandler)?
-
-    init(target: any WKScriptMessageHandler) {
-        self.target = target
-    }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         target?.userContentController(controller, didReceive: message)

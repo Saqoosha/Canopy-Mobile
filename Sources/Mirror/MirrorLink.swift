@@ -38,6 +38,11 @@ final class MirrorLink {
     private let token: String
     private var pendingAssets: [String: CheckedContinuation<(data: Data, mime: String), Error>] = [:]
     private var failed = false
+    /// The replay the Mac started fetching at attach; the page's own get_session_request is answered with it.
+    private var prefetchId: String?
+    private var prefetched: [String: Any]?
+    private var pageSessionRequestId: String?
+    private var prefetchFallback: Task<Void, Never>?
     private var closed = false
     private var waitingDeadline: Task<Void, Never>?
     private var lastWaitingError: NWError?
@@ -78,12 +83,51 @@ final class MirrorLink {
     }
 
     func send(_ object: [String: Any]) {
+        if claimsPageSessionRequest(object) { return }
         guard !closed, let data = try? JSONSerialization.data(withJSONObject: object) else { return }
         connection.send(content: data + Data([0x0A]), completion: .contentProcessed { error in
             if let error {
                 logger.error("send failed: \(error.localizedDescription, privacy: .public)")
             }
         })
+    }
+
+    /// True when `object` is the page's first get_session_request and the prefetched replay will answer it.
+    private func claimsPageSessionRequest(_ object: [String: Any]) -> Bool {
+        guard prefetchId != nil, pageSessionRequestId == nil,
+              object["type"] as? String == "request",
+              let request = object["request"] as? [String: Any],
+              request["type"] as? String == "get_session_request",
+              request["sessionId"] as? String == sessionId,
+              let requestId = object["requestId"] as? String
+        else { return false }
+        pageSessionRequestId = requestId
+        if prefetched != nil {
+            deliverPrefetched()
+        } else {
+            // A prefetch the Mac never answers must not leave the page without its transcript.
+            prefetchFallback = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled, let self, self.prefetchId != nil else { return }
+                logger.error("prefetched replay did not arrive; asking the Mac directly")
+                self.prefetchId = nil
+                self.send(object)
+            }
+        }
+        return true
+    }
+
+    private func deliverPrefetched() {
+        guard var frame = prefetched, let requestId = pageSessionRequestId,
+              var message = frame["message"] as? [String: Any]
+        else { return }
+        prefetchFallback?.cancel()
+        prefetchId = nil
+        prefetched = nil
+        message["requestId"] = requestId
+        frame["message"] = message
+        guard let data = try? JSONSerialization.data(withJSONObject: frame) else { return }
+        onFrame?(String(decoding: data, as: UTF8.self))
     }
 
     func requestAsset(path: String) async throws -> (data: Data, mime: String) {
@@ -166,6 +210,7 @@ final class MirrorLink {
                 guard let source = entry["source"] as? String else { return nil }
                 return (source, entry["atDocumentStart"] as? Bool ?? false)
             }
+            prefetchId = (object["prefetchedSessionRequestId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             let version = (object["extensionVersion"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             logger.notice("attach_ok with \(scripts.count) user scripts, extension \(version ?? "unknown", privacy: .public)")
             onAttached?(Attached(html: html, userScripts: scripts, extensionVersion: version))
@@ -184,6 +229,14 @@ final class MirrorLink {
                 continuation.resume(throwing: AssetError.refused(object["error"] as? String ?? "unreadable"))
             }
         default:
+            if let prefetchId,
+               let message = object["message"] as? [String: Any],
+               message["type"] as? String == "response", message["requestId"] as? String == prefetchId
+            {
+                prefetched = object
+                if pageSessionRequestId != nil { deliverPrefetched() }
+                return
+            }
             onFrame?(String(decoding: line, as: UTF8.self))
         }
     }
@@ -209,16 +262,23 @@ final class MirrorLink {
 final class LineBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var data = Data()
+    /// Bytes of `data` already known to hold no newline, so a multi-megabyte line is scanned once, not once per chunk.
+    private var scanned = 0
 
     func append(_ chunk: Data) -> [Data] {
         lock.lock()
         defer { lock.unlock() }
         data.append(chunk)
         var lines: [Data] = []
-        while let newline = data.firstIndex(of: 0x0A) {
-            lines.append(data[data.startIndex..<newline])
-            data.removeSubrange(data.startIndex...newline)
+        var lineStart = data.startIndex
+        var searchFrom = data.startIndex + scanned
+        while let newline = data[searchFrom...].firstIndex(of: 0x0A) {
+            lines.append(Data(data[lineStart..<newline]))
+            lineStart = newline + 1
+            searchFrom = lineStart
         }
+        if lineStart > data.startIndex { data = Data(data[lineStart...]) }
+        scanned = data.count
         return lines
     }
 }

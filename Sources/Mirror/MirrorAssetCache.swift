@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import os
 
@@ -30,32 +31,31 @@ struct MirrorAssetCache {
         !component.isEmpty && component != "." && component != ".." && !component.contains("/") && !component.contains("\0")
     }
 
-    /// The on-disk name for an asset path: one flat file per path, with the MIME type kept beside it.
+    /// The on-disk name for an asset path: its SHA-256, so distinct paths never share a file.
     static func fileName(for path: String) -> String {
-        path.replacingOccurrences(of: "/", with: "__")
+        SHA256.hash(data: Data(path.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     private var versionDirectory: URL { root.appendingPathComponent(version, isDirectory: true) }
 
+    /// One file per asset: the MIME type, a newline, then the bytes, so the pair is written and read together.
     func load(path: String) -> (data: Data, mime: String)? {
-        let name = Self.fileName(for: path)
-        guard Self.isSafeComponent(name) else { return nil }
-        let file = versionDirectory.appendingPathComponent(name)
-        guard let data = try? Data(contentsOf: file),
-              let mime = try? String(contentsOf: file.appendingPathExtension("mime"), encoding: .utf8)
+        guard let stored = try? Data(contentsOf: versionDirectory.appendingPathComponent(Self.fileName(for: path))),
+              let newline = stored.firstIndex(of: 0x0A),
+              let mime = String(data: stored[..<newline], encoding: .utf8), !mime.isEmpty
         else { return nil }
-        return (data, mime)
+        return (Data(stored[stored.index(after: newline)...]), mime)
     }
 
     func store(path: String, data: Data, mime: String) {
-        let name = Self.fileName(for: path)
-        guard Self.isSafeComponent(name) else { return }
+        guard !mime.contains("\n") else { return }
         do {
             try evictOtherVersions()
             try FileManager.default.createDirectory(at: versionDirectory, withIntermediateDirectories: true)
-            let file = versionDirectory.appendingPathComponent(name)
-            try data.write(to: file, options: .atomic)
-            try mime.write(to: file.appendingPathExtension("mime"), atomically: true, encoding: .utf8)
+            var stored = Data(mime.utf8)
+            stored.append(0x0A)
+            stored.append(data)
+            try stored.write(to: versionDirectory.appendingPathComponent(Self.fileName(for: path)), options: .atomic)
         } catch {
             logger.error("store \(path, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }

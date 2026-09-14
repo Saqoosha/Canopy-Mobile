@@ -35,9 +35,15 @@ struct MirrorAssetCacheTests {
         #expect(new.load(path: "webview/index.css") != nil)
     }
 
-    @Test func aPathThatEscapesItsDirectoryIsRefused() {
-        #expect(MirrorAssetCache.isSafeComponent(MirrorAssetCache.fileName(for: "webview/index.js")))
-        #expect(!MirrorAssetCache.isSafeComponent(".."))
-        #expect(!MirrorAssetCache.isSafeComponent(""))
+    @Test func pathsThatFlattenAlikeStillGetTheirOwnFiles() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = try #require(MirrorAssetCache(version: "2.1.270", root: root))
+        cache.store(path: "a/b", data: Data("slash".utf8), mime: "text/plain")
+        cache.store(path: "a__b", data: Data("underscores".utf8), mime: "text/css")
+        cache.store(path: "a/b.mime", data: Data("mime-named".utf8), mime: "application/octet-stream")
+        #expect(cache.load(path: "a/b").map { String(decoding: $0.data, as: UTF8.self) } == "slash")
+        #expect(cache.load(path: "a/b")?.mime == "text/plain")
+        #expect(cache.load(path: "a__b").map { String(decoding: $0.data, as: UTF8.self) } == "underscores")
     }
 }

@@ -86,8 +86,15 @@ struct MirrorWebView: UIViewRepresentable {
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.isInspectable = true
+        webView.navigationDelegate = context.coordinator
         link.onFrame = { [weak webView] line in
-            webView?.evaluateJavaScript("window.postMessage(\(line),'*')")
+            // As a string literal, not source: JSON allows U+2028/2029 where JavaScript source does not.
+            guard let literal = try? JSONSerialization.data(withJSONObject: [line]),
+                  let array = String(data: literal, encoding: .utf8)
+            else { return }
+            webView?.evaluateJavaScript("window.postMessage(JSON.parse(\(array)[0]),'*')") { _, error in
+                if let error { logger.error("deliver failed: \(error.localizedDescription, privacy: .public)") }
+            }
         }
         webView.load(URLRequest(url: MirrorAssetSchemeHandler.entryURL))
         return webView
@@ -103,11 +110,20 @@ struct MirrorWebView: UIViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, WKScriptMessageHandler {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         weak var link: MirrorLink?
 
         init(link: MirrorLink) {
             self.link = link
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            logger.error("web content process terminated; reloading")
+            webView.reload()
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            logger.error("entry page failed to load: \(error.localizedDescription, privacy: .public)")
         }
 
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -117,7 +133,7 @@ struct MirrorWebView: UIViewRepresentable {
                     link?.send(body)
                 }
             case "consoleLog":
-                logger.debug("[js] \(String(describing: message.body), privacy: .public)")
+                logger.notice("[js] \(String(describing: message.body), privacy: .public)")
             case "canopyLink":
                 if let text = message.body as? String, let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased()) {
                     UIApplication.shared.open(url)
@@ -129,7 +145,7 @@ struct MirrorWebView: UIViewRepresentable {
     }
 }
 
-/// `WKUserContentController` retains its handlers; this breaks the cycle through the coordinator.
+/// `WKUserContentController` retains its handlers; a weak proxy keeps the coordinator collectable.
 @MainActor
 private final class WeakMessageProxy: NSObject, WKScriptMessageHandler {
     weak var target: (any WKScriptMessageHandler)?

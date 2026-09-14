@@ -80,6 +80,8 @@ struct SettingsView: View {
                     }
                     if !mirrorAddress.isEmpty {
                         Button("Forget This Mac", role: .destructive) {
+                            mirrorPasteError = nil
+                            guard !CanopyDemo.isEnabled else { return }
                             mirrorAddress = ""
                             KeychainHelper.delete(key: MirrorConnectionInfo.tokenKeychainKey)
                         }
@@ -87,7 +89,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Live mirror")
                 } footer: {
-                    Text("In Canopy on the Mac, open Settings › Mobile, turn on Live mirror and choose Copy Connection for iPhone. Both devices must be on the same tailnet.")
+                    Text("In Canopy on the Mac, open Settings › Mobile, turn on “Let the iPhone open live sessions” and choose Copy Connection for iPhone. Both devices must be on the same tailnet.")
                 }
                 if CanopyDemo.isEnabled {
                     Section {
@@ -120,23 +122,30 @@ struct SettingsView: View {
     /// is bound to a throwaway `@State` but the secret field keeps the real
     /// binding, so a keystroke during a demo run overwrote the simulator's
     /// stored secret and the next real launch could not authenticate.
-    private func pasteMirrorConnection() {
-        guard let info = MirrorConnectionInfo.parse(UIPasteboard.general.string ?? "") else {
-            mirrorPasteError = "The clipboard does not hold a Canopy connection."
-            return
-        }
-        guard KeychainHelper.save(key: MirrorConnectionInfo.tokenKeychainKey, value: info.token) == errSecSuccess else {
-            mirrorPasteError = "Could not store the password."
-            return
-        }
-        mirrorPasteError = nil
-        mirrorAddress = info.address
-    }
-
     private func commitSecret() {
         guard secretEdited, !CanopyDemo.isEnabled, !secret.isEmpty else { return }
         KeychainHelper.save(key: "rosterSecret", value: secret)
         hasStoredSecret = KeychainHelper.has(key: "rosterSecret")
         secretEdited = false
+    }
+
+    private func pasteMirrorConnection() {
+        guard let text = UIPasteboard.general.string, !text.isEmpty else {
+            mirrorPasteError = "Nothing to paste. Copy the connection in Canopy on the Mac, then allow the paste."
+            return
+        }
+        guard let info = MirrorConnectionInfo.parse(text) else {
+            mirrorPasteError = "That is not a Canopy connection (expected canopy-mirror://…)."
+            return
+        }
+        // Same guard as commitSecret: a demo run must not touch the real Keychain or address.
+        guard !CanopyDemo.isEnabled else { mirrorPasteError = nil; return }
+        let status = KeychainHelper.save(key: MirrorConnectionInfo.tokenKeychainKey, value: info.token)
+        guard status == errSecSuccess else {
+            mirrorPasteError = "Could not store the password (\(status))."
+            return
+        }
+        mirrorPasteError = nil
+        mirrorAddress = info.address
     }
 }

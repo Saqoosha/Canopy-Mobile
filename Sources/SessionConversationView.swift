@@ -345,7 +345,8 @@ struct SessionConversationView: View {
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                if !mirrorAddress.isEmpty {
+                // The Mac matches on resumeId; a row without one cannot attach.
+                if !mirrorAddress.isEmpty, resumeId != nil {
                     Button {
                         showingLive = true
                     } label: {

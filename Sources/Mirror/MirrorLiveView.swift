@@ -5,6 +5,7 @@ struct MirrorLiveView: View {
     let address: String
     let sessionId: String
     let title: String
+    /// nil reads the password the Settings paste stored in the Keychain.
     var token: String? = nil
 
     @Environment(\.dismiss) private var dismiss
@@ -63,7 +64,7 @@ final class MirrorLiveModel {
               let port = UInt16(address[address.index(after: colon)...]), port != 0,
               !address[..<colon].isEmpty
         else {
-            phase = .failed("Address must be <IPv4>:<port>")
+            phase = .failed("Address must be host:port")
             return
         }
         let link = MirrorLink(host: String(address[..<colon]), port: port, sessionId: sessionId, token: token)
@@ -84,7 +85,7 @@ final class MirrorLiveModel {
     }
 }
 
-/// `CANOPY_MIRROR_ATTACH="<IPv4>:<port>/<sessionId>"` (+ `CANOPY_MIRROR_TOKEN`) opens a live session at launch, for testing without UI.
+/// `CANOPY_MIRROR_ATTACH="<IPv4>:<port>/<sessionId>"` opens a live session at launch for testing; `CANOPY_MIRROR_TOKEN` overrides the stored password.
 struct LaunchMirror: Identifiable {
     let id = UUID()
     let address: String

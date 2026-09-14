@@ -37,6 +37,7 @@ final class MirrorLink {
     private var pendingAssets: [String: CheckedContinuation<(data: Data, mime: String), Error>] = [:]
     private var failed = false
     private var closed = false
+    private var waitingDeadline: Task<Void, Never>?
 
     init(host: String, port: UInt16, sessionId: String, token: String) {
         self.sessionId = sessionId
@@ -60,6 +61,7 @@ final class MirrorLink {
     func close() {
         guard !closed else { return }
         closed = true
+        waitingDeadline?.cancel()
         connection.cancel()
         failPendingAssets()
     }
@@ -74,7 +76,7 @@ final class MirrorLink {
     }
 
     func requestAsset(path: String) async throws -> (data: Data, mime: String) {
-        guard !closed else { throw AssetError.closed }
+        guard !closed, !failed else { throw AssetError.closed }
         let id = UUID().uuidString
         return try await withCheckedThrowingContinuation { continuation in
             pendingAssets[id] = continuation
@@ -85,11 +87,20 @@ final class MirrorLink {
     private func handle(_ state: NWConnection.State) {
         switch state {
         case .ready:
+            waitingDeadline?.cancel()
+            waitingDeadline = nil
             logger.notice("connected; attaching \(self.sessionId, privacy: .public)")
             send(["type": "attach", "sessionId": sessionId, "token": token])
             receive()
         case .waiting(let error):
-            fail("Waiting for the Mac: \(error.localizedDescription)")
+            // Transient: NWConnection keeps retrying. Give it 10 s (local-network prompt, VPN coming up) before failing.
+            logger.notice("waiting: \(error.localizedDescription, privacy: .public)")
+            guard waitingDeadline == nil else { return }
+            waitingDeadline = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(10))
+                guard !Task.isCancelled else { return }
+                self?.fail("Cannot reach the Mac: \(error.localizedDescription)")
+            }
         case .failed(let error):
             fail("Connection failed: \(error.localizedDescription)")
         default:
@@ -106,9 +117,16 @@ final class MirrorLink {
                     MainActor.assumeIsolated { lines.forEach(self.handleLine) }
                 }
             }
-            if error != nil || isComplete {
+            if let error {
+                logger.error("receive failed: \(error.localizedDescription, privacy: .public)")
                 DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self.fail("Disconnected from the Mac") }
+                    MainActor.assumeIsolated { self.fail("Disconnected from the Mac (\(error.localizedDescription))") }
+                }
+                return
+            }
+            if isComplete {
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { self.fail("The Mac closed the connection") }
                 }
                 return
             }
@@ -122,16 +140,20 @@ final class MirrorLink {
         else { return }
         switch object["type"] as? String {
         case "attach_ok":
+            guard let html = object["html"] as? String, !html.isEmpty else {
+                fail("The Mac sent an empty page. Update Canopy on the Mac.")
+                return
+            }
             let scripts = (object["userScripts"] as? [[String: Any]] ?? []).compactMap { entry -> (source: String, atDocumentStart: Bool)? in
                 guard let source = entry["source"] as? String else { return nil }
                 return (source, entry["atDocumentStart"] as? Bool ?? false)
             }
             logger.notice("attach_ok with \(scripts.count) user scripts")
-            onAttached?(Attached(html: object["html"] as? String ?? "", userScripts: scripts))
+            onAttached?(Attached(html: html, userScripts: scripts))
         case "attach_error":
             switch object["message"] as? String {
             case "unauthorized": fail("The Mac rejected the password. Copy the connection again from Canopy's Settings.")
-            case "no such session": fail("This session is not open on the Mac.")
+            case "no such session": fail("This session is not running on the Mac.")
             case let other: fail(other ?? "The Mac refused the connection.")
             }
         case "asset_response":
@@ -149,6 +171,7 @@ final class MirrorLink {
     private func fail(_ reason: String) {
         guard !failed, !closed else { return }
         failed = true
+        waitingDeadline?.cancel()
         logger.error("\(reason, privacy: .public)")
         connection.cancel()
         failPendingAssets()

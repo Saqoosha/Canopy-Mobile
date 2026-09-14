@@ -80,7 +80,14 @@ struct MirrorWebView: UIViewRepresentable {
         }
         let webView = prepared.webView
         webView.navigationDelegate = context.coordinator
+        let coordinator = context.coordinator
         link.onFrame = { [weak webView] line in
+            // The page cannot receive a postMessage until its own scripts run; frames that
+            // arrive first — the prefetched replay's own live events — wait for didFinish.
+            guard coordinator.pageIsReady else {
+                coordinator.queued.append(line)
+                return
+            }
             // As a string literal, not source: JSON allows U+2028/2029 where JavaScript source does not.
             guard let literal = try? JSONSerialization.data(withJSONObject: [line]),
                   let array = String(data: literal, encoding: .utf8)
@@ -89,6 +96,7 @@ struct MirrorWebView: UIViewRepresentable {
                 if let error { logger.error("deliver failed: \(error.localizedDescription, privacy: .public)") }
             }
         }
+        coordinator.deliver = link.onFrame
         webView.load(URLRequest(url: MirrorAssetSchemeHandler.entryURL))
         DispatchQueue.main.async { MirrorWebViewPool.warm() }
         return webView
@@ -106,9 +114,20 @@ struct MirrorWebView: UIViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         weak var link: MirrorLink?
+        /// Frames that arrived before the page could receive them, in the order the Mac sent them.
+        var queued: [String] = []
+        private(set) var pageIsReady = false
+        var deliver: ((String) -> Void)?
 
         init(link: MirrorLink) {
             self.link = link
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            pageIsReady = true
+            let waiting = queued
+            queued = []
+            waiting.forEach { deliver?($0) }
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {

@@ -42,6 +42,7 @@ final class MirrorLink {
     private var prefetchId: String?
     private var prefetched: [String: Any]?
     private var pageSessionRequestId: String?
+    private var abandonedPrefetchId: String?
     private var prefetchFallback: Task<Void, Never>?
     private var closed = false
     private var waitingDeadline: Task<Void, Never>?
@@ -78,13 +79,14 @@ final class MirrorLink {
         guard !closed else { return }
         closed = true
         waitingDeadline?.cancel()
+        prefetchFallback?.cancel()
         connection.cancel()
         failPendingAssets()
     }
 
     func send(_ object: [String: Any]) {
         if claimsPageSessionRequest(object) { return }
-        guard !closed, let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        guard !closed, !failed, let data = try? JSONSerialization.data(withJSONObject: object) else { return }
         connection.send(content: data + Data([0x0A]), completion: .contentProcessed { error in
             if let error {
                 logger.error("send failed: \(error.localizedDescription, privacy: .public)")
@@ -108,8 +110,10 @@ final class MirrorLink {
             // A prefetch the Mac never answers must not leave the page without its transcript.
             prefetchFallback = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(3))
-                guard !Task.isCancelled, let self, self.prefetchId != nil else { return }
+                guard !Task.isCancelled, let self, let pending = self.prefetchId else { return }
                 logger.error("prefetched replay did not arrive; asking the Mac directly")
+                // Remembered so a late arrival is dropped rather than handed to the page under an id it never issued.
+                self.abandonedPrefetchId = pending
                 self.prefetchId = nil
                 self.send(object)
             }
@@ -149,7 +153,7 @@ final class MirrorLink {
         case .ready:
             waitingDeadline?.cancel()
             logger.notice("connected; attaching \(self.sessionId, privacy: .public)")
-            send(["type": "attach", "sessionId": sessionId, "token": token])
+            send(["type": "attach", "sessionId": sessionId, "token": token, "prefetch": true])
             receive()
             // The Mac answers attach at once; a silent Mac would otherwise leave the view connecting forever.
             waitingDeadline = Task { [weak self] in
@@ -229,6 +233,12 @@ final class MirrorLink {
                 continuation.resume(throwing: AssetError.refused(object["error"] as? String ?? "unreadable"))
             }
         default:
+            if let abandoned = abandonedPrefetchId,
+               (object["message"] as? [String: Any])?["requestId"] as? String == abandoned
+            {
+                abandonedPrefetchId = nil
+                return
+            }
             if let prefetchId,
                let message = object["message"] as? [String: Any],
                message["type"] as? String == "response", message["requestId"] as? String == prefetchId
@@ -245,6 +255,7 @@ final class MirrorLink {
         guard !failed, !closed else { return }
         failed = true
         waitingDeadline?.cancel()
+        prefetchFallback?.cancel()
         logger.error("\(reason, privacy: .public)")
         connection.cancel()
         failPendingAssets()

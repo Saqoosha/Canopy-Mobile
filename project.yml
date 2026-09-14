@@ -50,6 +50,7 @@ targets:
         # Keychain, both Apple-provided — revisit if it ever ships crypto of
         # its own.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Canopy connects directly to your Mac to show a live session."
         # App Store validation rejects a bundle that declares no orientations
         # (error 90474) whenever TARGETED_DEVICE_FAMILY includes iPad, because
         # iPad multitasking needs all four. The generated Info.plist carries

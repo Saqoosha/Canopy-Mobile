@@ -18,6 +18,8 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var secretFieldFocused: Bool
     @State private var hasStoredSecret = false
+    @AppStorage("mirrorAddress") private var mirrorAddress = ""
+    @State private var mirrorPasteError: String?
 
     var body: some View {
         NavigationStack {
@@ -65,6 +67,28 @@ struct SettingsView: View {
                         }
                     }
                 }
+                Section {
+                    if mirrorAddress.isEmpty {
+                        Label("Not set up", systemImage: "rectangle.on.rectangle.slash")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Label(mirrorAddress, systemImage: "rectangle.on.rectangle")
+                    }
+                    Button("Paste Connection from Mac") { pasteMirrorConnection() }
+                    if let mirrorPasteError {
+                        Text(mirrorPasteError).font(.caption).foregroundStyle(.red)
+                    }
+                    if !mirrorAddress.isEmpty {
+                        Button("Forget This Mac", role: .destructive) {
+                            mirrorAddress = ""
+                            KeychainHelper.delete(key: MirrorConnectionInfo.tokenKeychainKey)
+                        }
+                    }
+                } header: {
+                    Text("Live mirror")
+                } footer: {
+                    Text("In Canopy on the Mac, open Settings › Mobile, turn on Live mirror and choose Copy Connection for iPhone. Both devices must be on the same tailnet.")
+                }
                 if CanopyDemo.isEnabled {
                     Section {
                         Label("Demo mode", systemImage: "iphone")
@@ -96,6 +120,19 @@ struct SettingsView: View {
     /// is bound to a throwaway `@State` but the secret field keeps the real
     /// binding, so a keystroke during a demo run overwrote the simulator's
     /// stored secret and the next real launch could not authenticate.
+    private func pasteMirrorConnection() {
+        guard let info = MirrorConnectionInfo.parse(UIPasteboard.general.string ?? "") else {
+            mirrorPasteError = "The clipboard does not hold a Canopy connection."
+            return
+        }
+        guard KeychainHelper.save(key: MirrorConnectionInfo.tokenKeychainKey, value: info.token) == errSecSuccess else {
+            mirrorPasteError = "Could not store the password."
+            return
+        }
+        mirrorPasteError = nil
+        mirrorAddress = info.address
+    }
+
     private func commitSecret() {
         guard secretEdited, !CanopyDemo.isEnabled, !secret.isEmpty else { return }
         KeychainHelper.save(key: "rosterSecret", value: secret)

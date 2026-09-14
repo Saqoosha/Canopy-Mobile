@@ -18,6 +18,8 @@ struct LiveFirstConversation<Offline: View>: View {
     @State private var attempt = 0
     /// Whether the live view was on screen when the app left the foreground.
     @State private var wasLiveInBackground = false
+    /// Until when a drop reported after returning from the background rebuilds live instead of falling back.
+    @State private var reconnectUntil: Date?
     @Environment(\.scenePhase) private var scenePhase
 
     private enum Fallback: Equatable {
@@ -27,11 +29,10 @@ struct LiveFirstConversation<Offline: View>: View {
 
     var body: some View {
         content
-            // iOS closes the socket while the app is in the background, but the app only
-            // hears about it after it is active again — after this handler has run. So a
-            // return from the background rebuilds the live view outright rather than
-            // waiting for the drop. Only when live was showing: the offline view may hold
-            // a half-typed reply, and rebuilding it would throw that away.
+            // iOS may close the socket while the app is in the background, and the app only
+            // hears about it once active again. For a few seconds after a return, a drop
+            // rebuilds the live view instead of falling back. Only a drop: a page whose link
+            // survived keeps its half-typed reply, and an offline view is never touched.
             .onChange(of: scenePhase) { _, phase in
                 switch phase {
                 case .background:
@@ -39,8 +40,7 @@ struct LiveFirstConversation<Offline: View>: View {
                 case .active:
                     guard wasLiveInBackground else { return }
                     wasLiveInBackground = false
-                    fallback = nil
-                    attempt += 1
+                    reconnectUntil = Date().addingTimeInterval(3)
                 default:
                     break
                 }
@@ -54,6 +54,11 @@ struct LiveFirstConversation<Offline: View>: View {
             MirrorLiveContent(target: live, sessionId: sessionId) { reason in
                 // A drop reported by a live view that has already been replaced.
                 guard current == attempt else { return }
+                if let until = reconnectUntil, Date() < until {
+                    reconnectUntil = nil
+                    attempt += 1
+                    return
+                }
                 fallback = .unavailable(reason)
             }
             .id(attempt)

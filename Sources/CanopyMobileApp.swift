@@ -635,8 +635,8 @@ struct CanopyMobileApp: App {
         let live = mirrorStore.target(for: target.machine)
         let title = pane?.title ?? target.title
         return LiveFirstConversation(
-            // The Mac matches on resumeId; a session without one cannot attach.
-            live: target.resumeId == nil ? nil : live,
+            // The Mac matches on resumeId; a session without one cannot attach, and one the roster reports as not live would only be refused.
+            live: (target.resumeId == nil || pane?.isLive == false) ? nil : live,
             sessionId: target.resumeId ?? target.sessionId,
             title: title
         ) { liveUnavailable in

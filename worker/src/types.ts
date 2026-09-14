@@ -14,6 +14,10 @@ export interface PaneRow {
   contextPct: number;
   model: string;
   messageCount: number;
+  /** True when the Mac runs a shim for this session, so an attach can
+   *  succeed. Absent from a Mac older than the flag. The relay does not read
+   *  it; recorded here because this file is the wire's documentation. */
+  live?: boolean;
 }
 
 /** What Canopy posts to /notify. */

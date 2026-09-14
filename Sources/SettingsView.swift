@@ -18,6 +18,9 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var secretFieldFocused: Bool
     @State private var hasStoredSecret = false
+    @AppStorage("mirrorAddress") private var mirrorAddress = ""
+    @AppStorage("mirrorMachine") private var mirrorMachine = ""
+    @State private var mirrorPasteError: String?
 
     var body: some View {
         NavigationStack {
@@ -65,6 +68,31 @@ struct SettingsView: View {
                         }
                     }
                 }
+                Section {
+                    if mirrorAddress.isEmpty {
+                        Label("Not set up", systemImage: "rectangle.on.rectangle.slash")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Label(mirrorAddress, systemImage: "rectangle.on.rectangle")
+                    }
+                    Button("Paste Connection from Mac") { pasteMirrorConnection() }
+                    if let mirrorPasteError {
+                        Text(mirrorPasteError).font(.caption).foregroundStyle(.red)
+                    }
+                    if !mirrorAddress.isEmpty {
+                        Button("Forget This Mac", role: .destructive) {
+                            mirrorPasteError = nil
+                            guard !CanopyDemo.isEnabled else { return }
+                            mirrorAddress = ""
+                            mirrorMachine = ""
+                            KeychainHelper.delete(key: MirrorConnectionInfo.tokenKeychainKey)
+                        }
+                    }
+                } header: {
+                    Text("Live mirror")
+                } footer: {
+                    Text("In Canopy on the Mac, open Settings › Mobile, turn on “Let the iPhone open live sessions” and choose Copy Connection for iPhone. Both devices must be on the same tailnet.")
+                }
                 if CanopyDemo.isEnabled {
                     Section {
                         Label("Demo mode", systemImage: "iphone")
@@ -101,5 +129,26 @@ struct SettingsView: View {
         KeychainHelper.save(key: "rosterSecret", value: secret)
         hasStoredSecret = KeychainHelper.has(key: "rosterSecret")
         secretEdited = false
+    }
+
+    private func pasteMirrorConnection() {
+        guard let text = UIPasteboard.general.string, !text.isEmpty else {
+            mirrorPasteError = "Nothing to paste. Copy the connection in Canopy on the Mac, then allow the paste."
+            return
+        }
+        guard let info = MirrorConnectionInfo.parse(text) else {
+            mirrorPasteError = "That is not a Canopy connection (expected canopy-mirror://…)."
+            return
+        }
+        // Same guard as commitSecret: a demo run must not touch the real Keychain or address.
+        guard !CanopyDemo.isEnabled else { mirrorPasteError = nil; return }
+        let status = KeychainHelper.save(key: MirrorConnectionInfo.tokenKeychainKey, value: info.token)
+        guard status == errSecSuccess else {
+            mirrorPasteError = "Could not store the password (\(status))."
+            return
+        }
+        mirrorPasteError = nil
+        mirrorAddress = info.address
+        mirrorMachine = info.machine
     }
 }

@@ -61,6 +61,7 @@ struct CanopyMobileApp: App {
     /// the field on a demo run cannot rewrite the real stored URL.
     @State private var demoURL = "https://demo.invalid"
     @State private var showingSettings = false
+    @State private var launchMirror: LaunchMirror? = LaunchMirror.fromEnvironment()
 
     // ONE destination for the whole app. A roster row, a History row and a
     // notification tap all push `SessionConversationView` for the same
@@ -171,6 +172,9 @@ struct CanopyMobileApp: App {
                 .sheet(isPresented: $showingSettings) {
                     SettingsView(rosterUrl: CanopyDemo.isEnabled ? $demoURL : $rosterUrl, secret: $secret)
                 }
+            }
+            .fullScreenCover(item: $launchMirror) { launch in
+                MirrorLiveView(address: launch.address, sessionId: launch.sessionId, title: "Live", token: launch.token)
             }
             .task {
                 // BEFORE the refresh, not after: a tap that arrived while this

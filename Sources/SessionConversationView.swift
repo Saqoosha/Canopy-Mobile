@@ -97,6 +97,9 @@ struct SessionConversationView: View {
     /// "asking". A nil pane draws no dot — grey means idle in this palette,
     /// and "the roster doesn't list it" is not idle.
     let pane: PaneRow?
+    @AppStorage("mirrorAddress") private var mirrorAddress = ""
+    @AppStorage("mirrorMachine") private var mirrorMachine = ""
+    @State private var showingLive = false
     /// Throwing, because a decision that was not recorded has to reach the
     /// card that offered it. See `MessageBlock.decide`.
     let onDecision: (NotificationHistoryItem, String) async throws -> Void
@@ -338,7 +341,22 @@ struct SessionConversationView: View {
         .background(Color(.systemGroupedBackground))
         .safeAreaInset(edge: .bottom) { composer }
         .navigationBarTitleDisplayMode(.inline)
+        .fullScreenCover(isPresented: $showingLive) {
+            MirrorLiveView(address: mirrorAddress, sessionId: resumeId ?? sessionId, title: title)
+        }
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                // The Mac matches on resumeId; a row without one cannot attach. Only the paired Mac's sessions
+                // (an older Mac sends no machine id, and is then offered everywhere as before).
+                if !mirrorAddress.isEmpty, resumeId != nil, mirrorMachine.isEmpty || mirrorMachine == machine {
+                    Button {
+                        showingLive = true
+                    } label: {
+                        Image(systemName: "rectangle.on.rectangle")
+                    }
+                    .accessibilityLabel("Open live session")
+                }
+            }
             ToolbarItem(placement: .principal) {
                 // Ticks so the elapsed figure advances while you read. Only
                 // the header is inside it — wrapping the transcript would

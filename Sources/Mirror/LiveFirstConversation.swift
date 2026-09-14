@@ -14,6 +14,10 @@ struct LiveFirstConversation<Offline: View>: View {
     @ViewBuilder let offline: (_ liveUnavailable: String?) -> Offline
 
     @State private var fallback: Fallback?
+    /// Bumped to rebuild the live view with a fresh link; iOS closes the socket while the app is in the background.
+    @State private var attempt = 0
+    @State private var wasInBackground = false
+    @Environment(\.scenePhase) private var scenePhase
 
     private enum Fallback: Equatable {
         case unavailable(String)
@@ -21,10 +25,37 @@ struct LiveFirstConversation<Offline: View>: View {
     }
 
     var body: some View {
+        content
+            // iOS closes the socket while the app is in the background, but the app only
+            // hears about it after it is active again — after this handler has run. So
+            // a return from the background rebuilds the live view outright rather than
+            // waiting for the drop; a view the user switched to offline themselves stays.
+            .onChange(of: scenePhase) { _, phase in
+                switch phase {
+                case .background:
+                    wasInBackground = true
+                case .active:
+                    let dropped: Bool
+                    if case .unavailable = fallback { dropped = true } else { dropped = false }
+                    guard wasInBackground || dropped else { return }
+                    wasInBackground = false
+                    if fallback != .chosen {
+                        fallback = nil
+                        attempt += 1
+                    }
+                default:
+                    break
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         if let live, fallback == nil {
             MirrorLiveContent(target: live, sessionId: sessionId) { reason in
                 fallback = .unavailable(reason)
             }
+            .id(attempt)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

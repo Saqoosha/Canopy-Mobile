@@ -40,7 +40,13 @@ struct LiveFirstConversation<Offline: View>: View {
                 case .active:
                     guard wasLiveInBackground else { return }
                     wasLiveInBackground = false
-                    reconnectUntil = Date().addingTimeInterval(3)
+                    if case .unavailable = fallback {
+                        // The drop was delivered before this handler ran.
+                        fallback = nil
+                        attempt += 1
+                    } else {
+                        reconnectUntil = Date().addingTimeInterval(3)
+                    }
                 default:
                     break
                 }

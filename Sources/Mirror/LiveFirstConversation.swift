@@ -4,9 +4,10 @@ import SwiftUI
 ///
 /// Both are the same screen on the stack: the live attempt runs first and, on
 /// any failure or drop, the offline view takes its place with the reason on a
-/// banner. The offline view's own Live button remains the way to retry.
+/// banner; the toolbar button switches to it without one. The offline view's
+/// own Live button retries in a cover.
 struct LiveFirstConversation<Offline: View>: View {
-    /// nil when no paste covers this Mac or the session cannot be attached (no `resumeId`).
+    /// The caller passes nil when no paste covers this Mac or the session has no `resumeId` to attach by.
     let live: MirrorTarget?
     let sessionId: String
     let title: String

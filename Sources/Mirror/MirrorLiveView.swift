@@ -26,7 +26,7 @@ struct MirrorLiveView: View {
 struct MirrorLiveContent: View {
     let target: MirrorTarget
     let sessionId: String
-    /// Called once when the connection fails or drops; nil keeps the failure on screen instead.
+    /// Called once when the attach cannot start, fails or drops; nil keeps the failure on screen instead.
     let onUnavailable: ((String) -> Void)?
 
     @State private var model = MirrorLiveModel()
@@ -101,7 +101,7 @@ final class MirrorLiveModel {
     }
 }
 
-/// `CANOPY_MIRROR_ATTACH="<IPv4>:<port>/<sessionId>"` opens a live session at launch for testing; `CANOPY_MIRROR_TOKEN` supplies the password.
+/// `CANOPY_MIRROR_ATTACH="<IPv4>:<port>/<sessionId>"` opens a live session at launch for testing; without `CANOPY_MIRROR_TOKEN` nothing opens.
 struct LaunchMirror: Identifiable {
     let id = UUID()
     let address: String

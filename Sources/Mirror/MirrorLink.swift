@@ -38,6 +38,7 @@ final class MirrorLink {
     private var failed = false
     private var closed = false
     private var waitingDeadline: Task<Void, Never>?
+    private var lastWaitingError: NWError?
 
     init(host: String, port: UInt16, sessionId: String, token: String) {
         self.sessionId = sessionId
@@ -55,12 +56,13 @@ final class MirrorLink {
                 MainActor.assumeIsolated { self?.handle(state) }
             }
         }
-        // Runs from the first packet, not from `.waiting`: a Mac with no listener leaves the
-        // connection in `.preparing` and reports neither `.waiting` nor `.failed` (measured).
+        // Armed before the connection opens, not on `.waiting`: a tailnet Mac with no listener stayed
+        // in `.preparing` for 25 s+ without reporting `.waiting` or `.failed` (measured 2026-09-14).
         waitingDeadline = Task { [weak self] in
             try? await Task.sleep(for: .seconds(10))
-            guard !Task.isCancelled else { return }
-            self?.fail("Cannot reach the Mac: no answer in 10 s.")
+            guard !Task.isCancelled, let self else { return }
+            let detail = self.lastWaitingError?.localizedDescription ?? "no answer in 10 s"
+            self.fail("Cannot reach the Mac: \(detail).")
         }
         connection.start(queue: queue)
     }
@@ -111,6 +113,7 @@ final class MirrorLink {
             }
         case .waiting(let error):
             // Transient: NWConnection keeps retrying under the deadline `start()` armed.
+            lastWaitingError = error
             logger.notice("waiting: \(error.localizedDescription, privacy: .public)")
         case .failed(let error):
             fail("Connection failed: \(error.localizedDescription)")

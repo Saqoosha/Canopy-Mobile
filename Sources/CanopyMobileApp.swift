@@ -66,10 +66,9 @@ struct CanopyMobileApp: App {
     @State private var mirrorStore = MirrorConnectionStore(defaults: CanopyDemo.isEnabled ? nil : .standard)
 
     // ONE destination for the whole app. A roster row, a History row and a
-    // notification tap all push `SessionConversationView` for the same
-    // session, so there is a single place that shows what a session has said
-    // and a single place to answer it — including an unanswered permission
-    // ask, which renders Allow/Deny inline in that stream. The reply sheet
+    // notification tap all push `LiveFirstConversation` for the same session:
+    // the Mac's own view when it answers, `SessionConversationView` otherwise
+    // — the latter renders an unanswered permission ask as Allow/Deny inline. The reply sheet
     // and the notification detail this replaced were two more screens saying
     // subsets of the same thing, and keeping them in step was already a
     // review finding once.
@@ -641,9 +640,9 @@ struct CanopyMobileApp: App {
         ) { liveUnavailable in
             offlineConversation(target, pane: pane, title: title, live: live, liveUnavailable: liveUnavailable)
         }
-        // Recorded here rather than inside the view so the view keeps no
-        // opinion about the app's socket table — it asks, and something else
-        // decides whether the ask can be delivered yet.
+        // Recorded on the wrapper, live branch included, so `SessionConversationView`
+        // keeps no opinion about the app's socket table — it asks, and something
+        // else decides whether the ask can be delivered yet.
         //
         // Cleared only when the id still matches. SwiftUI runs the incoming
         // view's `onAppear` before the outgoing view's `onDisappear` when one

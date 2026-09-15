@@ -632,11 +632,12 @@ struct CanopyMobileApp: App {
         // this session right now — and looking it up separately invited them
         // to answer it differently.
         let pane = livePane(for: target)
-        let live = mirrorStore.target(for: target.machine)
+        // The Mac matches on resumeId; a session without one cannot attach, and one the roster reports as not live would only be refused.
+        // Nil for BOTH views, so the offline screen offers no Live button either.
+        let live = (target.resumeId == nil || pane?.isLive == false) ? nil : mirrorStore.target(for: target.machine)
         let title = pane?.title ?? target.title
         return LiveFirstConversation(
-            // The Mac matches on resumeId; a session without one cannot attach.
-            live: target.resumeId == nil ? nil : live,
+            live: live,
             sessionId: target.resumeId ?? target.sessionId,
             title: title
         ) { liveUnavailable in

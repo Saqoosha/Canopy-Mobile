@@ -16,7 +16,7 @@ enum CanopyDemo {
         let time = Int(now.timeIntervalSince1970)
         func pane(_ id: String, _ title: String, _ project: String, _ state: String, _ seconds: Int) -> PaneRow {
             PaneRow(sessionId: id, resumeId: id, paneIndex: 0, title: title, project: project,
-                    state: state, stateSince: time - seconds, contextPct: 24, model: "Claude", messageCount: 12)
+                    state: state, stateSince: time - seconds, contextPct: 24, model: "Claude", messageCount: 12, live: nil)
         }
         return [
             "studio": MachineSnapshot(machineId: "studio", displayName: "Mac Studio", publishedAt: time - 2,
@@ -90,7 +90,7 @@ enum CanopyDemo {
                 return PaneRow(sessionId: pane.sessionId, resumeId: pane.resumeId, paneIndex: pane.paneIndex,
                                title: pane.title, project: pane.project, state: "working",
                                stateSince: Int(Date.now.timeIntervalSince1970), contextPct: pane.contextPct,
-                               model: pane.model, messageCount: pane.messageCount)
+                               model: pane.model, messageCount: pane.messageCount, live: pane.live)
             }
             machines[item.machine] = MachineSnapshot(machineId: snapshot.machineId, displayName: snapshot.displayName,
                                                     publishedAt: snapshot.publishedAt, sessionPct: snapshot.sessionPct,

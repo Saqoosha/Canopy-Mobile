@@ -16,6 +16,10 @@ struct PaneRow: Codable, Identifiable, Equatable {
     let contextPct: Int
     let model: String
     let messageCount: Int
+    /// Whether the Mac can accept a live attach for this session right now.
+    /// Nil from a Mac older than the flag, read as true so nothing changes there.
+    let live: Bool?
+    var isLive: Bool { live ?? true }
 
     var id: String { sessionId }
 }

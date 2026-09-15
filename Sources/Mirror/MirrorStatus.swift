@@ -6,8 +6,7 @@ import Foundation
 /// thresholds there. Only a Mac told `"status": true` at attach sends it; from an
 /// older Mac the line never arrives and the bar stays hidden.
 ///
-/// The line also carries `model` and `messageCount`; the phone does not draw them, so they
-/// are not read.
+/// The line's raw context numbers are for a Mac's mirror pane and are not read here.
 struct MirrorStatus: Equatable {
     enum ContextLevel: String {
         case unknown, ok, warn, compact, blocked

@@ -158,7 +158,7 @@ wake のコストに乗らない。
 
 - **イベントストリーム**: push は届くが、ストリームのイベントが 1 件も来ない。push は `/notify` の HTTP POST で WebSocket を使わないので、**push だけ生きているのがこの形の指紋**
 - **画像**: レンチ行は出るのに、画像 Read の行にサムネイルが付かない。R2 にも何も上がっていない。**ストリームは生きていて、画像の半分だけ無い** —— 2.30.0 はストリームを持つが画像を持たない
-- **ライブ画面のステータスバー**（🌿 branch / 86K/967K 8%）: ページは出るのに、入力欄の下に何も無い。これは Mac が `status` 行を送っていない —— 2.38.0 までは送らない。電話は attach で `"status": true` と頼み、知らない Mac はその項目を無視する。行が来なければバーは出ない（空の帯は出さない）。行の中身は Mac の `StatusBarData` が計算した表示用の値（`contextWindow` / `contextPct` / `contextLevel`）で、閾値の計算は電話に持ち込まない。model と messageCount は乗せない（入力欄がモデルを出す）。**Mac 側の検証はループバックで足りる**: Debug ビルドを `open -n --env CANOPY_MIRROR_LISTEN=127.0.0.1` で立てると、リリース版の Tailscale アドレスとぶつからずに同じポートで待ち受ける。シミュレータは Mac の 127.0.0.1 に届くので、`SIMCTL_CHILD_CANOPY_MIRROR_ATTACH=127.0.0.1:8770/<sessionId>` で実機なしに確かめられる
+- **ライブ画面のステータスバー**（🌿 branch / 86K/967K 8%）: ページは出るのに、入力欄の下に何も無い。これは Mac が `status` 行を送っていない —— 2.38.0 までは送らない。電話は attach で `"status": true` と頼み、知らない Mac はその項目を無視する。行が来なければバーは出ない（空の帯は出さない）。行の中身は Mac の `StatusBarData` が計算した表示用の値（`contextWindow` / `contextPct` / `contextLevel`）で、閾値の計算は電話に持ち込まない。model と messageCount は乗せない（入力欄がモデルを出す）。**Mac 側の検証はループバックで足りる**: Debug ビルドを `open -n --env CANOPY_MIRROR_LISTEN=127.0.0.1` で立てると、リリース版の Tailscale アドレスとぶつからずに同じポートで待ち受ける。シミュレータは Mac の 127.0.0.1 に届くので、`SIMCTL_CHILD_CANOPY_MIRROR_ATTACH=127.0.0.1:8770/<sessionId>` と `SIMCTL_CHILD_CANOPY_MIRROR_TOKEN=<Mac の mirror password>` を付けて `simctl launch` すれば実機なしに確かめられる（token が無いと何も開かない）
 
 **確認**: まず走っているのがどのバイナリか。`/Applications/Canopy.app` ならリリース版で、ブランチの機能は入っていない。次に Mac 側で `[event]` のログ行を見る。roster の接続行があるのに `[event]` が 0 なら送信側。
 
@@ -444,7 +444,7 @@ git rebase origin/main --update-refs
 
 | | |
 |---|---|
-| Swift テスト | 183（2026-09-15 実測） |
+| Swift テスト | 184（2026-09-15 実測） |
 | worker テスト | 137（2026-09-11 実測） |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 | DO の append 1 件 | 248 rows_read（3 つの上限すべて満杯、2026-09-11 実測）/ 210（生きているセッション 1 本） |

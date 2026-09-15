@@ -63,12 +63,22 @@ struct MirrorStatusTests {
 
     /// A level this build has no name for must not hide the meter or read as fine.
     @Test func anUnknownLevelFallsBackToThePercentage() throws {
+        for (pct, tint) in [(85, MirrorStatus.Tint.alert), (80, .alert), (79, .warn), (50, .warn), (49, .calm)] {
+            var frame = Self.line
+            frame["contextLevel"] = "critical"
+            frame["contextPct"] = pct
+            let status = try #require(MirrorStatus(frame: frame))
+            #expect(status.contextLevel == .unknown)
+            #expect(status.tint == tint, "\(pct)%")
+        }
+    }
+
+    @Test func aRemoteHostAloneStillDraws() throws {
         var frame = Self.line
-        frame["contextLevel"] = "critical"
-        frame["contextPct"] = 85
-        let status = try #require(MirrorStatus(frame: frame))
-        #expect(status.contextLevel == .unknown)
-        #expect(status.tint == .alert)
+        frame["branch"] = ""
+        frame["contextWindow"] = 0
+        frame["remoteHost"] = "studio"
+        #expect(try #require(MirrorStatus(frame: frame)).isEmpty == false)
     }
 
     @Test func tintFollowsTheLevelWhenKnown() throws {

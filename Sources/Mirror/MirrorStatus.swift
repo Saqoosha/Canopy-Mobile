@@ -39,7 +39,7 @@ struct MirrorStatus: Equatable {
         // A level this build does not know reads as `.unknown`, whose tint falls back to the percentage.
         self.contextLevel = ContextLevel(rawValue: frame["contextLevel"] as? String ?? "") ?? .unknown
         self.didCompact = frame["didCompact"] as? Bool ?? false
-        self.remoteHost = frame["remoteHost"] as? String
+        self.remoteHost = (frame["remoteHost"] as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     var hasContext: Bool { contextWindow > 0 }

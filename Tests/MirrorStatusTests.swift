@@ -79,6 +79,24 @@ struct MirrorStatusTests {
         frame["contextWindow"] = 0
         frame["remoteHost"] = "studio"
         #expect(try #require(MirrorStatus(frame: frame)).isEmpty == false)
+        frame["remoteHost"] = ""
+        let blank = try #require(MirrorStatus(frame: frame))
+        #expect(blank.remoteHost == nil)
+        #expect(blank.isEmpty)
+    }
+
+    @MainActor
+    @Test func theLinkHandsAStatusLineToOnStatusAndNotToThePage() throws {
+        let link = MirrorLink(host: "127.0.0.1", port: 1, sessionId: "s", token: "t")
+        var statuses: [MirrorStatus] = []
+        var frames: [String] = []
+        link.onStatus = { statuses.append($0) }
+        link.onFrame = { frames.append($0) }
+        link.handleLine(try JSONSerialization.data(withJSONObject: Self.line))
+        link.handleLine(Data(#"{"type":"from-extension","message":{"type":"x"}}"#.utf8))
+        #expect(statuses.map(\.branch) == ["mbp-session-view-sync"])
+        #expect(frames.count == 1)
+        #expect(frames.first?.contains("from-extension") == true)
     }
 
     @Test func tintFollowsTheLevelWhenKnown() throws {

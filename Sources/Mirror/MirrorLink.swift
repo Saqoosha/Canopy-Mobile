@@ -215,7 +215,7 @@ final class MirrorLink {
         }
     }
 
-    private func handleLine(_ line: Data) {
+    func handleLine(_ line: Data) {
         guard !line.isEmpty,
               let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any]
         else { return }

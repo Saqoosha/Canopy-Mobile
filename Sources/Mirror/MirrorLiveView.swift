@@ -47,8 +47,17 @@ struct MirrorLiveContent: View {
             ProgressView("Connecting to \(target.address)…")
         case .attached(let attached):
             if let link = model.link {
-                MirrorWebView(link: link, attached: attached)
-                    .ignoresSafeArea(.container, edges: .bottom)
+                // Under the page's composer, where the Mac draws it. Absent until a Mac that sends
+                // it does, and while the line has nothing to draw (no repo, no window yet).
+                let status = model.status.flatMap { $0.isEmpty ? nil : $0 }
+                VStack(spacing: 0) {
+                    MirrorWebView(link: link, attached: attached)
+                    if let status {
+                        MirrorStatusBar(status: status)
+                    }
+                }
+                // The page reaches the screen's bottom edge only while nothing sits under it.
+                .ignoresSafeArea(.container, edges: status == nil ? .bottom : [])
             }
         case .failed(let reason):
             ContentUnavailableView("Can't open live session", systemImage: "wifi.exclamationmark", description: Text(reason))
@@ -67,6 +76,8 @@ final class MirrorLiveModel {
 
     private(set) var phase: Phase = .connecting
     private(set) var link: MirrorLink?
+    /// The Mac's status bar; nil until the first `status` line, so an older Mac shows none.
+    private(set) var status: MirrorStatus?
 
     var failure: String? {
         if case .failed(let reason) = phase { return reason }
@@ -91,6 +102,9 @@ final class MirrorLiveModel {
             guard let self else { return }
             if case .failed = self.phase { return }
             self.phase = .failed(reason)
+        }
+        link.onStatus = { [weak self] status in
+            self?.status = status
         }
         self.link = link
         link.start()

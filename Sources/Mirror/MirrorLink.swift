@@ -29,6 +29,8 @@ final class MirrorLink {
     var onAttached: ((Attached) -> Void)?
     /// A webview frame, as the raw JSON text of its line.
     var onFrame: ((String) -> Void)?
+    /// The Mac's status bar, on attach and after every change; never called by an older Mac.
+    var onStatus: ((MirrorStatus) -> Void)?
     var onFailure: ((String) -> Void)?
 
     nonisolated(unsafe) private let connection: NWConnection
@@ -168,7 +170,7 @@ final class MirrorLink {
         case .ready:
             waitingDeadline?.cancel()
             logger.notice("connected; attaching \(self.sessionId, privacy: .public)")
-            send(["type": "attach", "sessionId": sessionId, "token": token, "prefetch": true])
+            send(["type": "attach", "sessionId": sessionId, "token": token, "prefetch": true, "status": true])
             receive()
             // The Mac answers attach at once; a silent Mac would otherwise leave the view connecting forever.
             waitingDeadline = Task { [weak self] in
@@ -240,6 +242,13 @@ final class MirrorLink {
             case "no such session": fail("This session is not running on the Mac.")
             case let other: fail(other ?? "The Mac refused the connection.")
             }
+        case "status":
+            // Not a webview frame: it is read here and never posted into the page.
+            guard let status = MirrorStatus(frame: object) else {
+                logger.error("status line missing fields; ignored")
+                return
+            }
+            onStatus?(status)
         case "asset_response":
             guard let id = object["id"] as? String, let continuation = pendingAssets.removeValue(forKey: id) else { return }
             if let base64 = object["base64"] as? String, let data = Data(base64Encoded: base64) {

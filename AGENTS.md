@@ -159,6 +159,7 @@ wake のコストに乗らない。
 - **イベントストリーム**: push は届くが、ストリームのイベントが 1 件も来ない。push は `/notify` の HTTP POST で WebSocket を使わないので、**push だけ生きているのがこの形の指紋**
 - **画像**: レンチ行は出るのに、画像 Read の行にサムネイルが付かない。R2 にも何も上がっていない。**ストリームは生きていて、画像の半分だけ無い** —— 2.30.0 はストリームを持つが画像を持たない
 - **ライブ画面のステータスバー**（🌿 branch / 86K/967K 8%）: ページは出るのに、入力欄の下に何も無い。これは Mac が `status` 行を送っていない —— 2.38.0 までは送らない。電話は attach で `"status": true` と頼み、知らない Mac はその項目を無視する。行が来なければバーは出ない（空の帯は出さない）。行の中身は Mac の `StatusBarData` が計算した表示用の値（`contextWindow` / `contextPct` / `contextLevel`）で、閾値の計算は電話に持ち込まない。model と messageCount は乗せない（入力欄がモデルを出す）。**Mac 側の検証はループバックで足りる**: Debug ビルドを `open -n --env CANOPY_MIRROR_LISTEN=127.0.0.1` で立てると、リリース版の Tailscale アドレスとぶつからずに同じポートで待ち受ける。シミュレータは Mac の 127.0.0.1 に届くので、`SIMCTL_CHILD_CANOPY_MIRROR_ATTACH=127.0.0.1:8770/<sessionId>` と `SIMCTL_CHILD_CANOPY_MIRROR_TOKEN=<Mac の mirror password>` を付けて `simctl launch` すれば実機なしに確かめられる（token が無いと何も開かない）
+- **ミラー回線の圧縮**（Canopy PR #238、2026-09-19 に main へマージ、2.40.0 の次のリリースから）: 電話は attach で `"compress": "br"` と頼み、Mac は 4 KB 以上で Brotli が縮める行だけを `Z <n> <m>\n` + n バイト（展開後 m バイト、末尾改行なし）で送る。attach_ok 自身もその対象。電話は `attach_ok` の echo を見ず**先頭バイトで判定する**ので、知らない Mac は素の行を送り続けて同じ経路を通る。Mac 側の `MirrorWire` を `Sources/Mirror/MirrorLink.swift` に写してある —— ヘッダの上限（24 バイト）、行の上限（16 MiB）、`m + 1` バイト確保して「ちょうど m」でなければ拒否、まで同じ。壊れたフレームは 1 件でも接続を閉じる（スキップしない）。閉じた理由は `framer refused the stream: …` / `a Z payload did not decode …` のログに出る。**16 MiB の行上限はこの PR で電話に入った新しい失敗**: Mac は Mac クライアント向け replay だけ `mirrorReplayMaxBytes`（12 MiB）に収め、電話向けは「最後の 10 ターン」で切るだけなので、その 10 ターンが 16 MiB を超えるセッションは電話で開けない（以前は無制限に受けていた）。直し場所は Mac 側（電話向けもバイト fit する）。**圧縮されたかは `MirrorLink` の `received a N-byte line (M on the wire)` で見る** —— 1 MiB 以上の行だけ出るので、対象は実質 replay。N == M なら Mac が圧縮していない。**ループバック rig はやっていない**（2026-09-19、単体テストが Mac 生成の fixture で通ったので見送り）。やるなら Canopy 側セッションが踏んだ点: attach は**生きた shim を持つセッション**にしか通らないので、起動前に `defaults write sh.saqoo.Canopy.debug canopy.sessionRestore.v1 -data <hex>` で launch-restore snapshot（実在の local resumeId、`resumeIdIsExistingTranscript: true`）を植え、`-ApplePersistenceIgnoreState YES` を付けて起動する。token は keychain の generic password、service `sh.saqoo.Canopy.mirror`（`security find-generic-password -s ... -w` をファイルに落とす、echo しない）。`~/Library/Application Support/Canopy/settings.json` はリリース版と**共有**なので、Debug 版を立てる前に `canopy.rosterEnabled` を false にしないと同じ machine id で roster を取り合う —— バックアップして戻す。終わったら `defaults delete sh.saqoo.Canopy.debug canopy.sessionRestore.v1`（SIGTERM で書き戻される）。Mac 側の実測: attach_ok 245 KB → 70 KB、replay 2,367,315 → 739,948（3.20×）
 
 **確認**: まず走っているのがどのバイナリか。`/Applications/Canopy.app` ならリリース版で、ブランチの機能は入っていない。次に Mac 側で `[event]` のログ行を見る。roster の接続行があるのに `[event]` が 0 なら送信側。
 
@@ -444,7 +445,7 @@ git rebase origin/main --update-refs
 
 | | |
 |---|---|
-| Swift テスト | 185（2026-09-15 実測） |
+| Swift テスト | 197（2026-09-19 実測） |
 | worker テスト | 137（2026-09-11 実測） |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 | DO の append 1 件 | 248 rows_read（3 つの上限すべて満杯、2026-09-11 実測）/ 210（生きているセッション 1 本） |

@@ -1,3 +1,4 @@
+import Compression
 import Foundation
 import Network
 import os
@@ -170,7 +171,10 @@ final class MirrorLink {
         case .ready:
             waitingDeadline?.cancel()
             logger.notice("connected; attaching \(self.sessionId, privacy: .public)")
-            send(["type": "attach", "sessionId": sessionId, "token": token, "prefetch": true, "status": true])
+            // `compress`: the prefetched replay is one line of a megabyte or more, and that line is what
+            // a slow uplink spends its time on. A Mac without Canopy PR #238 ignores the key and keeps sending plain lines.
+            send(["type": "attach", "sessionId": sessionId, "token": token, "prefetch": true, "status": true,
+                  "compress": MirrorWire.compressionName])
             receive()
             // The Mac answers attach at once; a silent Mac would otherwise leave the view connecting forever.
             waitingDeadline = Task { [weak self] in
@@ -192,10 +196,31 @@ final class MirrorLink {
     nonisolated private func receive() {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { [weak self] data, _, isComplete, error in
             guard let self else { return }
-            let lines = data.map { self.buffer.append($0) } ?? []
-            if !lines.isEmpty {
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { lines.forEach(self.handleLine) }
+            if let data, !data.isEmpty {
+                // The log names the cause; the user's message does not, since none of them is theirs to fix.
+                func refuse(_ cause: String) {
+                    logger.error("\(cause, privacy: .public); closing")
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated { self.fail("The Mac sent a line the app cannot read.") }
+                    }
+                }
+                guard let frames = self.buffer.append(data) else {
+                    refuse("framer refused the stream: \(self.buffer.refusal ?? "unknown")")
+                    return
+                }
+                guard let lines = MirrorWire.lines(from: frames) else {
+                    refuse("a Z payload did not decode to its promised length, or the batch would exceed \(MirrorWire.maxBatchBytes) bytes")
+                    return
+                }
+                // In practice the transcript replay; the wire count is the proof the Mac compressed it.
+                for (frame, line) in zip(frames, lines) where line.count >= 1 << 20 {
+                    let wire = if case .compressed(let payload, _) = frame { payload.count } else { line.count }
+                    logger.notice("received a \(line.count, privacy: .public)-byte line (\(wire, privacy: .public) on the wire)")
+                }
+                if !lines.isEmpty {
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated { lines.forEach(self.handleLine) }
+                    }
                 }
             }
             if let error {
@@ -316,27 +341,151 @@ final class MirrorLink {
     }
 }
 
-/// Accumulates socket bytes and yields complete newline-terminated lines.
+/// The bytes on a mirror socket: NDJSON, with large lines optionally sent compressed.
+///
+/// A plain frame is one JSON object followed by `\n`. A compressed frame is the header
+/// `Z <n> <m>\n` followed by exactly `n` bytes of Brotli (`Compression`'s `COMPRESSION_BROTLI`)
+/// that decode to the `m`-byte JSON object, no trailing newline. `Z` cannot begin a JSON value,
+/// so the first byte tells the two apart. The Mac sends `Z` frames only to a client whose
+/// `attach` carried `"compress": "br"`, and only for lines of 4 KB or more that Brotli shrinks;
+/// the phone decodes by first byte rather than by the `attach_ok` echo, so a Mac that never
+/// compresses (before Canopy PR #238) runs the same code path. Mirrors `MirrorWire` in the Canopy repo.
+enum MirrorWire {
+    /// The value of the `compress` key both sides exchange at attach (HTTP's token for Brotli).
+    static let compressionName = "br"
+
+    /// The JSON line inside a `Z` frame's payload, or nil when the bytes do not decode to
+    /// exactly `rawCount` bytes. Re-checks the size limit the framer already applied, since
+    /// a `Frame` can be built by hand.
+    static func decode(compressed payload: Data, rawCount: Int) -> Data? {
+        guard rawCount >= 0, rawCount <= LineBuffer.maxLineBytes else { return nil }
+        guard rawCount > 0 else { return payload.isEmpty ? Data() : nil }
+        // Guards `baseAddress!` below; no test can pin it, since an empty Data decodes to 0 bytes here anyway.
+        guard !payload.isEmpty else { return nil }
+        // One spare byte, so a stream longer than `rawCount` writes past it and fails the
+        // equality whatever the codec reports for an undersized destination.
+        let capacity = rawCount + 1
+        var out = Data(count: capacity)
+        let written = out.withUnsafeMutableBytes { dst in
+            payload.withUnsafeBytes { src in
+                compression_decode_buffer(
+                    dst.bindMemory(to: UInt8.self).baseAddress!, capacity,
+                    src.bindMemory(to: UInt8.self).baseAddress!, payload.count,
+                    nil, COMPRESSION_BROTLI)
+            }
+        }
+        guard written == rawCount else { return nil }
+        out.count = rawCount
+        return out
+    }
+
+    /// What one batch of frames may decode to in total: a 14-byte Brotli stream is 16 MiB of zeros, so
+    /// without this a 1 MiB chunk could ask for terabytes. A Mac sends one replay per attach, so four
+    /// maximum lines in one chunk is a peer that is not Canopy.
+    static let maxBatchBytes = 4 * LineBuffer.maxLineBytes
+
+    /// The JSON lines the frames carry, decoding compressed ones on the way; nil when a
+    /// payload does not decode or the batch would exceed `maxBatchBytes`, on which the
+    /// caller closes rather than skips.
+    static func lines(from frames: [LineBuffer.Frame]) -> [Data]? {
+        var lines: [Data] = []
+        lines.reserveCapacity(frames.count)
+        var total = 0
+        for frame in frames {
+            switch frame {
+            case .line(let data):
+                total += data.count
+                guard total <= maxBatchBytes else { return nil }
+                lines.append(data)
+            case .compressed(let payload, let rawCount):
+                // Counted from the header, before allocating for it.
+                total += rawCount
+                guard total <= maxBatchBytes else { return nil }
+                guard let line = decode(compressed: payload, rawCount: rawCount) else { return nil }
+                lines.append(line)
+            }
+        }
+        return lines
+    }
+}
+
+/// Accumulates socket bytes and yields complete frames: newline-terminated lines, or the
+/// payload of a `Z` frame once all of it has arrived.
 final class LineBuffer: @unchecked Sendable {
+    enum Frame: Equatable {
+        /// One JSON line, newline stripped.
+        case line(Data)
+        /// A `Z` frame's Brotli bytes and the line length its header promised, for `MirrorWire.decode`.
+        case compressed(Data, rawCount: Int)
+    }
+
+    /// The Mac client's bound. The Mac fits a Mac client's replay under it (`ShimProcess.mirrorReplayMaxBytes`,
+    /// 12 MiB) but not yet a phone's, so a session whose last 10 typed turns exceed it closes the link here.
+    static let maxLineBytes = 16 << 20
+    /// 20 bytes holds `Z <8 digits> <8 digits>\n`; 24 leaves slack.
+    static let maxHeaderBytes = 24
     private let lock = NSLock()
     private var data = Data()
-    /// Bytes of `data` already known to hold no newline, so a multi-megabyte line is scanned once, not once per chunk.
+    /// Bytes at the head of `data` already known to hold no newline, so a multi-megabyte plain
+    /// line is scanned once, not once per chunk. Reset whenever the head is consumed.
     private var scanned = 0
+    private var lastRefusal: String?
+    /// Why the last `append` returned nil, for the caller's log.
+    var refusal: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastRefusal
+    }
 
-    func append(_ chunk: Data) -> [Data] {
+    /// Complete frames, or nil once the stream is unusable: a line or `Z` length over
+    /// `maxLineBytes`, or a malformed `Z` header. The offending bytes stay at the head, so
+    /// every later call is nil too; the caller closes the connection.
+    func append(_ chunk: Data) -> [Frame]? {
         lock.lock()
         defer { lock.unlock() }
         data.append(chunk)
-        var lines: [Data] = []
-        var lineStart = data.startIndex
-        var searchFrom = data.startIndex + scanned
-        while let newline = data[searchFrom...].firstIndex(of: 0x0A) {
-            lines.append(Data(data[lineStart..<newline]))
-            lineStart = newline + 1
-            searchFrom = lineStart
+        var frames: [Frame] = []
+        var head = data.startIndex
+        // One copy per append however many frames it yielded, not one per frame (a 1 MiB chunk of 100-byte lines is 10,000 frames).
+        defer { if head > data.startIndex { data = Data(data[head...]) } }
+        while head < data.endIndex {
+            if data[head] == UInt8(ascii: "Z") {
+                // `Z <n> <m>\n` then n bytes, counted: a pending payload costs a 24-byte header
+                // parse per chunk, not a scan — and the payload is binary, so it may hold 0x0A itself.
+                let window = data[head..<min(head + Self.maxHeaderBytes, data.endIndex)]
+                guard let headerEnd = window.firstIndex(of: 0x0A) else {
+                    if window.count >= Self.maxHeaderBytes { return refuse("no newline within \(Self.maxHeaderBytes) bytes of a Z header") }
+                    break
+                }
+                let header = String(decoding: data[head..<headerEnd], as: UTF8.self)
+                let fields = header.split(separator: " ", omittingEmptySubsequences: false)
+                guard fields.count == 3, fields[0] == "Z",
+                      let count = Int(fields[1]), count >= 0, count <= Self.maxLineBytes,
+                      let rawCount = Int(fields[2]), rawCount >= 0, rawCount <= Self.maxLineBytes
+                else { return refuse("malformed Z header \"\(header)\"") }
+                let payloadStart = headerEnd + 1
+                guard data.endIndex - payloadStart >= count else { break }
+                let payloadEnd = payloadStart + count
+                frames.append(.compressed(Data(data[payloadStart..<payloadEnd]), rawCount: rawCount))
+                head = payloadEnd
+                scanned = 0
+                continue
+            }
+            guard let newline = data[(head + scanned)...].firstIndex(of: 0x0A) else {
+                if data.endIndex - head > Self.maxLineBytes { return refuse("plain line over \(Self.maxLineBytes) bytes") }
+                scanned = data.endIndex - head
+                break
+            }
+            guard newline - head <= Self.maxLineBytes else { return refuse("plain line of \(newline - head) bytes") }
+            frames.append(.line(Data(data[head..<newline])))
+            head = newline + 1
+            scanned = 0
         }
-        if lineStart > data.startIndex { data = Data(data[lineStart...]) }
-        scanned = data.count
-        return lines
+        return frames
+    }
+
+    private func refuse(_ reason: String) -> [Frame]? {
+        lastRefusal = reason
+        return nil
     }
 }

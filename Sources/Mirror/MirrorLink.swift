@@ -197,11 +197,19 @@ final class MirrorLink {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let data, !data.isEmpty {
-                guard let frames = self.buffer.append(data), let lines = MirrorWire.lines(from: frames) else {
-                    logger.error("unreadable frame (over \(LineBuffer.maxLineBytes) bytes, or a bad Z header or payload); closing")
+                // The log names the cause; the user's message does not, since none of them is theirs to fix.
+                func refuse(_ cause: String) {
+                    logger.error("\(cause, privacy: .public); closing")
                     DispatchQueue.main.async {
-                        MainActor.assumeIsolated { self.fail("The Mac sent a line the app cannot read. Update the app.") }
+                        MainActor.assumeIsolated { self.fail("The Mac sent a line the app cannot read.") }
                     }
+                }
+                guard let frames = self.buffer.append(data) else {
+                    refuse("framer refused the stream: \(self.buffer.refusal ?? "unknown")")
+                    return
+                }
+                guard let lines = MirrorWire.lines(from: frames) else {
+                    refuse("a Z payload did not decode to the length its header promised")
                     return
                 }
                 // In practice the transcript replay; the wire count is the proof the Mac compressed it.
@@ -352,6 +360,7 @@ enum MirrorWire {
     static func decode(compressed payload: Data, rawCount: Int) -> Data? {
         guard rawCount >= 0, rawCount <= LineBuffer.maxLineBytes else { return nil }
         guard rawCount > 0 else { return payload.isEmpty ? Data() : nil }
+        // Guards `baseAddress!` below; no test can pin it, since an empty Data decodes to 0 bytes here anyway.
         guard !payload.isEmpty else { return nil }
         // One spare byte, so a stream longer than `rawCount` writes past it and fails the
         // equality whatever the codec reports for an undersized destination.
@@ -398,7 +407,8 @@ final class LineBuffer: @unchecked Sendable {
         case compressed(Data, rawCount: Int)
     }
 
-    /// Above the largest legitimate line (a base64 `index.js`, ~7 MB); a line or a `Z` length past it ends the stream.
+    /// The Mac client's bound. The Mac fits a Mac client's replay under it (`ShimProcess.mirrorReplayMaxBytes`,
+    /// 12 MiB) but not yet a phone's, so a session whose last 10 typed turns exceed it closes the link here.
     static let maxLineBytes = 16 << 20
     /// 20 bytes holds `Z <8 digits> <8 digits>\n`; 24 leaves slack.
     static let maxHeaderBytes = 24
@@ -407,6 +417,13 @@ final class LineBuffer: @unchecked Sendable {
     /// Bytes at the head of `data` already known to hold no newline, so a multi-megabyte plain
     /// line is scanned once, not once per chunk. Reset whenever the head is consumed.
     private var scanned = 0
+    private var lastRefusal: String?
+    /// Why the last `append` returned nil, for the caller's log.
+    var refusal: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastRefusal
+    }
 
     /// Complete frames, or nil once the stream is unusable: a line or `Z` length over
     /// `maxLineBytes`, or a malformed `Z` header. The offending bytes stay at the head, so
@@ -416,38 +433,47 @@ final class LineBuffer: @unchecked Sendable {
         defer { lock.unlock() }
         data.append(chunk)
         var frames: [Frame] = []
-        while !data.isEmpty {
-            if data[data.startIndex] == UInt8(ascii: "Z") {
+        var head = data.startIndex
+        // One copy per append however many frames it yielded, not one per frame (a 1 MiB chunk of 100-byte lines is 10,000 frames).
+        defer { if head > data.startIndex { data = Data(data[head...]) } }
+        while head < data.endIndex {
+            if data[head] == UInt8(ascii: "Z") {
                 // `Z <n> <m>\n` then n bytes, counted: a pending payload costs a 24-byte header
                 // parse per chunk, not a scan — and the payload is binary, so it may hold 0x0A itself.
-                guard let headerEnd = data.prefix(Self.maxHeaderBytes).firstIndex(of: 0x0A) else {
-                    if data.count >= Self.maxHeaderBytes { return nil }
+                let window = data[head..<min(head + Self.maxHeaderBytes, data.endIndex)]
+                guard let headerEnd = window.firstIndex(of: 0x0A) else {
+                    if window.count >= Self.maxHeaderBytes { return refuse("no newline within \(Self.maxHeaderBytes) bytes of a Z header") }
                     break
                 }
-                let fields = String(decoding: data[data.startIndex..<headerEnd], as: UTF8.self)
-                    .split(separator: " ", omittingEmptySubsequences: false)
+                let header = String(decoding: data[head..<headerEnd], as: UTF8.self)
+                let fields = header.split(separator: " ", omittingEmptySubsequences: false)
                 guard fields.count == 3, fields[0] == "Z",
                       let count = Int(fields[1]), count >= 0, count <= Self.maxLineBytes,
                       let rawCount = Int(fields[2]), rawCount >= 0, rawCount <= Self.maxLineBytes
-                else { return nil }
-                let payloadStart = data.index(after: headerEnd)
-                guard data.distance(from: payloadStart, to: data.endIndex) >= count else { break }
-                let payloadEnd = data.index(payloadStart, offsetBy: count)
+                else { return refuse("malformed Z header \"\(header)\"") }
+                let payloadStart = headerEnd + 1
+                guard data.endIndex - payloadStart >= count else { break }
+                let payloadEnd = payloadStart + count
                 frames.append(.compressed(Data(data[payloadStart..<payloadEnd]), rawCount: rawCount))
-                data = Data(data[payloadEnd...])
+                head = payloadEnd
                 scanned = 0
                 continue
             }
-            guard let newline = data[(data.startIndex + scanned)...].firstIndex(of: 0x0A) else {
-                if data.count > Self.maxLineBytes { return nil }
-                scanned = data.count
+            guard let newline = data[(head + scanned)...].firstIndex(of: 0x0A) else {
+                if data.endIndex - head > Self.maxLineBytes { return refuse("plain line over \(Self.maxLineBytes) bytes") }
+                scanned = data.endIndex - head
                 break
             }
-            guard data.distance(from: data.startIndex, to: newline) <= Self.maxLineBytes else { return nil }
-            frames.append(.line(Data(data[data.startIndex..<newline])))
-            data = Data(data[(newline + 1)...])
+            guard newline - head <= Self.maxLineBytes else { return refuse("plain line of \(newline - head) bytes") }
+            frames.append(.line(Data(data[head..<newline])))
+            head = newline + 1
             scanned = 0
         }
         return frames
+    }
+
+    private func refuse(_ reason: String) -> [Frame]? {
+        lastRefusal = reason
+        return nil
     }
 }

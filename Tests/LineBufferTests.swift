@@ -40,6 +40,15 @@ struct LineBufferTests {
         #expect(Date().timeIntervalSince(start) < 1.0)
     }
 
+    /// The other shape: one chunk, many lines. Copying the tail once per line took 1.3 s here (measured 2026-09-19).
+    @Test func manySmallLinesInOneChunkAreFramedInLinearTime() throws {
+        let chunk = Data(String(repeating: String(repeating: "x", count: 99) + "\n", count: 10_000).utf8)
+        let start = Date()
+        let frames = try #require(LineBuffer().append(chunk))
+        #expect(frames.count == 10_000)
+        #expect(Date().timeIntervalSince(start) < 1.0)
+    }
+
     @Test func theMacsFixtureFrameDecodesToItsLine() throws {
         #expect(Self.fixturePayload.count == 71)
         let buffer = LineBuffer()
@@ -91,9 +100,11 @@ struct LineBufferTests {
     }
 
     @Test func aMalformedHeaderEndsTheStreamAndStaysEnded() {
-        for header in ["Z 5\n", "Z x 9\n", "Z -1 4\n", "Z 4 -1\n", "Z 4 4 4\n", "Zebra\n", "Z 16777217 1\n", "Z 1 16777217\n"] {
+        for header in ["Z 5\n", "Z x 9\n", "Z -1 4\n", "Z 4 -1\n", "Z 4 4 4\n", "Zebra\n", "ZZ 3 5\n", "Z  5 6\n", "Z 5 6 \n",
+                       "Z 16777217 1\n", "Z 1 16777217\n", "Z 00000000000000000071 5400\n"] {
             let buffer = LineBuffer()
             #expect(buffer.append(Data(header.utf8)) == nil, Comment(rawValue: header))
+            #expect(buffer.refusal?.isEmpty == false, Comment(rawValue: header))
             #expect(buffer.append(Data("{\"x\":1}\n".utf8)) == nil, "after \(header)")
         }
     }
@@ -102,6 +113,17 @@ struct LineBufferTests {
         let buffer = LineBuffer()
         #expect(buffer.append(Data("Z 12345678 1234".utf8)) == [])
         #expect(buffer.append(Data("5678 extra".utf8)) == nil)
+        // Exactly 24 bytes is the last chance for the newline.
+        #expect(LineBuffer().append(Data("Z 12345678 12345678 wxy".utf8)) == [])
+        #expect(LineBuffer().append(Data("Z 12345678 12345678 wxyz".utf8)) == nil)
+    }
+
+    /// `maxLineBytes` itself is legal, on the plain path and in both header fields.
+    @Test func theExactLimitIsAccepted() throws {
+        let plain = LineBuffer()
+        #expect(plain.append(Data(repeating: 0x61, count: LineBuffer.maxLineBytes)) == [])
+        #expect(try #require(plain.append(Data([0x0A]))).map { if case .line(let d) = $0 { d.count } else { -1 } } == [LineBuffer.maxLineBytes])
+        #expect(LineBuffer().append(Data("Z 16777216 16777216\n".utf8)) == [])
     }
 
     @Test func aPayloadThatDoesNotDecodeToTheHeadersLengthIsRefused() throws {
@@ -110,8 +132,12 @@ struct LineBufferTests {
         #expect(MirrorWire.decode(compressed: Self.fixturePayload, rawCount: 5401) == nil)
         #expect(MirrorWire.decode(compressed: Data("not brotli".utf8), rawCount: 10) == nil)
         #expect(MirrorWire.decode(compressed: Data(), rawCount: 10) == nil)
-        #expect(MirrorWire.decode(compressed: Self.fixturePayload, rawCount: LineBuffer.maxLineBytes + 1) == nil)
+        #expect(MirrorWire.decode(compressed: Self.fixturePayload, rawCount: 0) == nil)
         #expect(MirrorWire.lines(from: [.compressed(Self.fixturePayload, rawCount: 5399)]) == nil)
+        // A payload that really expands past the bound, so the bound is what refuses it and not the length check.
+        let oversize = try #require(Self.brotli(Data(count: LineBuffer.maxLineBytes + 1)))
+        #expect(oversize.count < 100)
+        #expect(MirrorWire.decode(compressed: oversize, rawCount: LineBuffer.maxLineBytes + 1) == nil)
     }
 
     @Test func aPlainLineOverTheLimitEndsTheStream() {
@@ -120,11 +146,12 @@ struct LineBufferTests {
     }
 
     private static func brotli(_ line: Data) -> Data? {
-        var out = Data(count: line.count)
+        let capacity = max(line.count, 64)
+        var out = Data(count: capacity)
         let written = out.withUnsafeMutableBytes { dst in
             line.withUnsafeBytes { src in
                 compression_encode_buffer(
-                    dst.bindMemory(to: UInt8.self).baseAddress!, line.count,
+                    dst.bindMemory(to: UInt8.self).baseAddress!, capacity,
                     src.bindMemory(to: UInt8.self).baseAddress!, line.count,
                     nil, COMPRESSION_BROTLI)
             }

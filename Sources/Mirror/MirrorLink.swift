@@ -209,7 +209,7 @@ final class MirrorLink {
                     return
                 }
                 guard let lines = MirrorWire.lines(from: frames) else {
-                    refuse("a Z payload did not decode to the length its header promised")
+                    refuse("a Z payload did not decode to its promised length, or the batch would exceed \(MirrorWire.maxBatchBytes) bytes")
                     return
                 }
                 // In practice the transcript replay; the wire count is the proof the Mac compressed it.
@@ -379,16 +379,28 @@ enum MirrorWire {
         return out
     }
 
+    /// What one batch of frames may decode to in total: a 14-byte Brotli stream is 16 MiB of zeros, so
+    /// without this a 1 MiB chunk could ask for terabytes. A Mac sends one replay per attach, so four
+    /// maximum lines in one chunk is a peer that is not Canopy.
+    static let maxBatchBytes = 4 * LineBuffer.maxLineBytes
+
     /// The JSON lines the frames carry, decoding compressed ones on the way; nil when a
-    /// payload does not decode, on which the caller closes rather than skips.
+    /// payload does not decode or the batch would exceed `maxBatchBytes`, on which the
+    /// caller closes rather than skips.
     static func lines(from frames: [LineBuffer.Frame]) -> [Data]? {
         var lines: [Data] = []
         lines.reserveCapacity(frames.count)
+        var total = 0
         for frame in frames {
             switch frame {
             case .line(let data):
+                total += data.count
+                guard total <= maxBatchBytes else { return nil }
                 lines.append(data)
             case .compressed(let payload, let rawCount):
+                // Counted from the header, before allocating for it.
+                total += rawCount
+                guard total <= maxBatchBytes else { return nil }
                 guard let line = decode(compressed: payload, rawCount: rawCount) else { return nil }
                 lines.append(line)
             }

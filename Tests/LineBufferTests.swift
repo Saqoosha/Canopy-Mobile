@@ -140,6 +140,19 @@ struct LineBufferTests {
         #expect(MirrorWire.decode(compressed: oversize, rawCount: LineBuffer.maxLineBytes + 1) == nil)
     }
 
+    /// Frames are bounded one by one, so a batch of maximum frames is bounded in total too; a few
+    /// dozen wire bytes must not become gigabytes of memory.
+    @Test func aBatchThatWouldDecodePastTheBatchLimitIsRefused() throws {
+        let zeros = Data(count: LineBuffer.maxLineBytes)
+        let payload = try #require(Self.brotli(zeros))
+        #expect(payload.count < 100)
+        let frame = LineBuffer.Frame.compressed(payload, rawCount: LineBuffer.maxLineBytes)
+        #expect(MirrorWire.lines(from: Array(repeating: frame, count: 4))?.count == 4)
+        #expect(MirrorWire.lines(from: Array(repeating: frame, count: 5)) == nil)
+        // Plain lines count toward the same total.
+        #expect(MirrorWire.lines(from: Array(repeating: frame, count: 4) + [.line(Data([0x7B]))]) == nil)
+    }
+
     @Test func aPlainLineOverTheLimitEndsTheStream() {
         let buffer = LineBuffer()
         #expect(buffer.append(Data(repeating: 0x61, count: LineBuffer.maxLineBytes + 1)) == nil)

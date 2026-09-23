@@ -454,11 +454,11 @@ struct SessionConversationView: View {
                     // as one inserted newline. A paste adds more than one
                     // character, so it cannot be mistaken for this.
                     .onChange(of: draft) { old, new in
-                        guard sendWithReturn else { return }
                         if shiftReturnPending {
                             shiftReturnPending = false
                             return
                         }
+                        guard sendWithReturn else { return }
                         guard new.count == old.count + 1,
                               new.filter({ $0 == "\n" }).count == old.filter({ $0 == "\n" }).count + 1
                         else { return }

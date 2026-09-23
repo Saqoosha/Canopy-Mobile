@@ -113,7 +113,7 @@ struct MirrorWebView: UIViewRepresentable {
         webView.evaluateJavaScript(Self.sendWithReturnScript(sendWithReturn))
     }
 
-    private static func sendWithReturnScript(_ on: Bool) -> String {
+    fileprivate static func sendWithReturnScript(_ on: Bool) -> String {
         "window.__canopyReturnSends=\(on)"
     }
 
@@ -146,6 +146,8 @@ struct MirrorWebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             pageIsReady = true
+            // A reload re-runs the document-start script with the value from when the view opened.
+            webView.evaluateJavaScript(MirrorWebView.sendWithReturnScript(sendWithReturn))
             let waiting = queued
             queued = []
             waiting.forEach { deliver?($0) }
@@ -225,14 +227,15 @@ enum MirrorWebViewPool {
         ))
         // The page sends on a bare Enter, and the on-screen Return is one. With the setting
         // off, Return inserts the line break Shift+Enter would; Cmd+Return still sends.
-        // Only the contenteditable composer — the page's plain inputs keep their own Enter.
+        // Only the contenteditable composer — the page's plain inputs keep their own Enter,
+        // and an open slash / @ menu (a listbox) keeps Return as its pick.
         // An Enter the page does handle drops the keyboard once it has sent: the page gives no
         // send signal, so "the composer emptied" stands in for one. A menu pick (slash, @) leaves
         // text behind and keeps the keyboard up.
         ucc.addUserScript(WKUserScript(
             source: """
             addEventListener('focusin',e=>{if(e.target.isContentEditable)e.target.enterKeyHint=window.__canopyReturnSends?'send':'enter'},true);
-            addEventListener('keydown',e=>{const t=e.target;if(e.key!=='Enter'||e.shiftKey||e.altKey||e.isComposing||e.keyCode===229||!t.isContentEditable)return;if(!window.__canopyReturnSends&&!e.metaKey&&!e.ctrlKey){e.preventDefault();e.stopImmediatePropagation();document.execCommand('insertLineBreak');return}if(!t.textContent.trim())return;const sent=()=>{if(document.activeElement===t&&!t.textContent.trim())t.blur()};setTimeout(sent,50);setTimeout(sent,300)},true)
+            addEventListener('keydown',e=>{const t=e.target;if(e.key!=='Enter'||e.shiftKey||e.altKey||e.isComposing||e.keyCode===229||!t.isContentEditable)return;if(!window.__canopyReturnSends&&!e.metaKey&&!e.ctrlKey&&!document.querySelector('[role=listbox]')){e.preventDefault();e.stopImmediatePropagation();document.execCommand('insertLineBreak');return}if(e.metaKey||e.ctrlKey||!t.textContent.trim())return;const sent=()=>{if(document.activeElement===t&&!t.textContent.trim())t.blur()};setTimeout(sent,50);setTimeout(sent,300)},true)
             """,
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true

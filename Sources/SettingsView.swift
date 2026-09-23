@@ -23,6 +23,7 @@ struct SettingsView: View {
     @FocusState private var secretFieldFocused: Bool
     @State private var hasStoredSecret = false
     @State private var mirrorPasteError: String?
+    @AppStorage("sendWithReturn") private var sendWithReturn = false
 
     var body: some View {
         NavigationStack {
@@ -102,6 +103,13 @@ struct SettingsView: View {
                     Text("Live mirror")
                 } footer: {
                     Text("In Canopy on the Mac, open Settings › Mobile, turn on “Let the iPhone open live sessions” and choose Copy Connection for iPhone. Each Mac is stored separately; a session opens live when its Mac answers, and shows the last known conversation when it does not. Both devices must be on the same tailnet.")
+                }
+                Section {
+                    Toggle("Send with Return", isOn: $sendWithReturn)
+                } header: {
+                    Text("Composer")
+                } footer: {
+                    Text("Return sends the reply instead of starting a new line. Shift+Return on a hardware keyboard always starts a new line.")
                 }
                 if CanopyDemo.isEnabled {
                     Section {

@@ -202,10 +202,11 @@ enum MirrorWebViewPool {
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         ))
-        // The subagents pill wraps the composer toolbar onto a second row at phone width.
+        // The subagents pill wraps the composer toolbar onto a second row at phone width;
+        // wider layouts (iPad) have room and keep it.
         // Matched by its data attribute: the class name carries a per-build hash.
         ucc.addUserScript(WKUserScript(
-            source: "document.head.appendChild(Object.assign(document.createElement('style'),{textContent:'button[data-agents-dot]{display:none!important}'}))",
+            source: "document.head.appendChild(Object.assign(document.createElement('style'),{textContent:'@media (max-width:600px){button[data-agents-dot]{display:none!important}}'}))",
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         ))

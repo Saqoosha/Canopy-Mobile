@@ -202,6 +202,13 @@ enum MirrorWebViewPool {
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         ))
+        // The subagents pill wraps the composer toolbar onto a second row at phone width.
+        // Matched by its data attribute: the class name carries a per-build hash.
+        ucc.addUserScript(WKUserScript(
+            source: "document.head.appendChild(Object.assign(document.createElement('style'),{textContent:'button[data-agents-dot]{display:none!important}'}))",
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        ))
         let proxy = WeakMessageProxy()
         for name in MirrorWebView.handlerNames {
             ucc.add(proxy, name: name)

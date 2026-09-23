@@ -59,6 +59,8 @@ final class MirrorAssetSchemeHandler: NSObject, WKURLSchemeHandler {
 struct MirrorWebView: UIViewRepresentable {
     let link: MirrorLink
     let attached: MirrorLink.Attached
+    /// Settings › Composer. Off turns the page's Return-sends into a newline.
+    let sendWithReturn: Bool
 
     static let handlerNames = ["vscodeHost", "consoleLog", "canopyLink", "canopyInputWidth"]
 
@@ -71,6 +73,8 @@ struct MirrorWebView: UIViewRepresentable {
         prepared.handler.cache = MirrorAssetCache(version: attached.extensionVersion)
         prepared.proxy.target = context.coordinator
         let ucc = prepared.webView.configuration.userContentController
+        ucc.addUserScript(WKUserScript(source: Self.sendWithReturnScript(sendWithReturn), injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        context.coordinator.sendWithReturn = sendWithReturn
         for script in attached.userScripts {
             ucc.addUserScript(WKUserScript(
                 source: script.source,
@@ -103,7 +107,15 @@ struct MirrorWebView: UIViewRepresentable {
         return webView
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {}
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        guard context.coordinator.sendWithReturn != sendWithReturn else { return }
+        context.coordinator.sendWithReturn = sendWithReturn
+        webView.evaluateJavaScript(Self.sendWithReturnScript(sendWithReturn))
+    }
+
+    private static func sendWithReturnScript(_ on: Bool) -> String {
+        "window.__canopyReturnSends=\(on)"
+    }
 
     static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
         for name in handlerNames {
@@ -120,6 +132,7 @@ struct MirrorWebView: UIViewRepresentable {
         /// Frames that arrived before the page could receive them, in the order the Mac sent them.
         var queued: [String] = []
         private(set) var pageIsReady = false
+        var sendWithReturn = false
         var deliver: ((String) -> Void)?
 
         init(link: MirrorLink) {
@@ -208,6 +221,20 @@ enum MirrorWebViewPool {
         ucc.addUserScript(WKUserScript(
             source: "document.head.appendChild(Object.assign(document.createElement('style'),{textContent:'@media (max-width:600px){button[data-agents-dot]{display:none!important}}'}))",
             injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        ))
+        // The page sends on a bare Enter, and the on-screen Return is one. With the setting
+        // off, Return inserts the line break Shift+Enter would; Cmd+Return still sends.
+        // Only the contenteditable composer — the page's plain inputs keep their own Enter.
+        // An Enter the page does handle drops the keyboard once it has sent: the page gives no
+        // send signal, so "the composer emptied" stands in for one. A menu pick (slash, @) leaves
+        // text behind and keeps the keyboard up.
+        ucc.addUserScript(WKUserScript(
+            source: """
+            addEventListener('focusin',e=>{if(e.target.isContentEditable)e.target.enterKeyHint=window.__canopyReturnSends?'send':'enter'},true);
+            addEventListener('keydown',e=>{const t=e.target;if(e.key!=='Enter'||e.shiftKey||e.altKey||e.isComposing||e.keyCode===229||!t.isContentEditable)return;if(!window.__canopyReturnSends&&!e.metaKey&&!e.ctrlKey){e.preventDefault();e.stopImmediatePropagation();document.execCommand('insertLineBreak');return}if(!t.textContent.trim())return;const sent=()=>{if(document.activeElement===t&&!t.textContent.trim())t.blur()};setTimeout(sent,50);setTimeout(sent,300)},true)
+            """,
+            injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         ))
         let proxy = WeakMessageProxy()

@@ -132,6 +132,10 @@ struct SessionConversationView: View {
     @State private var sending = false
     @State private var sendError: String?
     @FocusState private var composerFocused: Bool
+    /// Settings › Composer. Off keeps Return a newline on the on-screen keyboard.
+    @AppStorage("sendWithReturn") private var sendWithReturn = false
+    /// Set by a hardware Shift+Return so the newline it inserts is not taken for a send.
+    @State private var shiftReturnPending = false
 
     /// Anchor for the scroll-to-bottom that runs on open and after every
     /// append. A fixed id on an empty view beats scrolling to the last item:
@@ -434,13 +438,33 @@ struct SessionConversationView: View {
                     // did nothing but add a line. Return sends; Shift+Return
                     // keeps the newline, so a multi-line reply is still
                     // typeable from a real keyboard.
+                    .submitLabel(sendWithReturn ? .send : .return)
                     .onKeyPress(keys: [.return], phases: .down) { press in
-                        if press.modifiers.contains(.shift) { return .ignored }
+                        if press.modifiers.contains(.shift) {
+                            shiftReturnPending = true
+                            return .ignored
+                        }
                         guard !sending,
                               !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         else { return .handled }
                         Task { await send() }
                         return .handled
+                    }
+                    // The on-screen Return never reaches onKeyPress; it arrives
+                    // as one inserted newline. A paste adds more than one
+                    // character, so it cannot be mistaken for this.
+                    .onChange(of: draft) { old, new in
+                        guard sendWithReturn else { return }
+                        if shiftReturnPending {
+                            shiftReturnPending = false
+                            return
+                        }
+                        guard new.count == old.count + 1,
+                              new.filter({ $0 == "\n" }).count == old.filter({ $0 == "\n" }).count + 1
+                        else { return }
+                        draft = old
+                        guard !sending, !old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                        Task { await send() }
                     }
                 Button {
                     Task { await send() }

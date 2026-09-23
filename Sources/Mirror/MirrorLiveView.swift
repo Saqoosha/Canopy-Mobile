@@ -30,6 +30,7 @@ struct MirrorLiveContent: View {
     let onUnavailable: ((String) -> Void)?
 
     @State private var model = MirrorLiveModel()
+    @AppStorage("sendWithReturn") private var sendWithReturn = false
 
     var body: some View {
         content
@@ -51,7 +52,7 @@ struct MirrorLiveContent: View {
                 // it does, and while the line has nothing to draw (no repo, no window yet).
                 let status = model.status.flatMap { $0.isEmpty ? nil : $0 }
                 VStack(spacing: 0) {
-                    MirrorWebView(link: link, attached: attached)
+                    MirrorWebView(link: link, attached: attached, sendWithReturn: sendWithReturn)
                     if let status {
                         MirrorStatusBar(status: status)
                     }

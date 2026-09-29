@@ -39,6 +39,7 @@ final class MirrorLink {
     private let queue = DispatchQueue(label: "sh.saqoo.canopy-app.MirrorLink")
     private let sessionId: String
     private let token: String
+    private let open: OpenRequest?
     private var pendingAssets: [String: CheckedContinuation<(data: Data, mime: String), Error>] = [:]
     private var failed = false
     /// The replay the Mac started fetching at attach; the page's own get_session_request is answered with it.
@@ -55,14 +56,31 @@ final class MirrorLink {
     private var waitingDeadline: Task<Void, Never>?
     private var lastWaitingError: NWError?
 
-    init(host: String, port: UInt16, sessionId: String, token: String) {
+    init(host: String, port: UInt16, sessionId: String, token: String, open: OpenRequest? = nil) {
         self.sessionId = sessionId
         self.token = token
+        self.open = open
         connection = NWConnection(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: port) ?? .any,
             using: .tcp
         )
+    }
+
+    /// The attach line sent once the TCP socket is ready. Pure so tests can pin the optional `open` field.
+    nonisolated static func attachMessage(sessionId: String, token: String, open: OpenRequest? = nil) -> [String: Any] {
+        var message: [String: Any] = [
+            "type": "attach",
+            "sessionId": sessionId,
+            "token": token,
+            "prefetch": true,
+            "status": true,
+            "compress": MirrorWire.compressionName,
+        ]
+        if let open {
+            message["open"] = open.wire
+        }
+        return message
     }
 
     func start() {
@@ -173,8 +191,7 @@ final class MirrorLink {
             logger.notice("connected; attaching \(self.sessionId, privacy: .public)")
             // `compress`: the prefetched replay is one line of a megabyte or more, and that line is what
             // a slow uplink spends its time on. A Mac without Canopy PR #238 ignores the key and keeps sending plain lines.
-            send(["type": "attach", "sessionId": sessionId, "token": token, "prefetch": true, "status": true,
-                  "compress": MirrorWire.compressionName])
+            send(Self.attachMessage(sessionId: sessionId, token: token, open: open))
             receive()
             // The Mac answers attach at once; a silent Mac would otherwise leave the view connecting forever.
             waitingDeadline = Task { [weak self] in

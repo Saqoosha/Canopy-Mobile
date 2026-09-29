@@ -5,12 +5,13 @@ struct MirrorLiveView: View {
     let target: MirrorTarget
     let sessionId: String
     let title: String
+    var open: OpenRequest? = nil
 
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            MirrorLiveContent(target: target, sessionId: sessionId, onUnavailable: nil)
+            MirrorLiveContent(target: target, sessionId: sessionId, open: open, onUnavailable: nil)
                 .navigationTitle(title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -26,6 +27,7 @@ struct MirrorLiveView: View {
 struct MirrorLiveContent: View {
     let target: MirrorTarget
     let sessionId: String
+    var open: OpenRequest? = nil
     /// Called once when the attach cannot start, fails or drops; nil keeps the failure on screen instead.
     let onUnavailable: ((String) -> Void)?
 
@@ -34,7 +36,7 @@ struct MirrorLiveContent: View {
 
     var body: some View {
         content
-            .task { model.start(target: target, sessionId: sessionId) }
+            .task { model.start(target: target, sessionId: sessionId, open: open) }
             .onDisappear { model.close() }
             .onChange(of: model.failure) { _, reason in
                 if let reason { onUnavailable?(reason) }
@@ -85,7 +87,7 @@ final class MirrorLiveModel {
         return nil
     }
 
-    func start(target: MirrorTarget, sessionId: String) {
+    func start(target: MirrorTarget, sessionId: String, open: OpenRequest? = nil) {
         guard link == nil else { return }
         let address = target.address
         guard let colon = address.lastIndex(of: ":"),
@@ -95,7 +97,7 @@ final class MirrorLiveModel {
             phase = .failed("Address must be host:port")
             return
         }
-        let link = MirrorLink(host: String(address[..<colon]), port: port, sessionId: sessionId, token: target.token)
+        let link = MirrorLink(host: String(address[..<colon]), port: port, sessionId: sessionId, token: target.token, open: open)
         link.onAttached = { [weak self] attached in
             self?.phase = .attached(attached)
         }

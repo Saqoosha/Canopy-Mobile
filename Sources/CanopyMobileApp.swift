@@ -62,6 +62,12 @@ struct CanopyMobileApp: App {
     @State private var demoURL = "https://demo.invalid"
     @State private var showingSettings = false
     @State private var launchMirror: LaunchMirror?
+    /// Sheet item for Open on Mac (paired machines only).
+    @State private var openOnMac: OpenOnMacItem?
+    /// Live cover opened from Open on Mac (resume or new session).
+    @State private var openOnMacLive: OpenOnMacLive?
+    /// Held while the sheet closes: a cover presented during a sheet's dismissal can be dropped.
+    @State private var pendingOpenOnMacLive: OpenOnMacLive?
     /// The Macs whose sessions open live. A demo run keeps an empty, unsaved table.
     @State private var mirrorStore = MirrorConnectionStore(defaults: CanopyDemo.isEnabled ? nil : .standard)
 
@@ -113,7 +119,8 @@ struct CanopyMobileApp: App {
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
-                        RosterView(machineIds: machineIds, snapshots: snapshots, errors: errors, directoryError: directoryError) { machineId, pane in
+                        RosterView(machineIds: machineIds, snapshots: snapshots, errors: errors, directoryError: directoryError,
+                                   onSelectPane: { machineId, pane in
                             path = [.conversation(ConversationTarget(
                                 machine: machineId,
                                 sessionId: pane.sessionId,
@@ -121,7 +128,16 @@ struct CanopyMobileApp: App {
                                 title: pane.title,
                                 subtitle: pane.project
                             ))]
-                        }
+                        },
+                                   canOpenOnMachine: { mirrorStore.target(for: $0) != nil },
+                                   onOpenOnMachine: { machineId in
+                            guard let target = mirrorStore.target(for: machineId) else { return }
+                            openOnMac = OpenOnMacItem(
+                                machineId: machineId,
+                                target: target,
+                                machineName: snapshots[machineId]?.displayName ?? machineId
+                            )
+                        })
                         .refreshable {
                             await refresh()
                         }
@@ -174,9 +190,21 @@ struct CanopyMobileApp: App {
                     SettingsView(rosterUrl: CanopyDemo.isEnabled ? $demoURL : $rosterUrl, secret: $secret,
                                  mirrorStore: mirrorStore, machineNames: machineNames)
                 }
+                .sheet(item: $openOnMac, onDismiss: {
+                    openOnMacLive = pendingOpenOnMacLive
+                    pendingOpenOnMacLive = nil
+                }) { item in
+                    OpenOnMacView(target: item.target, machineName: item.machineName) { sessionId, open, title in
+                        pendingOpenOnMacLive = OpenOnMacLive(target: item.target, sessionId: sessionId, title: title, open: open)
+                        openOnMac = nil
+                    }
+                }
             }
             .fullScreenCover(item: $launchMirror) { launch in
                 MirrorLiveView(target: launch.target, sessionId: launch.sessionId, title: "Live")
+            }
+            .fullScreenCover(item: $openOnMacLive) { live in
+                MirrorLiveView(target: live.target, sessionId: live.sessionId, title: live.title, open: live.open)
             }
             .task {
                 MirrorWebViewPool.warm()
@@ -763,4 +791,21 @@ struct ConversationTarget: Hashable {
     var resumeId: String?
     let title: String
     let subtitle: String
+}
+
+/// Sheet item for `OpenOnMacView` — one paired Mac.
+struct OpenOnMacItem: Identifiable {
+    var id: String { machineId }
+    let machineId: String
+    let target: MirrorTarget
+    let machineName: String
+}
+
+/// Full-screen live cover opened from `OpenOnMacView`.
+struct OpenOnMacLive: Identifiable {
+    let id = UUID()
+    let target: MirrorTarget
+    let sessionId: String
+    let title: String
+    let open: OpenRequest
 }

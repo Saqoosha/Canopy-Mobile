@@ -19,6 +19,9 @@ final class MirrorConnectionStore {
     private let defaults: UserDefaults?
     /// Passwords already read, so a render pass costs a dictionary lookup rather than a Keychain query.
     @ObservationIgnored private var tokens: [String: String] = [:]
+    /// Machines already found to have no password, so the roster's once-a-second redraw does not
+    /// query the Keychain for each of them; `save` clears the entry.
+    @ObservationIgnored private var missingTokens: Set<String> = []
 
     init(defaults: UserDefaults? = .standard) {
         self.defaults = defaults
@@ -57,7 +60,11 @@ final class MirrorConnectionStore {
 
     private func token(for machine: String) -> String? {
         if let cached = tokens[machine] { return cached }
-        guard let token = KeychainHelper.load(key: Self.tokenKey(for: machine)), !token.isEmpty else { return nil }
+        guard !missingTokens.contains(machine) else { return nil }
+        guard let token = KeychainHelper.load(key: Self.tokenKey(for: machine)), !token.isEmpty else {
+            missingTokens.insert(machine)
+            return nil
+        }
         tokens[machine] = token
         return token
     }
@@ -67,6 +74,7 @@ final class MirrorConnectionStore {
         let status = KeychainHelper.upsert(key: Self.tokenKey(for: info.machine), value: info.token)
         guard status == errSecSuccess else { return status }
         tokens[info.machine] = info.token
+        missingTokens.remove(info.machine)
         entries = entries.adding(machine: info.machine, address: info.address)
         defaults.set(entries.json, forKey: Self.defaultsKey)
         return status

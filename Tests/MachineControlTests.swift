@@ -93,4 +93,11 @@ struct MachineControlTests {
         #expect(newOpen["kind"] as? String == "new")
         #expect(newOpen["cwd"] as? String == "/tmp")
     }
+
+    @Test func helloErrorsNameTheirCause() {
+        #expect(MachineControl.helloError("unauthorized").message == "Password rejected")
+        #expect(MachineControl.helloError("no control API here").message.contains("background service"))
+        #expect(MachineControl.helloError("protocol version 2 is not 1").message.contains("different versions"))
+        #expect(MachineControl.helloError("something else").message == "something else")
+    }
 }

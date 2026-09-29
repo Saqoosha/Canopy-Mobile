@@ -11,6 +11,8 @@ final class MachineControl {
         case notReachable
         case passwordRejected
         case updateCanopy
+        case noServer
+        case versionMismatch
         case closed
         case failed(String)
 
@@ -19,6 +21,8 @@ final class MachineControl {
             case .notReachable: "Not reachable"
             case .passwordRejected: "Password rejected"
             case .updateCanopy: "Update Canopy on that Mac"
+            case .noServer: "That Mac's Canopy does not run its background service yet"
+            case .versionMismatch: "Canopy on that Mac and this app speak different versions; update both"
             case .closed: "Not reachable"
             case .failed(let text): text
             }
@@ -114,7 +118,7 @@ final class MachineControl {
                 "client": "phone",
                 "token": target.token,
             ])
-            receive()
+            if let connection { receive(on: connection) }
             waitingDeadline = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(15))
                 guard !Task.isCancelled, let self else { return }
@@ -143,8 +147,8 @@ final class MachineControl {
         })
     }
 
-    nonisolated private func receive() {
-        guard let connection else { return }
+    /// Takes the connection rather than reading the property, which `close()` writes on main.
+    nonisolated private func receive(on connection: NWConnection) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let data, !data.isEmpty {
@@ -152,7 +156,11 @@ final class MachineControl {
                       let lines = MirrorWire.lines(from: frames)
                 else {
                     DispatchQueue.main.async {
-                        MainActor.assumeIsolated { self.failHello(ControlError.updateCanopy) }
+                        MainActor.assumeIsolated {
+                            // Before hello this is an old or foreign listener; after it, a broken
+                            // stream every pending request must hear about now, not in 15 s.
+                            if self.helloContinuation != nil { self.failHello(ControlError.updateCanopy) } else { self.close() }
+                        }
                     }
                     return
                 }
@@ -174,7 +182,7 @@ final class MachineControl {
                 }
                 return
             }
-            self.receive()
+            self.receive(on: connection)
         }
     }
 
@@ -194,13 +202,7 @@ final class MachineControl {
                 continuation?.resume()
             case "hello_error":
                 let message = object["message"] as? String ?? ""
-                if message == "unauthorized" {
-                    failHello(ControlError.passwordRejected)
-                } else if message.contains("no control API") {
-                    failHello(ControlError.updateCanopy)
-                } else {
-                    failHello(ControlError.updateCanopy)
-                }
+                failHello(Self.helloError(message))
             default:
                 failHello(ControlError.updateCanopy)
             }
@@ -217,6 +219,15 @@ final class MachineControl {
         } else {
             continuation.resume(throwing: ControlError.failed("Empty response"))
         }
+    }
+
+    /// What a `hello_error` message means for the user. Pure for tests.
+    nonisolated static func helloError(_ message: String) -> ControlError {
+        if message == "unauthorized" { return .passwordRejected }
+        // A Canopy whose sessions are not in the daemon: its GUI listener has no control API.
+        if message.contains("no control API") { return .noServer }
+        if message.hasPrefix("protocol version") { return .versionMismatch }
+        return .failed(message)
     }
 
     private func failHello(_ error: ControlError) {

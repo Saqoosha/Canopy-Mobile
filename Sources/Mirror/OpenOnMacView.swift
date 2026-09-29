@@ -14,6 +14,7 @@ struct OpenOnMacView: View {
     @State private var folders: [String] = []
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
+    @State private var loadedSessions = false
 
     private enum Tab: String, CaseIterable, Identifiable {
         case sessions = "Sessions"
@@ -103,13 +104,18 @@ struct OpenOnMacView: View {
             .buttonStyle(.plain)
         }
         .listStyle(.plain)
+        .overlay {
+            if loadedSessions && sessions.isEmpty {
+                ContentUnavailableView(searchText.isEmpty ? "No recent sessions" : "No matches", systemImage: "clock")
+            }
+        }
         .searchable(text: $searchText, prompt: "Search sessions")
         .onChange(of: searchText) { _, _ in
             searchTask?.cancel()
             searchTask = Task {
                 try? await Task.sleep(for: .milliseconds(300))
                 guard !Task.isCancelled else { return }
-                await loadSessions()
+                await loadSessions(failSheet: false)
             }
         }
     }
@@ -150,7 +156,7 @@ struct OpenOnMacView: View {
         do {
             try await control.connect()
             phase = .ready
-            await loadSessions()
+            await loadSessions(failSheet: true)
             await loadFolders()
         } catch let error as MachineControl.ControlError {
             phase = .failed(error.message)
@@ -159,17 +165,20 @@ struct OpenOnMacView: View {
         }
     }
 
-    private func loadSessions() async {
+    /// A failed search keeps the sheet (and the last results); only the first load replaces it.
+    private func loadSessions(failSheet: Bool) async {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             var params: [String: Any] = ["scope": "recent", "limit": 50]
-            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !query.isEmpty { params["query"] = query }
             let result = try await control.request("list_sessions", params)
+            // An older query's answer must not replace a newer one's.
+            guard query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
             sessions = RecentSession.list(from: result)
-        } catch let error as MachineControl.ControlError {
-            phase = .failed(error.message)
+            loadedSessions = true
         } catch {
-            phase = .failed(MachineControl.ControlError.notReachable.message)
+            guard failSheet else { return }
+            phase = .failed((error as? MachineControl.ControlError)?.message ?? MachineControl.ControlError.notReachable.message)
         }
     }
 

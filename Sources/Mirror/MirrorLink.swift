@@ -282,6 +282,8 @@ final class MirrorLink {
             switch object["message"] as? String {
             case "unauthorized": fail("The Mac rejected the password. Copy the connection again from Canopy's Settings.")
             case "no such session": fail("This session is not running on the Mac.")
+            case "cannot open": fail("The Mac could not open that session: its folder or transcript is gone.")
+            case "start failed": fail("The Mac could not start the session. Check Canopy on that Mac.")
             case let other: fail(other ?? "The Mac refused the connection.")
             }
         case "status":

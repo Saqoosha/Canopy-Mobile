@@ -67,13 +67,24 @@ final class MirrorLink {
         )
     }
 
+    /// True for an attach that starts a new session on the Mac.
+    nonisolated static func startsNewSession(_ open: OpenRequest?) -> Bool {
+        if case .new = open { return true }
+        return false
+    }
+
+    /// How long frames wait behind a prefetch for the page to ask for its transcript.
+    static let prefetchClaimWindow: Duration = .seconds(5)
+
     /// The attach line sent once the TCP socket is ready. Pure so tests can pin the optional `open` field.
     nonisolated static func attachMessage(sessionId: String, token: String, open: OpenRequest? = nil) -> [String: Any] {
         var message: [String: Any] = [
             "type": "attach",
             "sessionId": sessionId,
             "token": token,
-            "prefetch": true,
+            // A new session has no transcript: its page never asks for one, so a prefetch would
+            // hold every later frame (the whole first turn) behind an answer nobody claims.
+            "prefetch": !Self.startsNewSession(open),
             "status": true,
             "compress": MirrorWire.compressionName,
         ]
@@ -274,6 +285,17 @@ final class MirrorLink {
                 return (source, entry["atDocumentStart"] as? Bool ?? false)
             }
             prefetchId = (object["prefetchedSessionRequestId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            if let pending = prefetchId {
+                // A page that never asks for its transcript must not hold every later frame forever.
+                prefetchFallback = Task { [weak self] in
+                    try? await Task.sleep(for: Self.prefetchClaimWindow)
+                    guard !Task.isCancelled, let self, self.prefetchId == pending, self.pageSessionRequestId == nil else { return }
+                    logger.error("page did not ask for its transcript; releasing held frames")
+                    self.abandonedPrefetchId = pending
+                    self.prefetchId = nil
+                    self.flushFramesBehindPrefetch()
+                }
+            }
             let version = (object["extensionVersion"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             logger.notice("attach_ok with \(scripts.count) user scripts, extension \(version ?? "unknown", privacy: .public)")
             onAttached?(Attached(html: html, userScripts: scripts, extensionVersion: version))

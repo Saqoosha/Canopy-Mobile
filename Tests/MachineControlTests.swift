@@ -100,4 +100,10 @@ struct MachineControlTests {
         #expect(MachineControl.helloError("protocol version 2 is not 1").message.contains("different versions"))
         #expect(MachineControl.helloError("something else").message == "something else")
     }
+
+    @Test func newSessionAttachSkipsThePrefetch() {
+        #expect(MirrorLink.attachMessage(sessionId: "s", token: "t", open: .new(cwd: "/tmp"))["prefetch"] as? Bool == false)
+        #expect(MirrorLink.attachMessage(sessionId: "s", token: "t", open: .resume)["prefetch"] as? Bool == true)
+        #expect(MirrorLink.attachMessage(sessionId: "s", token: "t")["prefetch"] as? Bool == true)
+    }
 }

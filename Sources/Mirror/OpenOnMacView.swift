@@ -105,7 +105,10 @@ struct OpenOnMacView: View {
         }
         .listStyle(.plain)
         .overlay {
-            if loadedSessions && sessions.isEmpty {
+            if !loadedSessions {
+                // The Mac lists its transcripts on the first ask, which takes a moment.
+                ProgressView("Loading sessions…")
+            } else if sessions.isEmpty {
                 ContentUnavailableView(searchText.isEmpty ? "No recent sessions" : "No matches", systemImage: "clock")
             }
         }

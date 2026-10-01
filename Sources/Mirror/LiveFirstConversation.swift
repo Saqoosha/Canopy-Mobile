@@ -64,23 +64,13 @@ struct LiveFirstConversation<Offline: View>: View {
             ProgressView("The Mac is restarting for an update. Reconnecting…")
                 .navigationTitle(title)
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbar { offlineButton }
         } else if let live, fallback == nil {
             let current = attempt
             MirrorLiveContent(target: live, sessionId: sessionId, open: resumeOnAttach ? .resume : nil,
                               onUnavailable: { reason in
                                   // A drop reported by a live view that has already been replaced.
                                   guard current == attempt else { return }
-                                  if MirrorRestart.shouldRetry(until: restartUntil, now: Date()) {
-                                      resumeOnAttach = true
-                                      waitingForRestart = true
-                                      Task { @MainActor in
-                                          try? await Task.sleep(for: .seconds(MirrorRestart.interval))
-                                          guard current == attempt else { return }
-                                          waitingForRestart = false
-                                          attempt += 1
-                                      }
-                                      return
-                                  }
                                   if let until = reconnectUntil, Date() < until {
                                       reconnectUntil = nil
                                       attempt += 1
@@ -88,23 +78,44 @@ struct LiveFirstConversation<Offline: View>: View {
                                   }
                                   fallback = .unavailable(reason)
                               },
-                              onAttached: { _ in restartUntil = nil },
-                              onRestarting: { restartUntil = Date().addingTimeInterval(MirrorRestart.budget) })
+                              onAttached: { _ in
+                                  restartUntil = nil
+                                  // Only the attaches inside a restart ask the Mac to resume.
+                                  resumeOnAttach = false
+                              },
+                              retryDrop: { announced in
+                                  guard current == attempt else { return true }
+                                  if announced { restartUntil = Date().addingTimeInterval(MirrorRestart.budget) }
+                                  guard MirrorRestart.shouldRetry(until: restartUntil, now: Date()) else { return false }
+                                  resumeOnAttach = true
+                                  waitingForRestart = true
+                                  Task { @MainActor in
+                                      try? await Task.sleep(for: .seconds(MirrorRestart.interval))
+                                      waitingForRestart = false
+                                      guard current == attempt else { return }
+                                      attempt += 1
+                                  }
+                                  return true
+                              })
             .id(attempt)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        fallback = .chosen
-                    } label: {
-                        Image(systemName: "rectangle.on.rectangle.slash")
-                    }
-                    .accessibilityLabel("Show offline view")
-                }
-            }
+            .toolbar { offlineButton }
         } else {
             offline(unavailableReason)
+        }
+    }
+
+    private var offlineButton: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                waitingForRestart = false
+                restartUntil = nil
+                fallback = .chosen
+            } label: {
+                Image(systemName: "rectangle.on.rectangle.slash")
+            }
+            .accessibilityLabel("Show offline view")
         }
     }
 

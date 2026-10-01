@@ -39,6 +39,8 @@ final class MirrorLink {
     var onFailure: ((String) -> Void)?
     /// The Mac's session service announced it is restarting for an update; the drop that follows is planned.
     var onRestarting: (() -> Void)?
+    /// Set when the Mac answered `attach_error`: a refusal, which waiting will not change.
+    private(set) var refusedByMac = false
 
     nonisolated(unsafe) private let connection: NWConnection
     nonisolated private let buffer = LineBuffer()
@@ -305,6 +307,7 @@ final class MirrorLink {
                                  sessionId: nonEmpty("sessionId"), hostSessionId: nonEmpty("hostSessionId")))
         case "attach_error":
             waitingDeadline?.cancel()
+            refusedByMac = true
             switch object["message"] as? String {
             case "unauthorized": fail("The Mac rejected the password. Copy the connection again from Canopy's Settings.")
             case "no such session": fail("This session is not running on the Mac.")

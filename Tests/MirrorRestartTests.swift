@@ -20,6 +20,14 @@ struct MirrorRestartTests {
         #expect(frames.isEmpty)
     }
 
+    @MainActor
+    @Test func aRefusalIsMarkedSoTheRestartWindowDoesNotRetryIt() {
+        let link = MirrorLink(host: "127.0.0.1", port: 1, sessionId: "s", token: "t")
+        #expect(!link.refusedByMac)
+        link.handleLine(Data(#"{"type":"attach_error","message":"cannot open"}"#.utf8))
+        #expect(link.refusedByMac)
+    }
+
     @Test func retriesOnlyInsideTheWindowAfterANotice() {
         let now = Date(timeIntervalSince1970: 1_000)
         #expect(!MirrorRestart.shouldRetry(until: nil, now: now))

@@ -50,16 +50,7 @@ struct MirrorLiveView: View {
                     MirrorLiveContent(target: target, sessionId: current.sessionId, open: current.open, key: current.key,
                                       onUnavailable: { _ in
                                           guard thisAttempt == attempt else { return }
-                                          if MirrorRestart.shouldRetry(until: restartUntil, now: Date()), let current = attach {
-                                              attach = Self.afterRestart(current)
-                                              waitingForRestart = true
-                                              Task { @MainActor in
-                                                  try? await Task.sleep(for: .seconds(MirrorRestart.interval))
-                                                  guard thisAttempt == attempt else { return }
-                                                  waitingForRestart = false
-                                                  attempt += 1
-                                              }
-                                          } else if let until = reconnectUntil, Date() < until, attach != nil {
+                                          if let until = reconnectUntil, Date() < until, attach != nil {
                                               reconnectUntil = nil
                                               attempt += 1
                                           } else {
@@ -68,10 +59,26 @@ struct MirrorLiveView: View {
                                       },
                                       onAttached: { attached in
                                           restartUntil = nil
-                                          attach = Self.reattach(current, after: attached)
+                                          // The view's own `open`, not the restart's `.resume`, so a later
+                                          // re-attach does not restart a session stopped on the Mac.
+                                          attach = Self.reattach(Attach(sessionId: current.sessionId, open: open, key: current.key),
+                                                                 after: attached)
                                       },
-                                      onRestarting: {
-                                          restartUntil = Date().addingTimeInterval(MirrorRestart.budget)
+                                      retryDrop: { announced in
+                                          guard thisAttempt == attempt else { return true }
+                                          if announced { restartUntil = Date().addingTimeInterval(MirrorRestart.budget) }
+                                          guard MirrorRestart.shouldRetry(until: restartUntil, now: Date()), let current = attach else {
+                                              return false
+                                          }
+                                          attach = Self.afterRestart(current)
+                                          waitingForRestart = true
+                                          Task { @MainActor in
+                                              try? await Task.sleep(for: .seconds(MirrorRestart.interval))
+                                              waitingForRestart = false
+                                              guard thisAttempt == attempt else { return }
+                                              attempt += 1
+                                          }
+                                          return true
                                       })
                         .id(attempt)
                 }
@@ -115,8 +122,9 @@ struct MirrorLiveContent: View {
     /// Called once when the attach cannot start, fails or drops; nil keeps the failure on screen instead.
     let onUnavailable: ((String) -> Void)?
     var onAttached: ((MirrorLink.Attached) -> Void)? = nil
-    /// The Mac announced a restart for an update; the drop that follows may be re-attached.
-    var onRestarting: (() -> Void)? = nil
+    /// Asked before `onUnavailable` for a drop that was not a refusal, with whether the Mac announced
+    /// a restart first; returning true means the caller re-attaches and `onUnavailable` is skipped.
+    var retryDrop: ((_ restartAnnounced: Bool) -> Bool)? = nil
 
     @State private var model = MirrorLiveModel()
     @AppStorage("sendWithReturn") private var sendWithReturn = false
@@ -126,14 +134,15 @@ struct MirrorLiveContent: View {
             .task { model.start(target: target, sessionId: sessionId, open: open, key: key) }
             .onDisappear { model.close() }
             .onChange(of: model.failure) { _, reason in
-                if let reason { onUnavailable?(reason) }
+                guard let reason else { return }
+                // The notice is read here, at the drop, so it cannot lose a race with it.
+                if !model.refused, retryDrop?(model.restartAnnounced) == true { return }
+                onUnavailable?(reason)
             }
             .onChange(of: model.attachedCount) { _, _ in
                 if case .attached(let attached) = model.phase { onAttached?(attached) }
             }
-            .onChange(of: model.restartAnnounced) { _, announced in
-                if announced { onRestarting?() }
-            }
+
     }
 
     @ViewBuilder
@@ -178,6 +187,9 @@ final class MirrorLiveModel {
     private(set) var attachedCount = 0
     /// Set when the Mac sends `daemon_restarting`; read before the drop that follows it.
     private(set) var restartAnnounced = false
+
+    /// The Mac refused the attach; retrying will not change that.
+    var refused: Bool { link?.refusedByMac == true }
 
     var failure: String? {
         if case .failed(let reason) = phase { return reason }

@@ -89,6 +89,17 @@ enum KeychainHelper {
         return status == errSecSuccess
     }
 
+    /// True only when the Keychain says nothing is stored under `key`; a locked device is not a miss.
+    static func isMissing(key: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecItemNotFound
+    }
+
     static func delete(key: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

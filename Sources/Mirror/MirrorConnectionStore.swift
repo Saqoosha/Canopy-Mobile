@@ -62,7 +62,7 @@ final class MirrorConnectionStore {
         if let cached = tokens[machine] { return cached }
         guard !missingTokens.contains(machine) else { return nil }
         guard let token = KeychainHelper.load(key: Self.tokenKey(for: machine)), !token.isEmpty else {
-            missingTokens.insert(machine)
+            if KeychainHelper.isMissing(key: Self.tokenKey(for: machine)) { missingTokens.insert(machine) }
             return nil
         }
         tokens[machine] = token

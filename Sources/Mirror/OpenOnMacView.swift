@@ -180,7 +180,7 @@ struct OpenOnMacView: View {
             sessions = RecentSession.list(from: result)
             loadedSessions = true
         } catch {
-            guard failSheet else { return }
+            guard failSheet || !loadedSessions else { return }
             phase = .failed((error as? MachineControl.ControlError)?.message ?? MachineControl.ControlError.notReachable.message)
         }
     }

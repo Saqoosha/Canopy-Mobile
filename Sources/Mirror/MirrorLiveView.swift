@@ -38,7 +38,7 @@ struct MirrorLiveView: View {
             MirrorLiveContent(target: target, sessionId: current.sessionId, open: current.open, key: current.key,
                               onUnavailable: { _ in
                                   guard thisAttempt == attempt else { return }
-                                  if let until = reconnectUntil, Date() < until {
+                                  if let until = reconnectUntil, Date() < until, attach != nil {
                                       reconnectUntil = nil
                                       attempt += 1
                                   } else {

@@ -42,6 +42,8 @@ final class MirrorLink {
     nonisolated private let buffer = LineBuffer()
     private let queue = DispatchQueue(label: "sh.saqoo.canopy-app.MirrorLink")
     private let sessionId: String
+    /// The id the Mac built the page under; a re-attach by key can name a session whose placeholder id was replaced.
+    private var pageSessionId: String?
     private let token: String
     private let open: OpenRequest?
     private let key: String?
@@ -143,7 +145,7 @@ final class MirrorLink {
               object["type"] as? String == "request",
               let request = object["request"] as? [String: Any],
               request["type"] as? String == "get_session_request",
-              request["sessionId"] as? String == sessionId,
+              request["sessionId"] as? String == (pageSessionId ?? sessionId),
               let requestId = object["requestId"] as? String
         else { return false }
         pageSessionRequestId = requestId
@@ -294,6 +296,7 @@ final class MirrorLink {
             let version = (object["extensionVersion"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             logger.notice("attach_ok with \(scripts.count) user scripts, extension \(version ?? "unknown", privacy: .public)")
             let nonEmpty = { (key: String) in (object[key] as? String).flatMap { $0.isEmpty ? nil : $0 } }
+            pageSessionId = nonEmpty("sessionId")
             onAttached?(Attached(html: html, userScripts: scripts, extensionVersion: version,
                                  sessionId: nonEmpty("sessionId"), hostSessionId: nonEmpty("hostSessionId")))
         case "attach_error":

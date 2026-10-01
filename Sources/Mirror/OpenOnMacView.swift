@@ -15,6 +15,8 @@ struct OpenOnMacView: View {
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
     @State private var loadedSessions = false
+    /// Why `list_folders` failed; shown in the Folders tab only, so the loaded sessions stay.
+    @State private var foldersError: String?
 
     private enum Tab: String, CaseIterable, Identifiable {
         case sessions = "Sessions"
@@ -130,6 +132,10 @@ struct OpenOnMacView: View {
             } label: {
                 Label("Browse…", systemImage: "folder")
             }
+            if let foldersError {
+                Label(foldersError, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
+            }
             ForEach(folders, id: \.self) { path in
                 NavigationLink {
                     FolderBrowserView(control: control, path: path, onOpen: onOpen)
@@ -189,10 +195,8 @@ struct OpenOnMacView: View {
         do {
             let result = try await control.request("list_folders", ["limit": 20])
             folders = (result["folders"] as? [String]) ?? []
-        } catch let error as MachineControl.ControlError {
-            phase = .failed(error.message)
         } catch {
-            phase = .failed(MachineControl.ControlError.notReachable.message)
+            foldersError = "Can't list recent folders: " + ((error as? MachineControl.ControlError)?.message ?? MachineControl.ControlError.notReachable.message)
         }
     }
 

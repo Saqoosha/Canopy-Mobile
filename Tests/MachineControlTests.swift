@@ -106,4 +106,24 @@ struct MachineControlTests {
         #expect(MirrorLink.attachMessage(sessionId: "s", token: "t", open: .resume)["prefetch"] as? Bool == true)
         #expect(MirrorLink.attachMessage(sessionId: "s", token: "t")["prefetch"] as? Bool == true)
     }
+
+    @Test func attachMessageCarriesTheKeyOnlyWhenSet() {
+        #expect(MirrorLink.attachMessage(sessionId: "s", token: "t", key: "K")["key"] as? String == "K")
+        #expect(MirrorLink.attachMessage(sessionId: "s", token: "t", key: "")["key"] == nil)
+        #expect(MirrorLink.attachMessage(sessionId: "s", token: "t")["key"] == nil)
+    }
+
+    @Test @MainActor func reattachFindsANewSessionByKeyAndNeverReplaysNew() {
+        let first = MirrorLiveView.Attach(sessionId: "placeholder", open: .new(cwd: "/tmp"))
+        let attached = MirrorLink.Attached(html: "<p>", userScripts: [], extensionVersion: nil,
+                                           sessionId: "cli-id", hostSessionId: "HOST")
+        let next = MirrorLiveView.reattach(first, after: attached)
+        #expect(next == MirrorLiveView.Attach(sessionId: "cli-id", open: .resume, key: "HOST"))
+    }
+
+    @Test @MainActor func reattachOfAPlainAttachStaysPlain() {
+        let first = MirrorLiveView.Attach(sessionId: "s1")
+        let fromOldMac = MirrorLink.Attached(html: "<p>", userScripts: [], extensionVersion: nil)
+        #expect(MirrorLiveView.reattach(first, after: fromOldMac) == MirrorLiveView.Attach(sessionId: "s1"))
+    }
 }

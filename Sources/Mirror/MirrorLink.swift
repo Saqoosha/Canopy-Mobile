@@ -13,6 +13,10 @@ final class MirrorLink {
         let userScripts: [(source: String, atDocumentStart: Bool)]
         /// The Mac's extension version, the key its assets are cached under; nil from a Mac that sent none.
         let extensionVersion: String?
+        /// The session's current id, which replaces a new session's placeholder.
+        var sessionId: String? = nil
+        /// The Mac's key for the open session, which finds it again on a re-attach.
+        var hostSessionId: String? = nil
     }
 
     enum AssetError: Error, LocalizedError {
@@ -40,6 +44,7 @@ final class MirrorLink {
     private let sessionId: String
     private let token: String
     private let open: OpenRequest?
+    private let key: String?
     private var pendingAssets: [String: CheckedContinuation<(data: Data, mime: String), Error>] = [:]
     private var failed = false
     /// The replay the Mac started fetching at attach; the page's own get_session_request is answered with it.
@@ -56,10 +61,11 @@ final class MirrorLink {
     private var waitingDeadline: Task<Void, Never>?
     private var lastWaitingError: NWError?
 
-    init(host: String, port: UInt16, sessionId: String, token: String, open: OpenRequest? = nil) {
+    init(host: String, port: UInt16, sessionId: String, token: String, open: OpenRequest? = nil, key: String? = nil) {
         self.sessionId = sessionId
         self.token = token
         self.open = open
+        self.key = key
         connection = NWConnection(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: port) ?? .any,
@@ -74,7 +80,7 @@ final class MirrorLink {
     }
 
     /// The attach line sent once the TCP socket is ready. Pure so tests can pin the optional `open` field.
-    nonisolated static func attachMessage(sessionId: String, token: String, open: OpenRequest? = nil) -> [String: Any] {
+    nonisolated static func attachMessage(sessionId: String, token: String, open: OpenRequest? = nil, key: String? = nil) -> [String: Any] {
         var message: [String: Any] = [
             "type": "attach",
             "sessionId": sessionId,
@@ -87,6 +93,9 @@ final class MirrorLink {
         ]
         if let open {
             message["open"] = open.wire
+        }
+        if let key, !key.isEmpty {
+            message["key"] = key
         }
         return message
     }
@@ -199,7 +208,7 @@ final class MirrorLink {
             logger.notice("connected; attaching \(self.sessionId, privacy: .public)")
             // `compress`: the prefetched replay is one line of a megabyte or more, and that line is what
             // a slow uplink spends its time on. A Mac without Canopy PR #238 ignores the key and keeps sending plain lines.
-            send(Self.attachMessage(sessionId: sessionId, token: token, open: open))
+            send(Self.attachMessage(sessionId: sessionId, token: token, open: open, key: key))
             receive()
             // The Mac answers attach at once; a silent Mac would otherwise leave the view connecting forever.
             waitingDeadline = Task { [weak self] in
@@ -284,7 +293,9 @@ final class MirrorLink {
             prefetchId = (object["prefetchedSessionRequestId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             let version = (object["extensionVersion"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             logger.notice("attach_ok with \(scripts.count) user scripts, extension \(version ?? "unknown", privacy: .public)")
-            onAttached?(Attached(html: html, userScripts: scripts, extensionVersion: version))
+            let nonEmpty = { (key: String) in (object[key] as? String).flatMap { $0.isEmpty ? nil : $0 } }
+            onAttached?(Attached(html: html, userScripts: scripts, extensionVersion: version,
+                                 sessionId: nonEmpty("sessionId"), hostSessionId: nonEmpty("hostSessionId")))
         case "attach_error":
             waitingDeadline?.cancel()
             switch object["message"] as? String {

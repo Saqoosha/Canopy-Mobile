@@ -17,6 +17,9 @@ struct MirrorLiveView: View {
     @State private var wasInBackground = false
     /// Until when a drop reported after returning from the background rebuilds instead of staying failed.
     @State private var reconnectUntil: Date?
+    /// Until when a drop re-attaches because the Mac announced a restart for an update.
+    @State private var restartUntil: Date?
+    @State private var waitingForRestart = false
 
     struct Attach: Equatable {
         let sessionId: String
@@ -31,24 +34,48 @@ struct MirrorLiveView: View {
                key: attached.hostSessionId ?? first.key)
     }
 
+    /// The attach after a restart: the new service holds no sessions, so it is asked to resume this one.
+    nonisolated static func afterRestart(_ attach: Attach) -> Attach {
+        Attach(sessionId: attach.sessionId, open: .resume, key: attach.key)
+    }
+
     var body: some View {
         NavigationStack {
             let current = attach ?? Attach(sessionId: sessionId, open: open)
             let thisAttempt = attempt
-            MirrorLiveContent(target: target, sessionId: current.sessionId, open: current.open, key: current.key,
-                              onUnavailable: { _ in
-                                  guard thisAttempt == attempt else { return }
-                                  if let until = reconnectUntil, Date() < until, attach != nil {
-                                      reconnectUntil = nil
-                                      attempt += 1
-                                  } else {
-                                      dropped = true
-                                  }
-                              },
-                              onAttached: { attached in
-                                  attach = Self.reattach(current, after: attached)
-                              })
-                .id(attempt)
+            Group {
+                if waitingForRestart {
+                    ProgressView("The Mac is restarting for an update. Reconnecting…")
+                } else {
+                    MirrorLiveContent(target: target, sessionId: current.sessionId, open: current.open, key: current.key,
+                                      onUnavailable: { _ in
+                                          guard thisAttempt == attempt else { return }
+                                          if MirrorRestart.shouldRetry(until: restartUntil, now: Date()), let current = attach {
+                                              attach = Self.afterRestart(current)
+                                              waitingForRestart = true
+                                              Task { @MainActor in
+                                                  try? await Task.sleep(for: .seconds(MirrorRestart.interval))
+                                                  guard thisAttempt == attempt else { return }
+                                                  waitingForRestart = false
+                                                  attempt += 1
+                                              }
+                                          } else if let until = reconnectUntil, Date() < until, attach != nil {
+                                              reconnectUntil = nil
+                                              attempt += 1
+                                          } else {
+                                              dropped = true
+                                          }
+                                      },
+                                      onAttached: { attached in
+                                          restartUntil = nil
+                                          attach = Self.reattach(current, after: attached)
+                                      },
+                                      onRestarting: {
+                                          restartUntil = Date().addingTimeInterval(MirrorRestart.budget)
+                                      })
+                        .id(attempt)
+                }
+            }
                 .navigationTitle(title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -88,6 +115,8 @@ struct MirrorLiveContent: View {
     /// Called once when the attach cannot start, fails or drops; nil keeps the failure on screen instead.
     let onUnavailable: ((String) -> Void)?
     var onAttached: ((MirrorLink.Attached) -> Void)? = nil
+    /// The Mac announced a restart for an update; the drop that follows may be re-attached.
+    var onRestarting: (() -> Void)? = nil
 
     @State private var model = MirrorLiveModel()
     @AppStorage("sendWithReturn") private var sendWithReturn = false
@@ -101,6 +130,9 @@ struct MirrorLiveContent: View {
             }
             .onChange(of: model.attachedCount) { _, _ in
                 if case .attached(let attached) = model.phase { onAttached?(attached) }
+            }
+            .onChange(of: model.restartAnnounced) { _, announced in
+                if announced { onRestarting?() }
             }
     }
 
@@ -144,6 +176,8 @@ final class MirrorLiveModel {
     private(set) var status: MirrorStatus?
     /// Bumped on each `attach_ok`, so a view can react to it without `Attached` being Equatable.
     private(set) var attachedCount = 0
+    /// Set when the Mac sends `daemon_restarting`; read before the drop that follows it.
+    private(set) var restartAnnounced = false
 
     var failure: String? {
         if case .failed(let reason) = phase { return reason }
@@ -172,6 +206,9 @@ final class MirrorLiveModel {
         }
         link.onStatus = { [weak self] status in
             self?.status = status
+        }
+        link.onRestarting = { [weak self] in
+            self?.restartAnnounced = true
         }
         self.link = link
         link.start()

@@ -6,6 +6,8 @@ struct RosterView: View {
     let errors: [String: Error]
     let directoryError: Error?
     var onSelectPane: (String, PaneRow) -> Void = { _, _ in }
+    var canOpenOnMachine: (String) -> Bool = { _ in false }
+    var onOpenOnMachine: (String) -> Void = { _ in }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -109,13 +111,29 @@ struct RosterView: View {
                     Text(snapshot?.displayName ?? id)
                     Spacer(minLength: 8)
                     updateLabel(snapshot, stale: stale, now: now)
+                    openOnMacButton(id)
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(snapshot?.displayName ?? id)
+                    HStack {
+                        Text(snapshot?.displayName ?? id)
+                        Spacer(minLength: 8)
+                        openOnMacButton(id)
+                    }
                     updateLabel(snapshot, stale: stale, now: now)
                 }
             }
             .textCase(nil)
+        }
+    }
+
+    @ViewBuilder private func openOnMacButton(_ id: String) -> some View {
+        if canOpenOnMachine(id) {
+            Button {
+                onOpenOnMachine(id)
+            } label: {
+                Image(systemName: "plus.circle")
+            }
+            .accessibilityLabel("Open on this Mac")
         }
     }
 

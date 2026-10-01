@@ -54,6 +54,12 @@ asc versions update --version-id <ID> --version "0.1.0"
 
 **`POST /v1/apps` は存在しない。** Apple の公式 API はアプリレコードを作れず、Admin ロールのキーでも `403 FORBIDDEN_ERROR — does not allow CREATE` が返る。だから `asc web apps create` は private な iris エンドポイントを web セッションで叩いている（`asc` はそれを `web` グループに隔離して不公式だと明示している）。要望は FB24429185 で未回答。調査の全文は [research/2026-09-09-asc-automation-2026.md](../research/2026-09-09-asc-automation-2026.md)。
 
+## バージョン
+
+**メジャーは Canopy（Mac）に揃え、マイナーとパッチは独立して上げる。** `3.x` の電話は Canopy 3.x の daemon と組む（Open on Mac は 3.0 の control API が要る）。完全一致にしないのはリリースの間隔が別だから —— 電話だけの修正に Canopy の番号は使えない。互換の判定は番号ではなく hello がする（古い Mac には「Update Canopy」）。`0.1.0` から `3.0.0` に上げたのは 2026-10-01。
+
+`MARKETING_VERSION` は `project.yml` に app と通知拡張の 2 か所ある。両方そろえて変える。
+
 ## 手順
 
 ```bash

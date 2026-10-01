@@ -30,7 +30,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: sh.saqoo.canopy-app
         INFOPLIST_KEY_CFBundleDisplayName: Canopy
         DEVELOPMENT_TEAM: VCFY2GFR89
-        MARKETING_VERSION: "0.1.0"
+        MARKETING_VERSION: "3.0.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         GENERATE_INFOPLIST_FILE: YES
@@ -100,7 +100,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: sh.saqoo.canopy-app.NotificationService
         DEVELOPMENT_TEAM: VCFY2GFR89
-        MARKETING_VERSION: "0.1.0"
+        MARKETING_VERSION: "3.0.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         INFOPLIST_FILE: Sources/CanopyMobileNotificationService/Info.plist

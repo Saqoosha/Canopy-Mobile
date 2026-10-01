@@ -17,6 +17,11 @@ struct MirrorLiveView: View {
     @State private var wasInBackground = false
     /// Until when a drop reported after returning from the background rebuilds instead of staying failed.
     @State private var reconnectUntil: Date?
+    /// Until when a drop re-attaches because the Mac announced a restart for an update.
+    @State private var restartUntil: Date?
+    @State private var waitingForRestart = false
+    /// True only for the attaches inside a restart window: the new service holds no sessions.
+    @State private var resumeForRestart = false
 
     struct Attach: Equatable {
         let sessionId: String
@@ -31,24 +36,56 @@ struct MirrorLiveView: View {
                key: attached.hostSessionId ?? first.key)
     }
 
+    /// What an attach asks the Mac to start: `.resume` only while re-attaching after a restart.
+    nonisolated static func openRequest(_ attach: Attach, resumingAfterRestart: Bool) -> OpenRequest? {
+        resumingAfterRestart ? .resume : attach.open
+    }
+
     var body: some View {
         NavigationStack {
             let current = attach ?? Attach(sessionId: sessionId, open: open)
             let thisAttempt = attempt
-            MirrorLiveContent(target: target, sessionId: current.sessionId, open: current.open, key: current.key,
-                              onUnavailable: { _ in
-                                  guard thisAttempt == attempt else { return }
-                                  if let until = reconnectUntil, Date() < until, attach != nil {
-                                      reconnectUntil = nil
-                                      attempt += 1
-                                  } else {
-                                      dropped = true
-                                  }
-                              },
-                              onAttached: { attached in
-                                  attach = Self.reattach(current, after: attached)
-                              })
-                .id(attempt)
+            Group {
+                if waitingForRestart {
+                    ProgressView("The Mac is restarting for an update. Reconnecting…")
+                } else {
+                    MirrorLiveContent(target: target, sessionId: current.sessionId,
+                                      open: Self.openRequest(current, resumingAfterRestart: resumeForRestart), key: current.key,
+                                      onUnavailable: { _ in
+                                          guard thisAttempt == attempt else { return }
+                                          resumeForRestart = false
+                                          restartUntil = nil
+                                          if let until = reconnectUntil, Date() < until, attach != nil {
+                                              reconnectUntil = nil
+                                              attempt += 1
+                                          } else {
+                                              dropped = true
+                                          }
+                                      },
+                                      onAttached: { attached in
+                                          restartUntil = nil
+                                          resumeForRestart = false
+                                          attach = Self.reattach(current, after: attached)
+                                      },
+                                      retryDrop: { announced in
+                                          guard thisAttempt == attempt else { return true }
+                                          if announced { restartUntil = Date().addingTimeInterval(MirrorRestart.budget) }
+                                          guard MirrorRestart.shouldRetry(until: restartUntil, now: Date()), attach != nil else {
+                                              return false
+                                          }
+                                          resumeForRestart = true
+                                          waitingForRestart = true
+                                          Task { @MainActor in
+                                              try? await Task.sleep(for: .seconds(MirrorRestart.interval))
+                                              waitingForRestart = false
+                                              guard thisAttempt == attempt else { return }
+                                              attempt += 1
+                                          }
+                                          return true
+                                      })
+                        .id(attempt)
+                }
+            }
                 .navigationTitle(title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -88,6 +125,9 @@ struct MirrorLiveContent: View {
     /// Called once when the attach cannot start, fails or drops; nil keeps the failure on screen instead.
     let onUnavailable: ((String) -> Void)?
     var onAttached: ((MirrorLink.Attached) -> Void)? = nil
+    /// Asked before `onUnavailable` for a drop that was not a refusal, with whether the Mac announced
+    /// a restart first; returning true means the caller re-attaches and `onUnavailable` is skipped.
+    var retryDrop: ((_ restartAnnounced: Bool) -> Bool)? = nil
 
     @State private var model = MirrorLiveModel()
     @AppStorage("sendWithReturn") private var sendWithReturn = false
@@ -97,11 +137,15 @@ struct MirrorLiveContent: View {
             .task { model.start(target: target, sessionId: sessionId, open: open, key: key) }
             .onDisappear { model.close() }
             .onChange(of: model.failure) { _, reason in
-                if let reason { onUnavailable?(reason) }
+                guard let reason else { return }
+                // The notice is read here, at the drop, so it cannot lose a race with it.
+                if !model.refused, retryDrop?(model.restartAnnounced) == true { return }
+                onUnavailable?(reason)
             }
             .onChange(of: model.attachedCount) { _, _ in
                 if case .attached(let attached) = model.phase { onAttached?(attached) }
             }
+
     }
 
     @ViewBuilder
@@ -144,6 +188,11 @@ final class MirrorLiveModel {
     private(set) var status: MirrorStatus?
     /// Bumped on each `attach_ok`, so a view can react to it without `Attached` being Equatable.
     private(set) var attachedCount = 0
+    /// Set when the Mac sends `daemon_restarting`; read before the drop that follows it.
+    private(set) var restartAnnounced = false
+
+    /// The Mac refused the attach; retrying will not change that.
+    var refused: Bool { link?.refusedByMac == true }
 
     var failure: String? {
         if case .failed(let reason) = phase { return reason }
@@ -172,6 +221,9 @@ final class MirrorLiveModel {
         }
         link.onStatus = { [weak self] status in
             self?.status = status
+        }
+        link.onRestarting = { [weak self] in
+            self?.restartAnnounced = true
         }
         self.link = link
         link.start()

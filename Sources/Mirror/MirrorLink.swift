@@ -37,6 +37,10 @@ final class MirrorLink {
     /// The Mac's status bar, on attach and after every change; never called by an older Mac.
     var onStatus: ((MirrorStatus) -> Void)?
     var onFailure: ((String) -> Void)?
+    /// The Mac's session service announced it is restarting for an update; the drop that follows is planned.
+    var onRestarting: (() -> Void)?
+    /// Set when the Mac answered `attach_error`: a refusal, which waiting will not change.
+    private(set) var refusedByMac = false
 
     nonisolated(unsafe) private let connection: NWConnection
     nonisolated private let buffer = LineBuffer()
@@ -92,6 +96,8 @@ final class MirrorLink {
             "prefetch": !Self.startsNewSession(open),
             "status": true,
             "compress": MirrorWire.compressionName,
+            // This app re-attaches after `daemon_restarting`, so the Mac's update need not wait for it.
+            "restart": true,
         ]
         if let open {
             message["open"] = open.wire
@@ -301,6 +307,7 @@ final class MirrorLink {
                                  sessionId: nonEmpty("sessionId"), hostSessionId: nonEmpty("hostSessionId")))
         case "attach_error":
             waitingDeadline?.cancel()
+            refusedByMac = true
             switch object["message"] as? String {
             case "unauthorized": fail("The Mac rejected the password. Copy the connection again from Canopy's Settings.")
             case "no such session": fail("This session is not running on the Mac.")
@@ -308,6 +315,9 @@ final class MirrorLink {
             case "start failed": fail("The Mac could not start the session. Check Canopy on that Mac.")
             case let other: fail(other ?? "The Mac refused the connection.")
             }
+        case MirrorRestart.noticeType:
+            // Not a webview frame: the connection drops within a second or so.
+            onRestarting?()
         case "status":
             // Not a webview frame: it is read here and never posted into the page.
             guard let status = MirrorStatus(frame: object) else {
@@ -379,6 +389,20 @@ final class MirrorLink {
         let pending = pendingAssets
         pendingAssets.removeAll()
         pending.values.forEach { $0.resume(throwing: AssetError.closed) }
+    }
+}
+
+/// How long, and how often, a live view re-attaches after the Mac's session service announced a
+/// restart for an update. The service is usually back within a few seconds (measured 0.1 s from
+/// the old process's last connection to the new listener); the budget covers a slow shutdown.
+enum MirrorRestart {
+    static let noticeType = "daemon_restarting"
+    static let budget: TimeInterval = 60
+    static let interval: TimeInterval = 2
+
+    nonisolated static func shouldRetry(until: Date?, now: Date) -> Bool {
+        guard let until else { return false }
+        return now < until
     }
 }
 

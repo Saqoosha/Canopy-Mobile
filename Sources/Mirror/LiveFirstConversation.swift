@@ -71,6 +71,8 @@ struct LiveFirstConversation<Offline: View>: View {
                               onUnavailable: { reason in
                                   // A drop reported by a live view that has already been replaced.
                                   guard current == attempt else { return }
+                                  resumeOnAttach = false
+                                  restartUntil = nil
                                   if let until = reconnectUntil, Date() < until {
                                       reconnectUntil = nil
                                       attempt += 1

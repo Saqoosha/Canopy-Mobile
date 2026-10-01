@@ -35,10 +35,9 @@ struct MirrorRestartTests {
         #expect(!MirrorRestart.shouldRetry(until: now, now: now))
     }
 
-    @Test func aRestartReattachAsksTheNewServiceToResume() {
+    @Test func onlyARestartReattachAsksTheNewServiceToResume() {
         let attached = MirrorLiveView.Attach(sessionId: "s1", open: nil, key: "old-key")
-        let next = MirrorLiveView.afterRestart(attached)
-        #expect(next.sessionId == "s1")
-        #expect(next.open == .resume)
+        #expect(MirrorLiveView.openRequest(attached, resumingAfterRestart: true) == .resume)
+        #expect(MirrorLiveView.openRequest(attached, resumingAfterRestart: false) == nil)
     }
 }

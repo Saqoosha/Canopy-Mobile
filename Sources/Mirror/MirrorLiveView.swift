@@ -20,6 +20,8 @@ struct MirrorLiveView: View {
     /// Until when a drop re-attaches because the Mac announced a restart for an update.
     @State private var restartUntil: Date?
     @State private var waitingForRestart = false
+    /// True only for the attaches inside a restart window: the new service holds no sessions.
+    @State private var resumeForRestart = false
 
     struct Attach: Equatable {
         let sessionId: String
@@ -34,9 +36,9 @@ struct MirrorLiveView: View {
                key: attached.hostSessionId ?? first.key)
     }
 
-    /// The attach after a restart: the new service holds no sessions, so it is asked to resume this one.
-    nonisolated static func afterRestart(_ attach: Attach) -> Attach {
-        Attach(sessionId: attach.sessionId, open: .resume, key: attach.key)
+    /// What an attach asks the Mac to start: `.resume` only while re-attaching after a restart.
+    nonisolated static func openRequest(_ attach: Attach, resumingAfterRestart: Bool) -> OpenRequest? {
+        resumingAfterRestart ? .resume : attach.open
     }
 
     var body: some View {
@@ -47,9 +49,12 @@ struct MirrorLiveView: View {
                 if waitingForRestart {
                     ProgressView("The Mac is restarting for an update. Reconnecting…")
                 } else {
-                    MirrorLiveContent(target: target, sessionId: current.sessionId, open: current.open, key: current.key,
+                    MirrorLiveContent(target: target, sessionId: current.sessionId,
+                                      open: Self.openRequest(current, resumingAfterRestart: resumeForRestart), key: current.key,
                                       onUnavailable: { _ in
                                           guard thisAttempt == attempt else { return }
+                                          resumeForRestart = false
+                                          restartUntil = nil
                                           if let until = reconnectUntil, Date() < until, attach != nil {
                                               reconnectUntil = nil
                                               attempt += 1
@@ -59,18 +64,16 @@ struct MirrorLiveView: View {
                                       },
                                       onAttached: { attached in
                                           restartUntil = nil
-                                          // The view's own `open`, not the restart's `.resume`, so a later
-                                          // re-attach does not restart a session stopped on the Mac.
-                                          attach = Self.reattach(Attach(sessionId: current.sessionId, open: open, key: current.key),
-                                                                 after: attached)
+                                          resumeForRestart = false
+                                          attach = Self.reattach(current, after: attached)
                                       },
                                       retryDrop: { announced in
                                           guard thisAttempt == attempt else { return true }
                                           if announced { restartUntil = Date().addingTimeInterval(MirrorRestart.budget) }
-                                          guard MirrorRestart.shouldRetry(until: restartUntil, now: Date()), let current = attach else {
+                                          guard MirrorRestart.shouldRetry(until: restartUntil, now: Date()), attach != nil else {
                                               return false
                                           }
-                                          attach = Self.afterRestart(current)
+                                          resumeForRestart = true
                                           waitingForRestart = true
                                           Task { @MainActor in
                                               try? await Task.sleep(for: .seconds(MirrorRestart.interval))

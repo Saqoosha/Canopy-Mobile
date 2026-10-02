@@ -36,7 +36,7 @@ struct CanopyMobileApp: App {
     ///
     /// **A reference box rather than an `Optional` held directly in `@State`,
     /// and the difference is load-bearing.** The reader is `onOpen`, a
-    /// closure created once inside `connectAll()` and then owned by the
+    /// closure created in `connect(machine:baseURL:)` and then owned by the
     /// socket for its whole life — not rebuilt per body pass like the
     /// closures in `conversation(_:)`. What such a closure captures is the
     /// `App` value from the pass that started it, so reading a VALUE out of
@@ -348,6 +348,8 @@ struct CanopyMobileApp: App {
         // demonstrably set (measured: the values printed, the list stayed
         // empty). This guard is the whole reason the demo renders.
         guard !CanopyDemo.isEnabled else { return }
+        // A retry holds the old URL; `connectAll()` skips `disconnectAll()` when the directory fails.
+        socketRetry.cancelAll()
         connectTask?.cancel()
         connectTask = Task { await connectAll() }
     }
@@ -410,7 +412,7 @@ struct CanopyMobileApp: App {
                              evictedThrough: page.evictedThrough,
                              sessionId: page.sessionId, machine: id)
         } onOpen: { [weak socket] in
-            socketRetry.attempts[id] = 0
+            socketRetry.opened(id)
             // This socket is up. If a conversation on THIS Mac is open,
             // re-ask for its backfill — the view's own ask may have run
             // before any socket existed (cold start), or belonged to a
@@ -456,19 +458,9 @@ struct CanopyMobileApp: App {
     /// working fine "Offline" (seen on device 2026-10-02) — while the "+"
     /// button, which talks to the Mac by another path, still worked.
     ///
-    /// Backoff 1, 2, 4 … 30 s, reset when a frame arrives (`onOpen`). The
-    /// generation check drops a retry that a `disconnectAll()` has already
-    /// superseded — backgrounding, or a fresh `connectAll()`.
+    /// Backoff policy lives in `SocketRetryBox`; `disconnectAll()` cancels.
     private func scheduleRetry(machine id: String, baseURL: URL) {
-        let attempt = socketRetry.attempts[id, default: 0]
-        socketRetry.attempts[id] = attempt + 1
-        let delay = min(30.0, pow(2.0, Double(attempt)))
-        let generation = socketRetry.generation
-        socketRetry.tasks[id]?.cancel()
-        socketRetry.tasks[id] = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled, socketRetry.generation == generation else { return }
-            socketRetry.tasks[id] = nil
+        socketRetry.schedule(id) {
             connect(machine: id, baseURL: baseURL)
         }
     }
@@ -814,20 +806,61 @@ final class ViewedSessionBox {
     var current: ViewedSession?
 }
 
-/// See `CanopyMobileApp.socketRetry`.
+/// Per-machine reconnect backoff for roster sockets: 1, 2, 4 … 30 s.
+///
+/// The count resets only when the dropped connection had stayed up for
+/// `stableUptime`. Resetting on the open edge alone let a socket that opens,
+/// delivers its snapshot and drops retry every second forever.
 @MainActor
 final class SocketRetryBox {
-    var tasks: [String: Task<Void, Never>] = [:]
-    var attempts: [String: Int] = [:]
-    /// Bumped by `cancelAll()`, so a retry already past its sleep cannot
-    /// install a socket into a teardown that happened while it waited.
-    var generation = 0
+    static let stableUptime: TimeInterval = 30
+
+    private var tasks: [String: Task<Void, Never>] = [:]
+    private var attempts: [String: Int] = [:]
+    private var openedAt: [String: Date] = [:]
+
+    nonisolated static func delay(forAttempt attempt: Int) -> TimeInterval {
+        pow(2, Double(min(attempt, 5))).clamped(to: 1...30)
+    }
+
+    /// The socket for `id` delivered its first frame.
+    func opened(_ id: String, at now: Date = .now) {
+        openedAt[id] = now
+    }
+
+    /// Runs `action` after the backoff delay, replacing any pending retry
+    /// for `id`. Returns the delay chosen.
+    @discardableResult
+    func schedule(_ id: String, now: Date = .now,
+                  action: @escaping @MainActor () -> Void) -> TimeInterval {
+        if let opened = openedAt.removeValue(forKey: id),
+           now.timeIntervalSince(opened) >= Self.stableUptime {
+            attempts[id] = 0
+        }
+        let attempt = attempts[id, default: 0]
+        attempts[id] = attempt + 1
+        let delay = Self.delay(forAttempt: attempt)
+        tasks[id]?.cancel()
+        tasks[id] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            self?.tasks[id] = nil
+            action()
+        }
+        return delay
+    }
 
     func cancelAll() {
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
         attempts.removeAll()
-        generation += 1
+        openedAt.removeAll()
+    }
+}
+
+private extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
     }
 }
 

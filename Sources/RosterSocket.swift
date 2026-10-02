@@ -1,9 +1,7 @@
 import Foundation
 
-/// Reported by `RosterSocket` when its receive loop stops for good. Thin on
-/// purpose — this is visibility, not recovery: no reconnect state, no
-/// backoff. Recovery is a background/foreground cycle, which re-runs
-/// `connectAll()` and installs a fresh socket.
+/// Reported by `RosterSocket` when its receive loop stops for good. This type
+/// holds no reconnect state; the app re-opens it (`SocketRetryBox`).
 struct RosterSocketError: Error {
     let underlying: Error
 
@@ -64,9 +62,9 @@ final class RosterSocket {
     /// Ask the relay for everything after `seq` in one session.
     ///
     /// Sent on the same socket the events arrive on, so the answer comes back
-    /// to this phone only. A send failure is silent: the socket is either
-    /// about to report its own failure through `onFailure`, or the next
-    /// foreground cycle will connect a new one and ask again.
+    /// to this phone only. A send failure is silent: the socket is about
+    /// to report its own failure through `onFailure`, and the socket that
+    /// replaces it asks again from `onOpen`.
     func requestEvents(sessionId: String, since seq: Int) {
         let body: [String: Any] = ["type": "events_since", "sessionId": sessionId, "seq": seq]
         guard let data = try? JSONSerialization.data(withJSONObject: body),

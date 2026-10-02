@@ -45,6 +45,10 @@ struct CanopyMobileApp: App {
     /// it is created once, never replaced, and `.current` is read at call
     /// time.
     @State private var viewedSession = ViewedSessionBox()
+    /// Pending re-connects for sockets that dropped while foregrounded. A
+    /// reference box for the same reason as `viewedSession`: it is read from
+    /// `onFailure`/`onOpen`, closures that outlive the pass that built them.
+    @State private var socketRetry = SocketRetryBox()
     @Environment(\.scenePhase) private var scenePhase
 
     // Configurable from inside the app now (see `SettingsView`) — an app
@@ -383,58 +387,94 @@ struct CanopyMobileApp: App {
         directoryError = nil
         disconnectAll()
         for id in machineIds {
-            let socket = RosterSocket(baseURL: baseURL, secret: secret)
-            sockets[id] = socket
-            socket.connect(machine: id) { snapshot in
-                snapshots[id] = snapshot
-                errors[id] = nil
-            } onEvent: { record in
-                // `id` is this socket's Mac. Seq numbers are per Mac, so the
-                // store must know which one a record came from.
-                eventStore.apply(record, machine: id)
-            } onBackfill: { page in
-                eventStore.apply(backfill: page.events, since: page.since,
-                                 evictedThrough: page.evictedThrough,
-                                 sessionId: page.sessionId, machine: id)
-            } onOpen: { [weak socket] in
-                // This socket is up. If a conversation on THIS Mac is open,
-                // re-ask for its backfill — the view's own ask may have run
-                // before any socket existed (cold start), or belonged to a
-                // socket that has since died (reconnect).
-                //
-                // Re-asking on a session that missed nothing is cheap and
-                // idempotent rather than merely harmless: the relay answers
-                // `WHERE seq > lastSeq`, so an up-to-date store gets an empty
-                // page, and `apply` is keyed by seq, so even a full page
-                // overwrites nothing. That is what makes this safe to fire
-                // unconditionally instead of gating it on a suspicion that
-                // something was missed — a gate would need its own notion of
-                // "was the socket down", which is the state this is here to
-                // stop relying on.
-                //
-                // The socket is handed over rather than looked up in
-                // `sockets`, for the same reason the viewed session is
-                // boxed: this closure outlives the pass that built it, and
-                // `socket` is right here. Weakly, because the socket owns
-                // the task that owns this closure — capturing it strongly
-                // would be a cycle, and a socket already replaced SHOULD
-                // resolve to nil and send nothing.
-                guard let viewing = viewedSession.current, viewing.machine == id else { return }
-                requestBackfill(sessionId: viewing.sessionId,
-                                since: eventStore.lastSeq(sessionId: viewing.sessionId),
-                                using: socket)
-            } onFailure: { error in
-                // The receive loop has stopped for this machine — surface it
-                // through the same `errors` slot `refresh()` uses, so the
-                // section says its live connection dropped instead of
-                // silently keeping the last snapshot on screen with the
-                // elapsed counter still ticking as though nothing happened.
-                errors[id] = error
-            }
+            connect(machine: id, baseURL: baseURL)
+        }
+    }
+
+    /// Opens one machine's socket, replacing whatever was there. Used by
+    /// `connectAll()` for every machine and by a retry for the one that
+    /// dropped.
+    private func connect(machine id: String, baseURL: URL) {
+        sockets[id]?.disconnect()
+        let socket = RosterSocket(baseURL: baseURL, secret: secret)
+        sockets[id] = socket
+        socket.connect(machine: id) { snapshot in
+            snapshots[id] = snapshot
+            errors[id] = nil
+        } onEvent: { record in
+            // `id` is this socket's Mac. Seq numbers are per Mac, so the
+            // store must know which one a record came from.
+            eventStore.apply(record, machine: id)
+        } onBackfill: { page in
+            eventStore.apply(backfill: page.events, since: page.since,
+                             evictedThrough: page.evictedThrough,
+                             sessionId: page.sessionId, machine: id)
+        } onOpen: { [weak socket] in
+            socketRetry.attempts[id] = 0
+            // This socket is up. If a conversation on THIS Mac is open,
+            // re-ask for its backfill — the view's own ask may have run
+            // before any socket existed (cold start), or belonged to a
+            // socket that has since died (reconnect).
+            //
+            // Re-asking on a session that missed nothing is cheap and
+            // idempotent rather than merely harmless: the relay answers
+            // `WHERE seq > lastSeq`, so an up-to-date store gets an empty
+            // page, and `apply` is keyed by seq, so even a full page
+            // overwrites nothing. That is what makes this safe to fire
+            // unconditionally instead of gating it on a suspicion that
+            // something was missed — a gate would need its own notion of
+            // "was the socket down", which is the state this is here to
+            // stop relying on.
+            //
+            // The socket is handed over rather than looked up in
+            // `sockets`, for the same reason the viewed session is
+            // boxed: this closure outlives the pass that built it, and
+            // `socket` is right here. Weakly, because the socket owns
+            // the task that owns this closure — capturing it strongly
+            // would be a cycle, and a socket already replaced SHOULD
+            // resolve to nil and send nothing.
+            guard let viewing = viewedSession.current, viewing.machine == id else { return }
+            requestBackfill(sessionId: viewing.sessionId,
+                            since: eventStore.lastSeq(sessionId: viewing.sessionId),
+                            using: socket)
+        } onFailure: { error in
+            // The receive loop has stopped for this machine — surface it
+            // through the same `errors` slot `refresh()` uses, so the
+            // section says its live connection dropped instead of
+            // silently keeping the last snapshot on screen with the
+            // elapsed counter still ticking as though nothing happened.
+            errors[id] = error
+            scheduleRetry(machine: id, baseURL: baseURL)
+        }
+    }
+
+    /// Re-opens one machine's socket after it dropped.
+    ///
+    /// **Without this a drop froze that machine until the next foreground
+    /// cycle.** A Wi-Fi blip killed the MBP socket, the last snapshot stayed
+    /// on screen, and five minutes later the roster called a Mac that was
+    /// working fine "Offline" (seen on device 2026-10-02) — while the "+"
+    /// button, which talks to the Mac by another path, still worked.
+    ///
+    /// Backoff 1, 2, 4 … 30 s, reset when a frame arrives (`onOpen`). The
+    /// generation check drops a retry that a `disconnectAll()` has already
+    /// superseded — backgrounding, or a fresh `connectAll()`.
+    private func scheduleRetry(machine id: String, baseURL: URL) {
+        let attempt = socketRetry.attempts[id, default: 0]
+        socketRetry.attempts[id] = attempt + 1
+        let delay = min(30.0, pow(2.0, Double(attempt)))
+        let generation = socketRetry.generation
+        socketRetry.tasks[id]?.cancel()
+        socketRetry.tasks[id] = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, socketRetry.generation == generation else { return }
+            socketRetry.tasks[id] = nil
+            connect(machine: id, baseURL: baseURL)
         }
     }
 
     private func disconnectAll() {
+        socketRetry.cancelAll()
         for socket in sockets.values { socket.disconnect() }
         sockets.removeAll()
     }
@@ -772,6 +812,23 @@ struct ViewedSession: Hashable {
 @MainActor
 final class ViewedSessionBox {
     var current: ViewedSession?
+}
+
+/// See `CanopyMobileApp.socketRetry`.
+@MainActor
+final class SocketRetryBox {
+    var tasks: [String: Task<Void, Never>] = [:]
+    var attempts: [String: Int] = [:]
+    /// Bumped by `cancelAll()`, so a retry already past its sleep cannot
+    /// install a socket into a teardown that happened while it waited.
+    var generation = 0
+
+    func cancelAll() {
+        for task in tasks.values { task.cancel() }
+        tasks.removeAll()
+        attempts.removeAll()
+        generation += 1
+    }
 }
 
 /// What a push onto the navigation stack needs to open one session's

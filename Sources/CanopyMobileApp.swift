@@ -348,8 +348,6 @@ struct CanopyMobileApp: App {
         // demonstrably set (measured: the values printed, the list stayed
         // empty). This guard is the whole reason the demo renders.
         guard !CanopyDemo.isEnabled else { return }
-        // A retry holds the old URL; `connectAll()` skips `disconnectAll()` when the directory fails.
-        socketRetry.cancelAll()
         connectTask?.cancel()
         connectTask = Task { await connectAll() }
     }

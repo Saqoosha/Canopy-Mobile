@@ -459,6 +459,8 @@ struct CanopyMobileApp: App {
     /// Backoff policy lives in `SocketRetryBox`; `disconnectAll()` cancels.
     private func scheduleRetry(machine id: String, baseURL: URL) {
         socketRetry.schedule(id) {
+            // `rosterUrl` is `@AppStorage`, so this reads the current URL; a Settings edit drops the retry.
+            guard self.baseURL == baseURL else { return }
             connect(machine: id, baseURL: baseURL)
         }
     }

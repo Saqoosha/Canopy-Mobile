@@ -47,6 +47,8 @@ enum CanopyDemo {
                                 // What a real push carries: the tool input as a fenced block.
                                 // A friendly sentence here hid the "```json" preview bug.
                                 body: "```json\n{\n  \"questions\" : [\n    {\n      \"header\" : \"Database\",\n      \"question\" : \"Which database?\"\n    }\n  ]\n}\n```",
+                                // The relay's banner for a form: the questions joined (`plainBanner`).
+                                bodyShort: "Which database? · Which features?",
                                 machine: "studio", sessionId: "questions", kind: "asking", requestId: "demo-questions",
                                 resumeId: "questions", answerable: false, choices: [
                                     // Descriptions on purpose: on a real ask they carry the
@@ -68,6 +70,7 @@ enum CanopyDemo {
                                 allowAlways: true, resumeId: "notifications"),
         NotificationHistoryItem(id: "update", receivedAt: .now.addingTimeInterval(-180), title: "Notification flow updated",
                                 body: "Replies now return to the **correct session**, including after a reconnect.\n\n- Preserved session history\n- Improved permission handling\n- Ready for verification",
+                                bodyShort: "Replies now return to the correct session, including after a reconnect.",
                                 machine: "studio", sessionId: "notifications", kind: "completed", resumeId: "notifications"),
         NotificationHistoryItem(id: "onboarding-ready", receivedAt: .now.addingTimeInterval(-360), title: "Onboarding is ready",
                                 body: "The welcome flow is simpler, and the connection state is easier to understand.\n\n**接続完了。**次のセッションを開始できます。",

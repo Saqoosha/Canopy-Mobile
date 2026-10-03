@@ -9,6 +9,9 @@ struct HistoryView: View {
     /// row does not push anything itself: `CanopyMobileApp` owns the
     /// navigation path, so one type of destination is built in one place.
     let onSelect: (NotificationHistoryItem) -> Void
+    /// The roster, for the names a row shows. The push itself carries only
+    /// ids and a title that reads "Canopy" on every row.
+    let snapshots: [String: MachineSnapshot]
 
     @State private var items: [NotificationHistoryItem] = []
     @State private var loadError: Error?
@@ -56,15 +59,19 @@ struct HistoryView: View {
                 .padding(.top, 2)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.title).font(.body.weight(.medium))
-                    .foregroundStyle(.primary)
+                if let sessionTitle = item.sessionTitle(in: snapshots) {
+                    Text(sessionTitle).font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
                 Text(item.listDisplayBody)
-                    .font(.subheadline)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                Text(item.receivedAt, style: .time)
-                    .font(.caption)
+                Text("\(Text(item.receivedAt, style: .time)) · \(item.machineName(in: snapshots))")
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 if let decision = item.decision {
                     Label(item.decisionDelivered == false
                           ? "Answered: \(decision) — not delivered" : "Answered: \(decision)",
@@ -109,5 +116,31 @@ struct HistoryView: View {
             }
         }
         return error.localizedDescription
+    }
+}
+
+extension NotificationHistoryItem {
+    /// The pane this notification came from, if the roster still lists it.
+    /// `resumeId` first: `sessionId` is minted per Canopy process, so after a
+    /// restart only `resumeId` still finds the session.
+    func pane(in snapshots: [String: MachineSnapshot]) -> PaneRow? {
+        guard let panes = snapshots[machine]?.panes else { return nil }
+        if let resumeId, let pane = panes.first(where: { $0.resumeId == resumeId }) {
+            return pane
+        }
+        return panes.first { $0.sessionId == sessionId }
+    }
+
+    /// The session's name from the roster. Nil once the session has closed:
+    /// the push's own title is "Canopy" on every row, which names nothing.
+    func sessionTitle(in snapshots: [String: MachineSnapshot]) -> String? {
+        guard let title = pane(in: snapshots)?.title, !title.isEmpty else { return nil }
+        return title
+    }
+
+    /// The roster's name for the machine. The raw id only when the machine is
+    /// not in the roster at all.
+    func machineName(in snapshots: [String: MachineSnapshot]) -> String {
+        snapshots[machine]?.displayName ?? machine
     }
 }

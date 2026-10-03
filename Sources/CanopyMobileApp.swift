@@ -155,18 +155,18 @@ struct CanopyMobileApp: App {
                     case .conversation(let target):
                         conversation(target)
                     case .history:
-                        HistoryView { item in
+                        HistoryView(onSelect: { item in
                             path.append(.conversation(ConversationTarget(
                                 machine: item.machine,
                                 sessionId: item.sessionId,
                                 resumeId: item.resumeId,
-                                title: item.title,
+                                title: item.sessionTitle(in: snapshots) ?? "Session",
                                 // The roster's own name for the machine when
                                 // it has one. A raw machine UUID under the
                                 // title is an id the reader cannot use.
-                                subtitle: snapshots[item.machine]?.displayName ?? item.machine
+                                subtitle: item.machineName(in: snapshots)
                             )))
-                        }
+                        }, snapshots: snapshots)
                         .navigationTitle("History")
                     }
                 }
@@ -510,7 +510,9 @@ struct CanopyMobileApp: App {
         // the extension's append failed or the entry has been pruned past
         // `maxItems`. Landing on the right session with a placeholder title
         // beats landing on somebody else's session with a correct one.
-        let title = pane?.title ?? item?.title ?? "Session"
+        // Not `item?.title`: Canopy titles every push "Canopy" or "Canopy —
+        // <tool>", which names no session.
+        let title = pane?.title ?? "Session"
         if pane == nil, item == nil {
             // Surfaced, never swallowed: this is the state that used to be
             // indistinguishable from "the tap did nothing".

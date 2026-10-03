@@ -502,3 +502,64 @@ struct ConversationMergeTests {
         #expect(ConversationRow.merge(items: [], events: []).isEmpty)
     }
 }
+
+/// The roster reconnect backoff. A socket that flaps must not retry every
+/// second, and one that stayed up long enough must start over at 1 s.
+@MainActor
+struct SocketRetryBoxTests {
+    @Test("Delays double from 1 s and cap at 30 s")
+    func delaySchedule() {
+        let delays = (0...6).map { SocketRetryBox.delay(forAttempt: $0) }
+        #expect(delays == [1, 2, 4, 8, 16, 30, 30])
+        #expect(SocketRetryBox.delay(forAttempt: 1_000) == 30)
+    }
+
+    @Test("A connection that drops right after opening keeps backing off")
+    func flappingKeepsBackingOff() {
+        let box = SocketRetryBox()
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        var delays: [TimeInterval] = []
+        for i in 0..<3 {
+            let now = t0.addingTimeInterval(Double(i) * 10)
+            box.opened("m", at: now)
+            delays.append(box.schedule("m", now: now.addingTimeInterval(1)) {})
+        }
+        box.cancelAll()
+        #expect(delays == [1, 2, 4])
+    }
+
+    @Test("A connection that stayed up resets the backoff")
+    func stableConnectionResets() {
+        let box = SocketRetryBox()
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        box.schedule("m", now: t0) {}
+        box.schedule("m", now: t0) {}
+        box.opened("m", at: t0)
+        let delay = box.schedule("m", now: t0.addingTimeInterval(SocketRetryBox.stableUptime)) {}
+        box.cancelAll()
+        #expect(delay == 1)
+    }
+
+    @Test("Machines back off independently")
+    func perMachine() {
+        let box = SocketRetryBox()
+        box.schedule("a") {}
+        box.schedule("a") {}
+        let b = box.schedule("b") {}
+        box.cancelAll()
+        #expect(b == 1)
+    }
+
+    @Test("cancelAll stops pending retries and forgets the count")
+    func cancelAllStopsAndResets() async throws {
+        let box = SocketRetryBox()
+        var fired = false
+        box.schedule("m") { fired = true }
+        box.cancelAll()
+        try await Task.sleep(for: .seconds(1.5))
+        #expect(!fired)
+        let next = box.schedule("m") {}
+        box.cancelAll()
+        #expect(next == 1)
+    }
+}

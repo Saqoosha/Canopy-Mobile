@@ -165,8 +165,10 @@ struct OpenOnMacView: View {
         do {
             try await control.connect()
             phase = .ready
+            // Folders are a quick read on the Mac; don't hold them behind the session scan.
+            async let folders: Void = loadFolders()
             await loadSessions(failSheet: true)
-            await loadFolders()
+            await folders
         } catch let error as MachineControl.ControlError {
             phase = .failed(error.message)
         } catch {

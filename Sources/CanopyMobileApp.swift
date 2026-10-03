@@ -205,7 +205,7 @@ struct CanopyMobileApp: App {
                         Task { await stop(request) }
                     }
                 } message: { _ in
-                    Text("The session ends on the Mac. You can resume it later from Open on Mac.")
+                    Text("The session ends on the Mac.")
                 }
                 .alert("Could not stop the session",
                        isPresented: Binding(get: { stopError != nil }, set: { if !$0 { stopError = nil } })) {
@@ -305,11 +305,7 @@ struct CanopyMobileApp: App {
         }
     }
 
-    /// Pulls the directory, then every listed machine's roster over REST.
-    /// A machine whose own fetch fails keeps whatever snapshot it already
-    /// had (stale, not cleared) and records the failure in `errors` so the
-    /// view can say so — see `RosterView`. A no-op, deliberately, when the
-    /// relay isn't configured (`directory`/`client` are `nil`).
+    /// Stops a session on its Mac over the control connection.
     private func stop(_ request: StopRequest) async {
         let control = MachineControl(target: request.target)
         defer { control.close() }
@@ -319,6 +315,9 @@ struct CanopyMobileApp: App {
             _ = try await control.request("stop_session", ["key": request.pane.sessionId,
                                                            "sessionId": request.pane.resumeId ?? ""])
             await refresh()
+        } catch MachineControl.ControlError.failed("no such session") {
+            // Already gone: a second tap, or a restart that lost it.
+            await refresh()
         } catch let error as MachineControl.ControlError {
             stopError = error.message
         } catch {
@@ -326,6 +325,11 @@ struct CanopyMobileApp: App {
         }
     }
 
+    /// Pulls the directory, then every listed machine's roster over REST.
+    /// A machine whose own fetch fails keeps whatever snapshot it already
+    /// had (stale, not cleared) and records the failure in `errors` so the
+    /// view can say so — see `RosterView`. A no-op, deliberately, when the
+    /// relay isn't configured (`directory`/`client` are `nil`).
     private func refresh() async {
         // The fixtures re-publish with a current timestamp each pass, so the
         // "Updated Ns ago" line ticks the way it does against a real Mac.

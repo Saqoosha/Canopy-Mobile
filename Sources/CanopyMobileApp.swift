@@ -70,6 +70,9 @@ struct CanopyMobileApp: App {
     @State private var openOnMac: OpenOnMacItem?
     /// Live cover opened from Open on Mac (resume or new session).
     @State private var openOnMacLive: OpenOnMacLive?
+    /// A session waiting for the user to confirm stopping it on its Mac.
+    @State private var stopRequest: StopRequest?
+    @State private var stopError: String?
     /// Held while the sheet closes: a cover presented during a sheet's dismissal can be dropped.
     @State private var pendingOpenOnMacLive: OpenOnMacLive?
     /// The Macs whose sessions open live. A demo run keeps an empty, unsaved table.
@@ -141,6 +144,11 @@ struct CanopyMobileApp: App {
                                 target: target,
                                 machineName: snapshots[machineId]?.displayName ?? machineId
                             )
+                        },
+                                   onStopPane: { machineId, pane in
+                            guard let target = mirrorStore.target(for: machineId) else { return }
+                            stopRequest = StopRequest(target: target, pane: pane,
+                                                      machineName: snapshots[machineId]?.displayName ?? machineId)
                         })
                         .refreshable {
                             await refresh()
@@ -193,6 +201,21 @@ struct CanopyMobileApp: App {
                 .sheet(isPresented: $showingSettings) {
                     SettingsView(rosterUrl: CanopyDemo.isEnabled ? $demoURL : $rosterUrl, secret: $secret,
                                  mirrorStore: mirrorStore, machineNames: machineNames)
+                }
+                .confirmationDialog(stopRequest.map { "Stop \($0.pane.title) on \($0.machineName)?" } ?? "",
+                                    isPresented: Binding(get: { stopRequest != nil }, set: { if !$0 { stopRequest = nil } }),
+                                    titleVisibility: .visible, presenting: stopRequest) { request in
+                    Button("Stop Session", role: .destructive) {
+                        Task { await stop(request) }
+                    }
+                } message: { _ in
+                    Text("The session ends on the Mac.")
+                }
+                .alert("Could not stop the session",
+                       isPresented: Binding(get: { stopError != nil }, set: { if !$0 { stopError = nil } })) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(stopError ?? "")
                 }
                 .sheet(item: $openOnMac, onDismiss: {
                     openOnMacLive = pendingOpenOnMacLive
@@ -283,6 +306,26 @@ struct CanopyMobileApp: App {
                 guard scenePhase == .active else { return }
                 reconnect()
             }
+        }
+    }
+
+    /// Stops a session on its Mac over the control connection.
+    private func stop(_ request: StopRequest) async {
+        let control = MachineControl(target: request.target)
+        defer { control.close() }
+        do {
+            try await control.connect()
+            // `sessionId` in the roster is the Mac's key for the session; `resumeId` outlives a restart.
+            _ = try await control.request("stop_session", ["key": request.pane.sessionId,
+                                                           "sessionId": request.pane.resumeId ?? ""])
+            await refresh()
+        } catch MachineControl.ControlError.failed("no such session") {
+            // Already gone: a second tap, or a restart that lost it.
+            await refresh()
+        } catch let error as MachineControl.ControlError {
+            stopError = error.message
+        } catch {
+            stopError = error.localizedDescription
         }
     }
 
@@ -883,6 +926,13 @@ struct ConversationTarget: Hashable {
     var resumeId: String?
     let title: String
     let subtitle: String
+}
+
+/// A session the user asked to stop, pending confirmation.
+struct StopRequest {
+    let target: MirrorTarget
+    let pane: PaneRow
+    let machineName: String
 }
 
 /// Sheet item for `OpenOnMacView` — one paired Mac.

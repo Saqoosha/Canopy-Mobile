@@ -8,6 +8,8 @@ struct RosterView: View {
     var onSelectPane: (String, PaneRow) -> Void = { _, _ in }
     var canOpenOnMachine: (String) -> Bool = { _ in false }
     var onOpenOnMachine: (String) -> Void = { _ in }
+    /// Stop a session on its Mac. Offered where Open on Mac is: a paired Mac.
+    var onStopPane: (String, PaneRow) -> Void = { _, _ in }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -183,6 +185,16 @@ struct RosterView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .swipeActions(edge: .trailing) {
+            if canOpenOnMachine(machineId) {
+                Button("Stop", role: .destructive) { onStopPane(machineId, pane) }
+            }
+        }
+        .contextMenu {
+            if canOpenOnMachine(machineId) {
+                Button("Stop on Mac", systemImage: "stop.circle", role: .destructive) { onStopPane(machineId, pane) }
+            }
+        }
     }
 
     private func message(for error: Error) -> String {

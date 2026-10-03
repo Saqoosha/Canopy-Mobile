@@ -70,8 +70,6 @@ struct CanopyMobileApp: App {
     @State private var openOnMac: OpenOnMacItem?
     /// Live cover opened from Open on Mac (resume or new session).
     @State private var openOnMacLive: OpenOnMacLive?
-    /// A session waiting for the user to confirm stopping it on its Mac.
-    @State private var stopRequest: StopRequest?
     @State private var stopError: String?
     /// Held while the sheet closes: a cover presented during a sheet's dismissal can be dropped.
     @State private var pendingOpenOnMacLive: OpenOnMacLive?
@@ -147,8 +145,7 @@ struct CanopyMobileApp: App {
                         },
                                    onStopPane: { machineId, pane in
                             guard let target = mirrorStore.target(for: machineId) else { return }
-                            stopRequest = StopRequest(target: target, pane: pane,
-                                                      machineName: snapshots[machineId]?.displayName ?? machineId)
+                            Task { await stop(StopRequest(target: target, pane: pane)) }
                         })
                         .refreshable {
                             await refresh()
@@ -201,15 +198,6 @@ struct CanopyMobileApp: App {
                 .sheet(isPresented: $showingSettings) {
                     SettingsView(rosterUrl: CanopyDemo.isEnabled ? $demoURL : $rosterUrl, secret: $secret,
                                  mirrorStore: mirrorStore, machineNames: machineNames)
-                }
-                .confirmationDialog(stopRequest.map { "Stop \($0.pane.title) on \($0.machineName)?" } ?? "",
-                                    isPresented: Binding(get: { stopRequest != nil }, set: { if !$0 { stopRequest = nil } }),
-                                    titleVisibility: .visible, presenting: stopRequest) { request in
-                    Button("Stop Session", role: .destructive) {
-                        Task { await stop(request) }
-                    }
-                } message: { _ in
-                    Text("The session ends on the Mac.")
                 }
                 .alert("Could not stop the session",
                        isPresented: Binding(get: { stopError != nil }, set: { if !$0 { stopError = nil } })) {
@@ -928,11 +916,10 @@ struct ConversationTarget: Hashable {
     let subtitle: String
 }
 
-/// A session the user asked to stop, pending confirmation.
+/// A session the user confirmed stopping on its Mac.
 struct StopRequest {
     let target: MirrorTarget
     let pane: PaneRow
-    let machineName: String
 }
 
 /// Sheet item for `OpenOnMacView` — one paired Mac.

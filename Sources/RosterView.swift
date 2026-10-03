@@ -8,8 +8,12 @@ struct RosterView: View {
     var onSelectPane: (String, PaneRow) -> Void = { _, _ in }
     var canOpenOnMachine: (String) -> Bool = { _ in false }
     var onOpenOnMachine: (String) -> Void = { _ in }
-    /// Stop a session on its Mac. Offered where Open on Mac is: a paired Mac.
+    /// Stop a session on its Mac: at once when idle, after confirmation when busy. Offered where Open on Mac is: a paired Mac.
     var onStopPane: (String, PaneRow) -> Void = { _, _ in }
+
+    /// The row whose Stop is waiting for confirmation (`machineId/sessionId`). Held here so the
+    /// dialog is anchored to that row: on iOS 26 it is a popover pointing at its source.
+    @State private var confirmingStop: String?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -187,15 +191,44 @@ struct RosterView: View {
         .buttonStyle(.plain)
         .swipeActions(edge: .trailing) {
             if canOpenOnMachine(machineId) {
-                Button("Stop", role: .destructive) { onStopPane(machineId, pane) }
+                if Self.stopNeedsConfirmation(pane) {
+                    // Not `role: .destructive`: that role animates the row away as if already
+                    // deleted, which also dismissed the confirmation anchored to it.
+                    Button("Stop") { confirmingStop = stopKey(machineId, pane) }
+                        .tint(.red)
+                } else {
+                    Button("Stop", role: .destructive) { onStopPane(machineId, pane) }
+                }
             }
         }
         .contextMenu {
             if canOpenOnMachine(machineId) {
-                Button("Stop on Mac", systemImage: "stop.circle", role: .destructive) { onStopPane(machineId, pane) }
+                Button("Stop on Mac", systemImage: "stop.circle", role: .destructive) {
+                    if Self.stopNeedsConfirmation(pane) {
+                        confirmingStop = stopKey(machineId, pane)
+                    } else {
+                        onStopPane(machineId, pane)
+                    }
+                }
             }
         }
+        .confirmationDialog("Stop \(pane.title) on \(snapshots[machineId]?.displayName ?? machineId)?",
+                            isPresented: Binding(get: { confirmingStop == stopKey(machineId, pane) },
+                                                 set: { if !$0 { confirmingStop = nil } }),
+                            titleVisibility: .visible) {
+            Button("Stop Session", role: .destructive) { onStopPane(machineId, pane) }
+        } message: {
+            Text("The turn in progress will not finish.")
+        }
     }
+
+    /// HIG: no confirmation for a common action that can be undone. An idle session can be
+    /// reopened from Open on Mac, so it stops at once; work in flight cannot be resumed.
+    static func stopNeedsConfirmation(_ pane: PaneRow) -> Bool {
+        ["working", "background", "asking"].contains(pane.state)
+    }
+
+    private func stopKey(_ machineId: String, _ pane: PaneRow) -> String { "\(machineId)/\(pane.sessionId)" }
 
     private func message(for error: Error) -> String {
         if let error = error as? RosterError { return error.message }

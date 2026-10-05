@@ -118,6 +118,10 @@ final class MirrorFileReceiver {
         guard let id = frame["id"] as? String, current?.id == id,
               let b64 = frame["data"] as? String, let data = Data(base64Encoded: b64)
         else { return }
+        guard let transfer = current, transfer.received + data.count <= transfer.size else {
+            fail("\(current?.name ?? "file"): more bytes than announced")
+            return
+        }
         do {
             try handle?.write(contentsOf: data)
             current?.received += data.count

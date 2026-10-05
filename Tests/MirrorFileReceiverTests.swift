@@ -58,6 +58,15 @@ struct MirrorFileReceiverTests {
         #expect(receiver.lastError == "a.txt: incomplete (1 of 2 bytes)")
     }
 
+    @Test func bytesPastTheAnnouncedSizeAreRefused() {
+        let (receiver, root) = makeReceiver()
+        defer { try? FileManager.default.removeItem(at: root) }
+        receiver.handle(["type": "file_begin", "id": "a", "name": "a.txt", "size": 2])
+        receiver.handle(["type": "file_chunk", "id": "a", "data": Data("abc".utf8).base64EncodedString()])
+        #expect(receiver.current == nil)
+        #expect(receiver.lastError == "a.txt: more bytes than announced")
+    }
+
     @Test func aNewTransferClearsTheLastError() {
         let (receiver, root) = makeReceiver()
         defer { try? FileManager.default.removeItem(at: root) }

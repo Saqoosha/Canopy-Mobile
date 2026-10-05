@@ -586,6 +586,12 @@ struct CanopyMobileApp: App {
             // indistinguishable from "the tap did nothing".
             NSLog("Notification tap: no roster pane and no history entry for machine=\(machine) session=\(sessionId) — opening with a placeholder title")
         }
+        // A sheet over the stack hides whatever the tap navigates to. The
+        // pending live route goes too, or the Open on Mac sheet's
+        // `onDismiss` would replace the tap's `path` with it.
+        showingSettings = false
+        pendingOpenOnMacLive = nil
+        openOnMac = nil
         // **Already here? Then stay.** A second push for the session on
         // screen used to re-assign `path` with a target that legitimately
         // differed — the first tap may have opened under the placeholder with

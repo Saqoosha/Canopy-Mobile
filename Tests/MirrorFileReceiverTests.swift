@@ -4,9 +4,9 @@ import Testing
 
 @MainActor
 struct MirrorFileReceiverTests {
-    private func makeReceiver(opened: @escaping (URL) -> Void = { _ in }) -> (MirrorFileReceiver, URL) {
+    private func makeReceiver() -> (MirrorFileReceiver, URL) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("MirrorFileTests-\(UUID().uuidString)")
-        return (MirrorFileReceiver(root: root, openURL: opened), root)
+        return (MirrorFileReceiver(root: root), root)
     }
 
     @Test func chunksAssembleIntoTheFile() throws {
@@ -24,13 +24,26 @@ struct MirrorFileReceiverTests {
         #expect(receiver.current == nil)
     }
 
-    @Test func aChunkForAnotherTransferIsIgnored() throws {
+    @Test func aShortFileIsNotOpened() {
         let (receiver, root) = makeReceiver()
         defer { try? FileManager.default.removeItem(at: root) }
-        receiver.handle(["type": "file_begin", "id": "a", "name": "a.txt", "size": 1])
+        receiver.handle(["type": "file_begin", "id": "a", "name": "a.txt", "size": 2])
+        // A chunk for another transfer is not this one's bytes.
         receiver.handle(["type": "file_chunk", "id": "b", "data": Data("x".utf8).base64EncodedString()])
+        receiver.handle(["type": "file_chunk", "id": "a", "data": Data("x".utf8).base64EncodedString()])
         receiver.handle(["type": "file_end", "id": "a"])
-        #expect(try Data(contentsOf: try #require(receiver.received)).isEmpty)
+        #expect(receiver.received == nil)
+        #expect(receiver.lastError == "a.txt: incomplete (1 of 2 bytes)")
+    }
+
+    @Test func aNewTransferClearsTheLastError() {
+        let (receiver, root) = makeReceiver()
+        defer { try? FileManager.default.removeItem(at: root) }
+        receiver.handle(["type": "file_begin", "id": "a", "name": "a.bin", "size": 3])
+        receiver.handle(["type": "file_end", "id": "a", "error": "read failed"])
+        receiver.handle(["type": "file_begin", "id": "b", "name": "b.bin", "size": 3])
+        #expect(receiver.lastError == nil)
+        #expect(receiver.current?.id == "b")
     }
 
     @Test func aDropMidTransferRemovesThePartialFile() throws {
@@ -65,14 +78,13 @@ struct MirrorFileReceiverTests {
         #expect(MirrorFileWire.sanitizedName("tag.pdf") == "tag.pdf")
     }
 
-    @Test func onlyWebAndMailURLsOpen() {
-        var opened: [URL] = []
-        let (receiver, root) = makeReceiver { opened.append($0) }
+    @Test func anOpenURLFrameIsIgnored() {
+        let (receiver, root) = makeReceiver()
         defer { try? FileManager.default.removeItem(at: root) }
         receiver.handle(["type": "open_url", "url": "https://example.com/x"])
-        receiver.handle(["type": "open_url", "url": "file:///etc/passwd"])
-        receiver.handle(["type": "open_url", "url": "tel:123"])
-        #expect(opened.map(\.absoluteString) == ["https://example.com/x"])
+        #expect(receiver.current == nil)
+        #expect(receiver.received == nil)
+        #expect(receiver.lastError == nil)
     }
 
     @Test func fileFramesAreRecognised() {

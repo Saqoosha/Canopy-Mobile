@@ -4,8 +4,9 @@ import os
 private let logger = Logger(subsystem: "sh.saqoo.canopy-app", category: "MirrorFile")
 
 /// A file the phone clicked in a live session, sent back by the Mac as `file_begin` /
-/// `file_chunk`* / `file_end`; a URL is one `open_url`. The Mac sends these only to a
-/// client whose `attach` carried `"files": true`. Mirrors `MirrorFileWire` in the Canopy repo.
+/// `file_chunk`* / `file_end`. The Mac sends these only to a client whose `attach` carried
+/// `"files": true`. Mirrors `MirrorFileWire` in the Canopy repo, whose `open_url` serves only a
+/// Mac's `open` redirect: it is recognised here so it stays out of the page, and never opened.
 enum MirrorFileWire {
     static let begin = "file_begin"
     static let chunk = "file_chunk"
@@ -22,14 +23,6 @@ enum MirrorFileWire {
               raw != ".", raw != "..", raw.utf8.count <= 255
         else { return nil }
         return raw
-    }
-
-    /// The URL an `open_url` may open: web and mail only, like the Mac's receiver.
-    static func openableURL(_ raw: String?) -> URL? {
-        guard let raw, let url = URL(string: raw),
-              ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "")
-        else { return nil }
-        return url
     }
 }
 
@@ -55,7 +48,6 @@ final class MirrorFileReceiver {
     var received: URL?
 
     private let root: URL
-    private let openURL: (URL) -> Void
     private var handle: FileHandle?
     private var destination: URL?
     private var overlayTask: Task<Void, Never>?
@@ -64,18 +56,14 @@ final class MirrorFileReceiver {
     static let overlayDelay: Duration = .milliseconds(400)
     static let errorHold: Duration = .seconds(4)
 
-    init(root: URL = FileManager.default.temporaryDirectory.appendingPathComponent("MirrorFiles"),
-         openURL: @escaping (URL) -> Void) {
+    init(root: URL = FileManager.default.temporaryDirectory.appendingPathComponent("MirrorFiles")) {
         self.root = root
-        self.openURL = openURL
     }
 
     var isOverlayVisible: Bool { (current != nil && showsOverlay) || lastError != nil }
 
     func handle(_ frame: [String: Any]) {
         switch frame["type"] as? String {
-        case MirrorFileWire.url:
-            if let url = MirrorFileWire.openableURL(frame["url"] as? String) { openURL(url) }
         case MirrorFileWire.begin:
             begin(frame)
         case MirrorFileWire.chunk:
@@ -89,6 +77,8 @@ final class MirrorFileReceiver {
 
     private func begin(_ frame: [String: Any]) {
         abort(reason: nil)
+        errorTask?.cancel()
+        lastError = nil
         guard let id = frame["id"] as? String,
               let name = MirrorFileWire.sanitizedName(frame["name"] as? String),
               let size = frame["size"] as? Int, size >= 0
@@ -116,7 +106,7 @@ final class MirrorFileReceiver {
             guard let self, !Task.isCancelled, self.current?.id == id else { return }
             self.showsOverlay = true
         }
-        logger.notice("receiving \(name, privacy: .public) \(size) bytes")
+        logger.notice("receiving \(name, privacy: .private) \(size) bytes")
     }
 
     private func chunk(_ frame: [String: Any]) {
@@ -137,6 +127,10 @@ final class MirrorFileReceiver {
             fail("\(transfer.name): \(error)")
             return
         }
+        guard transfer.received == transfer.size else {
+            fail("\(transfer.name): incomplete (\(transfer.received) of \(transfer.size) bytes)")
+            return
+        }
         try? handle?.close()
         handle = nil
         overlayTask?.cancel()
@@ -145,7 +139,7 @@ final class MirrorFileReceiver {
         showsOverlay = false
         destination = nil
         received = dest
-        logger.notice("received \(transfer.name, privacy: .public)")
+        logger.notice("received \(transfer.name, privacy: .private)")
     }
 
     private func fail(_ message: String) {
@@ -168,7 +162,7 @@ final class MirrorFileReceiver {
         current = nil
         showsOverlay = false
         guard let reason else { return }
-        logger.error("\(reason, privacy: .public)")
+        logger.error("\(reason, privacy: .private)")
         lastError = reason
         errorTask?.cancel()
         errorTask = Task { [weak self] in

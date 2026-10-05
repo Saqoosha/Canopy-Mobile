@@ -1,6 +1,5 @@
 import QuickLook
 import SwiftUI
-import UIKit
 
 /// The Mac's own session view, attached live over a direct connection, as a full-screen cover.
 struct MirrorLiveView: View {
@@ -194,7 +193,7 @@ final class MirrorLiveModel {
     private(set) var attachedCount = 0
     /// Set when the Mac sends `daemon_restarting`; read before the drop that follows it.
     private(set) var restartAnnounced = false
-    let files = MirrorFileReceiver { url in UIApplication.shared.open(url) }
+    let files = MirrorFileReceiver()
 
     /// The Mac refused the attach; retrying will not change that.
     var refused: Bool { link?.refusedByMac == true }
@@ -239,6 +238,7 @@ final class MirrorLiveModel {
     }
 
     func close() {
+        files.connectionDropped()
         link?.close()
     }
 }

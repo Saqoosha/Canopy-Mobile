@@ -207,11 +207,11 @@ DO が再起動するので publisher も watcher も落ちる。Canopy 側は p
 
 **症状**: 会話 A を開いたまま B の通知をタップすると、ヘッダは B になるのに、ライブページは A のまま。
 
-**原因**: `path = [.conversation(B)]` で `[.conversation(A)]` を置き換えると、同じ深さの view が使い回され、新しい route だけが渡される。引数で描く部分は追従するが、`.task` で 1 回だけ attach する `MirrorLiveContent` と `LiveFirstConversation` の `@State` は A のまま残る。「`Route` は Hashable なので値が変われば作り直される」はコード中で長く信じられていた**誤り**（2026-10-05 実機で確認）。
+**原因**: `path = [.conversation(B)]` で `[.conversation(A)]` を置き換えると、同じ深さの view が使い回され、新しい route だけが渡される。引数で描く部分は追従するが、`.task` で 1 回だけ attach する `MirrorLiveContent` と `LiveFirstConversation` の `@State` は A のまま残る。「`Route` は Hashable なので値が変われば作り直される」は以前のコメントにあった**誤り**（2026-10-05 実機で確認）。
 
 **修正**: 会話に `.id(ConversationIdentity(machine:, sessionId:))` を付ける。`onAppear` / `onDisappear` より**外側**に置く —— 内側だと中だけが作り直されて `viewedSession` が A のまま残る。`.id(target)` は不可（title / subtitle がハッシュに入るので、見た目の違いで作り直しになる）。`resumeId ?? sessionId` でキーするのも試して戻した —— Mac 再起動で sessionId が変わったときに view が使い回され、`viewedSession` が古い id のまま残ってバックフィルが落ちる。
 
-**セッション画面はカバーにしない。** 全画面カバーやシートが開いていると、その下で `path` が変わってもタップが何もしなかったように見える。ライブ画面は全部スタックに積む（Open on Mac は `Route.live`）。通知タップは Settings / Open on Mac のシートを閉じてから遷移する。残っているカバーは画像ビューアだけ。
+**セッション画面はカバーにしない。** 全画面カバーやシートが開いていると、その下で `path` が変わってもタップが何もしなかったように見える。ライブ画面は全部スタックに積む（Open on Mac は `Route.live`）。通知タップは Settings / Open on Mac のシートを閉じてから遷移する。残っている全画面表示は画像ビューア（`SessionConversationView`）と、Mac から届いたファイルの QuickLook プレビュー（`MirrorLiveContent`）。
 
 ### コールドスタートの通知タップは `NotificationCenter` に間に合わない
 

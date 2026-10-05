@@ -2,7 +2,7 @@ import QuickLook
 import SwiftUI
 
 /// The Mac's own session view, attached live over a direct connection, pushed for a session the roster does not
-/// list yet (Open on Mac). A listed session opens in `LiveFirstConversation` instead.
+/// list yet (Open on Mac, or the `LaunchMirror` debug attach). A listed session opens in `LiveFirstConversation` instead.
 struct MirrorLiveView: View {
     let target: MirrorTarget
     let sessionId: String
@@ -110,7 +110,7 @@ struct MirrorLiveView: View {
     }
 }
 
-/// The attach lifecycle and the three things it can show, without any chrome, so a cover and a pushed screen share it.
+/// The attach lifecycle and the three things it can show, without any chrome, so `MirrorLiveView` and `LiveFirstConversation` share it.
 struct MirrorLiveContent: View {
     let target: MirrorTarget
     let sessionId: String
@@ -237,8 +237,7 @@ final class MirrorLiveModel {
 }
 
 /// `CANOPY_MIRROR_ATTACH="<IPv4>:<port>/<sessionId>"` opens a live session at launch for testing; without `CANOPY_MIRROR_TOKEN` nothing opens.
-struct LaunchMirror: Identifiable {
-    let id = UUID()
+struct LaunchMirror {
     let address: String
     let sessionId: String
     let token: String

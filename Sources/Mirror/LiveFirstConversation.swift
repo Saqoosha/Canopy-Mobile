@@ -5,13 +5,14 @@ import SwiftUI
 /// Both are the same screen on the stack: the live attempt runs first and, on
 /// any failure or drop, the offline view takes its place with the reason on a
 /// banner; the toolbar button switches to it without one. The offline view's
-/// own Live button retries in a cover.
+/// own Live button switches back, on the same screen.
 struct LiveFirstConversation<Offline: View>: View {
     /// The caller passes nil when no paste covers this Mac or the session has no `resumeId` to attach by.
     let live: MirrorTarget?
     let sessionId: String
     let title: String
-    @ViewBuilder let offline: (_ liveUnavailable: String?) -> Offline
+    /// `showLive` is nil when `live` is.
+    @ViewBuilder let offline: (_ liveUnavailable: String?, _ showLive: (() -> Void)?) -> Offline
 
     @State private var fallback: Fallback?
     /// Bumped to rebuild the live view with a fresh link; iOS closes the socket while the app is in the background.
@@ -104,7 +105,7 @@ struct LiveFirstConversation<Offline: View>: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { offlineButton }
         } else {
-            offline(unavailableReason)
+            offline(unavailableReason, showLiveAction)
         }
     }
 
@@ -119,6 +120,21 @@ struct LiveFirstConversation<Offline: View>: View {
             }
             .accessibilityLabel("Show offline view")
         }
+    }
+
+    private var showLiveAction: (() -> Void)? {
+        guard live != nil else { return nil }
+        return { showLive() }
+    }
+
+    /// A fresh attempt, so the live view that gave up is not the one shown again.
+    private func showLive() {
+        waitingForRestart = false
+        restartUntil = nil
+        reconnectUntil = nil
+        resumeOnAttach = false
+        fallback = nil
+        attempt += 1
     }
 
     private var unavailableReason: String? {

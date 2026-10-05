@@ -1,14 +1,14 @@
 import QuickLook
 import SwiftUI
 
-/// The Mac's own session view, attached live over a direct connection, as a full-screen cover.
+/// The Mac's own session view, attached live over a direct connection, pushed for a session the roster does not
+/// list yet (Open on Mac). A listed session opens in `LiveFirstConversation` instead.
 struct MirrorLiveView: View {
     let target: MirrorTarget
     let sessionId: String
     let title: String
     var open: OpenRequest? = nil
 
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     /// What the next attach sends; replaced by `reattach` once the Mac has named the session.
     @State private var attach: Attach?
@@ -43,58 +43,51 @@ struct MirrorLiveView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            let current = attach ?? Attach(sessionId: sessionId, open: open)
-            let thisAttempt = attempt
-            Group {
-                if waitingForRestart {
-                    ProgressView("The Mac is restarting for an update. Reconnecting…")
-                } else {
-                    MirrorLiveContent(target: target, sessionId: current.sessionId,
-                                      open: Self.openRequest(current, resumingAfterRestart: resumeForRestart), key: current.key,
-                                      onUnavailable: { _ in
+        let current = attach ?? Attach(sessionId: sessionId, open: open)
+        let thisAttempt = attempt
+        Group {
+            if waitingForRestart {
+                ProgressView("The Mac is restarting for an update. Reconnecting…")
+            } else {
+                MirrorLiveContent(target: target, sessionId: current.sessionId,
+                                  open: Self.openRequest(current, resumingAfterRestart: resumeForRestart), key: current.key,
+                                  onUnavailable: { _ in
+                                      guard thisAttempt == attempt else { return }
+                                      resumeForRestart = false
+                                      restartUntil = nil
+                                      if let until = reconnectUntil, Date() < until, attach != nil {
+                                          reconnectUntil = nil
+                                          attempt += 1
+                                      } else {
+                                          dropped = true
+                                      }
+                                  },
+                                  onAttached: { attached in
+                                      restartUntil = nil
+                                      resumeForRestart = false
+                                      attach = Self.reattach(current, after: attached)
+                                  },
+                                  retryDrop: { announced in
+                                      guard thisAttempt == attempt else { return true }
+                                      if announced { restartUntil = Date().addingTimeInterval(MirrorRestart.budget) }
+                                      guard MirrorRestart.shouldRetry(until: restartUntil, now: Date()), attach != nil else {
+                                          return false
+                                      }
+                                      resumeForRestart = true
+                                      waitingForRestart = true
+                                      Task { @MainActor in
+                                          try? await Task.sleep(for: .seconds(MirrorRestart.interval))
+                                          waitingForRestart = false
                                           guard thisAttempt == attempt else { return }
-                                          resumeForRestart = false
-                                          restartUntil = nil
-                                          if let until = reconnectUntil, Date() < until, attach != nil {
-                                              reconnectUntil = nil
-                                              attempt += 1
-                                          } else {
-                                              dropped = true
-                                          }
-                                      },
-                                      onAttached: { attached in
-                                          restartUntil = nil
-                                          resumeForRestart = false
-                                          attach = Self.reattach(current, after: attached)
-                                      },
-                                      retryDrop: { announced in
-                                          guard thisAttempt == attempt else { return true }
-                                          if announced { restartUntil = Date().addingTimeInterval(MirrorRestart.budget) }
-                                          guard MirrorRestart.shouldRetry(until: restartUntil, now: Date()), attach != nil else {
-                                              return false
-                                          }
-                                          resumeForRestart = true
-                                          waitingForRestart = true
-                                          Task { @MainActor in
-                                              try? await Task.sleep(for: .seconds(MirrorRestart.interval))
-                                              waitingForRestart = false
-                                              guard thisAttempt == attempt else { return }
-                                              attempt += 1
-                                          }
-                                          return true
-                                      })
-                        .id(attempt)
-                }
+                                          attempt += 1
+                                      }
+                                      return true
+                                  })
+                    .id(attempt)
             }
-                .navigationTitle(title)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("Close") { dismiss() }
-                    }
-                }
         }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
         // Same rule as `LiveFirstConversation`: only a drop around a return from the background
         // rebuilds, so a link that survived keeps its page and a half-typed reply.
         .onChange(of: scenePhase) { _, phase in

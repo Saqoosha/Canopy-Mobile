@@ -64,7 +64,7 @@ asc builds add-groups --app 6810164313 --latest \
 | KV namespace `MACHINES` | `34a34a05b2194af6b9f2c89847a57ea1`。電話が列挙できる唯一の機械一覧 |
 | Bundle ID | `sh.saqoo.canopy-app`（+ `.NotificationService` / `.tests`） |
 | Development team | `VCFY2GFR89` |
-| 実機 | iPhone Air "S" — `88CF0177-6AA8-5D02-926C-27E21B989A53` |
+| 実機 | iPhone Air "S" — `00008150-001C65CC1E40401C`。xcodebuild の `-destination` も devicectl の `--device` もこれで通る。Wi-Fi 経由で可（電話がスリープ中は `unavailable` と出る —— 起こしてから見直す）。以前ここにあった `88CF0177-…` は xcodebuild で `Unable to find a destination` になる |
 | Mac の machine id | `IOPlatformUUID`。オーバーライドは無いので、**同じ Mac で 2 つの Canopy を起動すると同じ machine として publish し合い、roster が取り合いになる** |
 | App Store Connect | アプリ名 **Canopy for Saqoosha** / App ID `6810164313`。`Canopy Mobile` は他アカウントが使用中で 409。詳細は `docs/testflight.md` |
 | ASC API キー | `76DV838N2N`（team、ADMIN）。issuer ID は `69a6de6e-6653-47e3-e053-5b8c7c11a4d1`。`asc` が keychain に保持 |
@@ -202,6 +202,16 @@ DO が再起動するので publisher も watcher も落ちる。Canopy 側は p
 ### バックフィルの実機テストは push タップで無効になる
 
 前面復帰を**通知タップ**でやると、アプリが会話画面を積み直して `onAppear` が発火する。修正前のコードでもバックフィルを要求してしまう。**App スイッチャーかホーム画面のアイコンから戻す。**
+
+### `path` の要素を置き換えても、SwiftUI は destination の view を作り直さない
+
+**症状**: 会話 A を開いたまま B の通知をタップすると、ヘッダは B になるのに、ライブページは A のまま。
+
+**原因**: `path = [.conversation(B)]` で `[.conversation(A)]` を置き換えると、同じ深さの view が使い回され、新しい route だけが渡される。引数で描く部分は追従するが、`.task` で 1 回だけ attach する `MirrorLiveContent` と `LiveFirstConversation` の `@State` は A のまま残る。「`Route` は Hashable なので値が変われば作り直される」は以前のコメントにあった**誤り**（2026-10-05 実機で確認）。
+
+**修正**: 会話に `.id(ConversationIdentity(machine:, sessionId:))` を付ける。`onAppear` / `onDisappear` より**外側**に置く —— 内側だと中だけが作り直されて `viewedSession` が A のまま残る。`.id(target)` は不可（title / subtitle がハッシュに入るので、見た目の違いで作り直しになる）。`resumeId ?? sessionId` でキーするのも試して戻した —— Mac 再起動で sessionId が変わったときに view が使い回され、`viewedSession` が古い id のまま残ってバックフィルが落ちる。
+
+**セッション画面はカバーにしない。** 全画面カバーやシートが開いていると、その下で `path` が変わってもタップが何もしなかったように見える。ライブ画面は全部スタックに積む（Open on Mac は `Route.live`）。通知タップは Settings / Open on Mac のシートを閉じてから遷移する。残っている全画面表示は画像ビューア（`SessionConversationView`）と、Mac から届いたファイルの QuickLook プレビュー（`MirrorLiveContent`）。
 
 ### コールドスタートの通知タップは `NotificationCenter` に間に合わない
 
@@ -445,7 +455,7 @@ git rebase origin/main --update-refs
 
 | | |
 |---|---|
-| Swift テスト | 197（2026-09-19 実測） |
+| Swift テスト | 233（2026-10-05 実測） |
 | worker テスト | 137（2026-09-11 実測） |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 | DO の append 1 件 | 248 rows_read（3 つの上限すべて満杯、2026-09-11 実測）/ 210（生きているセッション 1 本） |

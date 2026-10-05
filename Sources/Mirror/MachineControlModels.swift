@@ -58,7 +58,7 @@ struct DirEntry: Identifiable, Equatable {
 }
 
 /// What the attach's optional `open` field asks the Mac to do.
-enum OpenRequest: Equatable {
+enum OpenRequest: Hashable {
     case resume
     case new(cwd: String)
 

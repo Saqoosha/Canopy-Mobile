@@ -97,11 +97,10 @@ struct SessionConversationView: View {
     /// "asking". A nil pane draws no dot — grey means idle in this palette,
     /// and "the roster doesn't list it" is not idle.
     let pane: PaneRow?
-    /// Where a live attach would go; nil when no paste covers this Mac.
-    let live: MirrorTarget?
+    /// Switches this screen back to the Mac's live view; nil when the session cannot attach, and then no Live button is drawn.
+    let onShowLive: (() -> Void)?
     /// Why the live attempt that preceded this view gave up, shown on a banner; nil when there was none.
     let liveUnavailable: String?
-    @State private var showingLive = false
     /// Throwing, because a decision that was not recorded has to reach the
     /// card that offered it. See `MessageBlock.decide`.
     let onDecision: (NotificationHistoryItem, String) async throws -> Void
@@ -357,17 +356,11 @@ struct SessionConversationView: View {
                     .background(.bar)
             }
         }
-        .fullScreenCover(isPresented: $showingLive) {
-            if let live, let resumeId {
-                MirrorLiveView(target: live, sessionId: resumeId, title: title)
-            }
-        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                // The Mac matches on resumeId; a row without one cannot attach.
-                if live != nil, resumeId != nil {
+                if let onShowLive {
                     Button {
-                        showingLive = true
+                        onShowLive()
                     } label: {
                         Image(systemName: "rectangle.on.rectangle")
                     }

@@ -127,6 +127,8 @@ struct SettingsView: View {
                 }
             }
             .onAppear { hasStoredSecret = !CanopyDemo.isEnabled && KeychainHelper.has(key: "rosterSecret") }
+            // A swipe or a notification tap closes the sheet without Done.
+            .onDisappear { commitSecret() }
         }
     }
 

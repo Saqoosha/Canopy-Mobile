@@ -65,14 +65,11 @@ struct CanopyMobileApp: App {
     /// the field on a demo run cannot rewrite the real stored URL.
     @State private var demoURL = "https://demo.invalid"
     @State private var showingSettings = false
-    @State private var launchMirror: LaunchMirror?
     /// Sheet item for Open on Mac (paired machines only).
     @State private var openOnMac: OpenOnMacItem?
-    /// Live cover opened from Open on Mac (resume or new session).
-    @State private var openOnMacLive: OpenOnMacLive?
     @State private var stopError: String?
-    /// Held while the sheet closes: a cover presented during a sheet's dismissal can be dropped.
-    @State private var pendingOpenOnMacLive: OpenOnMacLive?
+    /// Held while the sheet closes; its `onDismiss` puts it on `path`.
+    @State private var pendingOpenOnMacLive: LiveRoute?
     /// The Macs whose sessions open live. A demo run keeps an empty, unsaved table.
     @State private var mirrorStore = MirrorConnectionStore(defaults: CanopyDemo.isEnabled ? nil : .standard)
 
@@ -82,7 +79,11 @@ struct CanopyMobileApp: App {
     // — the latter renders an unanswered permission ask as Allow/Deny inline. The reply sheet
     // and the notification detail this replaced were two more screens saying
     // subsets of the same thing, and keeping them in step was already a
-    // review finding once.
+    // review finding once. Every session screen lives on this stack and
+    // leaves by its back button; none is a cover, because a cover hides the
+    // stack and a notification tap that replaces `path` under it looks like
+    // it did nothing. The other session route, `.live`, is for a session
+    // Open on Mac just started or resumed, which the roster may not list yet.
     //
     // One path, so a notification tap can replace it outright and land the
     // user on the session that buzzed them from wherever they were — with no
@@ -163,6 +164,10 @@ struct CanopyMobileApp: App {
                     switch route {
                     case .conversation(let target):
                         conversation(target)
+                    case .live(let live):
+                        MirrorLiveView(target: live.target, sessionId: live.sessionId,
+                                       title: live.title, open: live.open)
+                            .id(live)
                     case .history:
                         HistoryView(onSelect: { item in
                             path.append(.conversation(ConversationTarget(
@@ -206,24 +211,24 @@ struct CanopyMobileApp: App {
                     Text(stopError ?? "")
                 }
                 .sheet(item: $openOnMac, onDismiss: {
-                    openOnMacLive = pendingOpenOnMacLive
+                    if let live = pendingOpenOnMacLive {
+                        path = [.live(live)]
+                    }
                     pendingOpenOnMacLive = nil
                 }) { item in
                     OpenOnMacView(target: item.target, machineName: item.machineName) { sessionId, open, title in
-                        pendingOpenOnMacLive = OpenOnMacLive(target: item.target, sessionId: sessionId, title: title, open: open)
+                        pendingOpenOnMacLive = LiveRoute(machine: item.machineId, target: item.target,
+                                                         sessionId: sessionId, title: title, open: open)
                         openOnMac = nil
                     }
                 }
             }
-            .fullScreenCover(item: $launchMirror) { launch in
-                MirrorLiveView(target: launch.target, sessionId: launch.sessionId, title: "Live")
-            }
-            .fullScreenCover(item: $openOnMacLive) { live in
-                MirrorLiveView(target: live.target, sessionId: live.sessionId, title: live.title, open: live.open)
-            }
             .task {
                 MirrorWebViewPool.warm()
-                launchMirror = LaunchMirror.fromEnvironment()
+                if let launch = LaunchMirror.fromEnvironment() {
+                    path = [.live(LiveRoute(machine: nil, target: launch.target, sessionId: launch.sessionId,
+                                             title: "Live", open: nil))]
+                }
                 // BEFORE the refresh, not after: a tap that arrived while this
                 // scene did not exist yet is the whole reason `pendingTap`
                 // exists, and making it wait on a network round trip would put
@@ -581,24 +586,26 @@ struct CanopyMobileApp: App {
             // indistinguishable from "the tap did nothing".
             NSLog("Notification tap: no roster pane and no history entry for machine=\(machine) session=\(sessionId) — opening with a placeholder title")
         }
+        // A sheet over the stack hides whatever the tap navigates to. The
+        // pending live route goes too, or the Open on Mac sheet's
+        // `onDismiss` would replace the tap's `path` with it.
+        showingSettings = false
+        pendingOpenOnMacLive = nil
+        openOnMac = nil
         // **Already here? Then stay.** A second push for the session on
         // screen used to re-assign `path` with a target that legitimately
         // differed — the first tap may have opened under the placeholder with
         // the machine id as its subtitle, the second carries the roster's
-        // title and project. `Route` is `Hashable` and
-        // `navigationDestination(for:)` keys on the value, so a changed value
-        // at the same depth is a teardown and rebuild: the new view's
-        // `onAppear` sets `viewedSession`, then the old view's `onDisappear`
-        // finds a matching `sessionId` and clears it, leaving `connectAll`'s
-        // `onOpen` with no session to re-ask a backfill for while that
-        // conversation is on screen. That is Canopy-Mobile#24's silent gap,
-        // reintroduced by a navigation that had nothing to do.
-        //
-        // Compared on identity alone, not on the whole target: the title and
-        // subtitle are what differ between two taps for one session, and they
-        // are exactly what must not count as a different destination.
+        // title and project. Nothing about the screen needs to change.
         if case .conversation(let current)? = path.last,
            current.machine == machine, current.sessionId == sessionId {
+            return
+        }
+        // Open on Mac resumed this session by its resumeId and is showing it
+        // live. A new session's id is the Mac's, held inside that view, so
+        // only a resume can be matched.
+        if case .live(let live)? = path.last, live.machine == machine, live.open == .resume,
+           live.sessionId == pane?.resumeId ?? item?.resumeId ?? resumeId {
             return
         }
         path = [.conversation(ConversationTarget(
@@ -733,8 +740,8 @@ struct CanopyMobileApp: App {
             live: live,
             sessionId: target.resumeId ?? target.sessionId,
             title: title
-        ) { liveUnavailable in
-            offlineConversation(target, pane: pane, title: title, live: live, liveUnavailable: liveUnavailable)
+        ) { liveUnavailable, showLive in
+            offlineConversation(target, pane: pane, title: title, liveUnavailable: liveUnavailable, showLive: showLive)
         }
         // Recorded on the wrapper, live branch included, so `SessionConversationView`
         // keeps no opinion about the app's socket table — it asks, and something
@@ -749,29 +756,31 @@ struct CanopyMobileApp: App {
             viewedSession.current = ViewedSession(machine: target.machine,
                                                   sessionId: target.sessionId)
         }
-        // **No `.id(target)` here, deliberately.** One was tried, to force a
-        // rebuild when `path` is replaced. It is redundant: `Route` is
-        // `Hashable` and `navigationDestination(for:)` already keys the
-        // destination on the route value, so a changed value at this depth is
-        // already a teardown and rebuild — which is what the note above
-        // records observing. And it is not free, because `ConversationTarget`
-        // hashes `title` and `subtitle`: it turns every cosmetic difference
-        // into a new identity, and this guard compares `sessionId` alone, so
-        // the rebuilt view's `onAppear` sets the session and the outgoing
-        // one's `onDisappear` immediately clears it.
+        // **Keyed on the session's identity, and on nothing else.** A tap
+        // that replaces `path` while a conversation is open does NOT get a
+        // fresh destination: SwiftUI reuses the view at that depth and only
+        // hands it the new route. Every input-driven part follows (the
+        // title switched), but `MirrorLiveContent` attaches once in `.task`
+        // and keeps its `@State` model, and `LiveFirstConversation` keeps its
+        // `fallback` — so the header named session B over session A's live
+        // page. Reported on device 2026-10-05 as "the tap doesn't switch".
         //
-        // That second half is a hazard of the route value, not of `.id`, so
-        // removing `.id` did not close it — `handleReplyRequested` returning
-        // early on a route that already names this session is what closes it.
+        // Not `.id(target)`: `ConversationTarget` hashes `title` and
+        // `subtitle`, which turns every cosmetic difference into a new
+        // identity.
         .onDisappear {
             if viewedSession.current?.sessionId == target.sessionId {
                 viewedSession.current = nil
             }
         }
+        // Outermost, so the rebuild re-runs the `onAppear` above for the new
+        // session. Inside it, only the subtree would be replaced and
+        // `viewedSession` would keep naming the old one.
+        .id(ConversationIdentity(machine: target.machine, sessionId: target.sessionId))
     }
 
     private func offlineConversation(_ target: ConversationTarget, pane: PaneRow?, title: String,
-                                     live: MirrorTarget?, liveUnavailable: String?) -> some View {
+                                     liveUnavailable: String?, showLive: (() -> Void)?) -> some View {
         SessionConversationView(
             machine: target.machine,
             base: baseURL,
@@ -796,7 +805,7 @@ struct CanopyMobileApp: App {
             // not list this session — the header then shows no dot at all,
             // because grey means idle here and "we don't know" is not idle.
             pane: pane,
-            live: live,
+            onShowLive: showLive,
             liveUnavailable: liveUnavailable,
             onDecision: { item, decision in
                 try await sendDecision(item: item, decision: decision)
@@ -901,10 +910,20 @@ private extension Comparable {
 /// conversation. Deliberately not a `PaneRow` or a `NotificationHistoryItem`:
 /// a notification tap can name a session the roster has not listed, and the
 /// two originating types do not share a shape. `Hashable` because
-/// `navigationDestination(for:)` keys on the value.
+/// `navigationDestination(for:)` requires it; the destination view's identity
+/// is set by the explicit `.id`s, not by this value.
 enum Route: Hashable {
     case conversation(ConversationTarget)
+    /// A live session the roster does not list yet: one Open on Mac just started or resumed.
+    case live(LiveRoute)
     case history
+}
+
+/// What makes two conversation routes the same screen: the session, not
+/// how it was named when the route was built.
+private struct ConversationIdentity: Hashable {
+    let machine: String
+    let sessionId: String
 }
 
 struct ConversationTarget: Hashable {
@@ -930,11 +949,14 @@ struct OpenOnMacItem: Identifiable {
     let machineName: String
 }
 
-/// Full-screen live cover opened from `OpenOnMacView`.
-struct OpenOnMacLive: Identifiable {
+/// A live screen opened from `OpenOnMacView`, or from the debug launch environment.
+/// The `id` makes every open its own screen with a fresh attach, even when its fields equal a previous open's.
+struct LiveRoute: Hashable {
     let id = UUID()
+    /// Nil for the debug launch, which names no machine.
+    let machine: String?
     let target: MirrorTarget
     let sessionId: String
     let title: String
-    let open: OpenRequest
+    let open: OpenRequest?
 }

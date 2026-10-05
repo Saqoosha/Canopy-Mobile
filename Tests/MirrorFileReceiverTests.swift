@@ -24,6 +24,28 @@ struct MirrorFileReceiverTests {
         #expect(receiver.current == nil)
     }
 
+    @Test func aSecondFileLeavesTheShownOneUntilItIsDismissed() throws {
+        let (receiver, root) = makeReceiver()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let one = Data("1".utf8).base64EncodedString()
+        receiver.handle(["type": "file_begin", "id": "a", "name": "a.txt", "size": 1])
+        receiver.handle(["type": "file_chunk", "id": "a", "data": one])
+        receiver.handle(["type": "file_end", "id": "a"])
+        let first = try #require(receiver.received)
+        receiver.handle(["type": "file_begin", "id": "b", "name": "b.txt", "size": 1])
+        #expect(FileManager.default.fileExists(atPath: first.path))
+        receiver.received = nil
+        #expect(!FileManager.default.fileExists(atPath: first.path))
+    }
+
+    @Test func aMalformedBeginLeavesTheTransferInFlight() {
+        let (receiver, root) = makeReceiver()
+        defer { try? FileManager.default.removeItem(at: root) }
+        receiver.handle(["type": "file_begin", "id": "a", "name": "a.txt", "size": 1])
+        receiver.handle(["type": "file_begin", "id": "b", "name": "../x", "size": 1])
+        #expect(receiver.current?.id == "a")
+    }
+
     @Test func aShortFileIsNotOpened() {
         let (receiver, root) = makeReceiver()
         defer { try? FileManager.default.removeItem(at: root) }

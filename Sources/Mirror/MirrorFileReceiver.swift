@@ -44,8 +44,15 @@ final class MirrorFileReceiver {
     private(set) var lastError: String?
     /// True once a transfer has run long enough to be worth an overlay.
     private(set) var showsOverlay = false
-    /// The last complete file, for `quickLookPreview`; the view sets it back to nil on dismiss.
-    var received: URL?
+    /// The last complete file, for `quickLookPreview`; the view sets it back to nil on dismiss,
+    /// which deletes it.
+    var received: URL? {
+        didSet {
+            if let oldValue, oldValue != received {
+                try? FileManager.default.removeItem(at: oldValue.deletingLastPathComponent())
+            }
+        }
+    }
 
     private let root: URL
     private var handle: FileHandle?
@@ -76,9 +83,6 @@ final class MirrorFileReceiver {
     }
 
     private func begin(_ frame: [String: Any]) {
-        abort(reason: nil)
-        errorTask?.cancel()
-        lastError = nil
         guard let id = frame["id"] as? String,
               let name = MirrorFileWire.sanitizedName(frame["name"] as? String),
               let size = frame["size"] as? Int, size >= 0
@@ -86,8 +90,9 @@ final class MirrorFileReceiver {
             logger.error("begin: malformed frame")
             return
         }
-        // One file kept at a time: the previous one is only ever needed until its preview closes.
-        try? FileManager.default.removeItem(at: root)
+        abort(reason: nil)
+        errorTask?.cancel()
+        lastError = nil
         let dir = root.appendingPathComponent(UUID().uuidString)
         let dest = dir.appendingPathComponent(name)
         do {
@@ -157,7 +162,7 @@ final class MirrorFileReceiver {
         overlayTask?.cancel()
         try? handle?.close()
         handle = nil
-        if let destination, current != nil { try? FileManager.default.removeItem(at: destination) }
+        if let destination, current != nil { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
         destination = nil
         current = nil
         showsOverlay = false

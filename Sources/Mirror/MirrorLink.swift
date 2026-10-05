@@ -39,6 +39,8 @@ final class MirrorLink {
     var onFailure: ((String) -> Void)?
     /// The Mac's session service announced it is restarting for an update; the drop that follows is planned.
     var onRestarting: (() -> Void)?
+    /// A `MirrorFileWire` frame: a file this phone clicked, coming back from the Mac.
+    var onFile: (([String: Any]) -> Void)?
     /// Set when the Mac answered `attach_error`: a refusal, which waiting will not change.
     private(set) var refusedByMac = false
 
@@ -98,6 +100,8 @@ final class MirrorLink {
             "compress": MirrorWire.compressionName,
             // This app re-attaches after `daemon_restarting`, so the Mac's update need not wait for it.
             "restart": true,
+            // A file link tapped here comes back as `MirrorFileWire` frames instead of opening on the Mac.
+            "files": true,
         ]
         if let open {
             message["open"] = open.wire
@@ -325,6 +329,9 @@ final class MirrorLink {
                 return
             }
             onStatus?(status)
+        case let type where MirrorFileWire.isFileFrame(type):
+            // Not a webview frame: posting a quarter megabyte of base64 into the page would do nothing useful.
+            onFile?(object)
         case "asset_response":
             guard let id = object["id"] as? String, let continuation = pendingAssets.removeValue(forKey: id) else { return }
             if let base64 = object["base64"] as? String, let data = Data(base64Encoded: base64) {

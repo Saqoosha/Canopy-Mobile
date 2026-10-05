@@ -1,3 +1,4 @@
+import QuickLook
 import SwiftUI
 
 /// The Mac's own session view, attached live over a direct connection, as a full-screen cover.
@@ -145,6 +146,8 @@ struct MirrorLiveContent: View {
             .onChange(of: model.attachedCount) { _, _ in
                 if case .attached(let attached) = model.phase { onAttached?(attached) }
             }
+            .overlay(alignment: .top) { MirrorFileOverlay(files: model.files) }
+            .quickLookPreview(Bindable(model.files).received)
 
     }
 
@@ -190,6 +193,7 @@ final class MirrorLiveModel {
     private(set) var attachedCount = 0
     /// Set when the Mac sends `daemon_restarting`; read before the drop that follows it.
     private(set) var restartAnnounced = false
+    let files = MirrorFileReceiver()
 
     /// The Mac refused the attach; retrying will not change that.
     var refused: Bool { link?.refusedByMac == true }
@@ -217,7 +221,11 @@ final class MirrorLiveModel {
         link.onFailure = { [weak self] reason in
             guard let self else { return }
             if case .failed = self.phase { return }
+            self.files.connectionDropped()
             self.phase = .failed(reason)
+        }
+        link.onFile = { [weak self] frame in
+            self?.files.handle(frame)
         }
         link.onStatus = { [weak self] status in
             self?.status = status
@@ -230,6 +238,7 @@ final class MirrorLiveModel {
     }
 
     func close() {
+        files.connectionDropped()
         link?.close()
     }
 }
@@ -254,4 +263,33 @@ struct LaunchMirror: Identifiable {
     }
 
     var target: MirrorTarget { MirrorTarget(address: address, token: token) }
+}
+
+/// The name and progress of a file on its way from the Mac, or why it did not arrive.
+private struct MirrorFileOverlay: View {
+    let files: MirrorFileReceiver
+
+    var body: some View {
+        Group {
+            if let error = files.lastError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+            } else if files.showsOverlay, let transfer = files.current {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(transfer.name, systemImage: "arrow.down.doc")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    ProgressView(value: transfer.fraction)
+                }
+            }
+        }
+        .font(.footnote)
+        .padding(12)
+        .frame(maxWidth: 320)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .padding(.top, 8)
+        .opacity(files.isOverlayVisible ? 1 : 0)
+        .animation(.easeInOut(duration: 0.2), value: files.isOverlayVisible)
+        .allowsHitTesting(false)
+    }
 }

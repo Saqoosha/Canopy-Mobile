@@ -761,9 +761,7 @@ struct CanopyMobileApp: App {
         //
         // Not `.id(target)`: `ConversationTarget` hashes `title` and
         // `subtitle`, which turns every cosmetic difference into a new
-        // identity. The resumeId comes first because a Mac restart gives a
-        // session a new `sessionId` and keeps its resumeId: a tap then
-        // replaces the route (so replies go to the new id) on the same view.
+        // identity.
         .onDisappear {
             if viewedSession.current?.sessionId == target.sessionId {
                 viewedSession.current = nil
@@ -772,7 +770,7 @@ struct CanopyMobileApp: App {
         // Outermost, so the rebuild re-runs the `onAppear` above for the new
         // session. Inside it, only the subtree would be replaced and
         // `viewedSession` would keep naming the old one.
-        .id(ConversationIdentity(machine: target.machine, session: target.resumeId ?? target.sessionId))
+        .id(ConversationIdentity(machine: target.machine, sessionId: target.sessionId))
     }
 
     private func offlineConversation(_ target: ConversationTarget, pane: PaneRow?, title: String,
@@ -919,7 +917,7 @@ enum Route: Hashable {
 /// how it was named when the route was built.
 private struct ConversationIdentity: Hashable {
     let machine: String
-    let session: String
+    let sessionId: String
 }
 
 struct ConversationTarget: Hashable {

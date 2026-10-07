@@ -122,14 +122,46 @@ struct MirrorLiveContent: View {
     /// Asked before `onUnavailable` for a drop that was not a refusal, with whether the Mac announced
     /// a restart first; returning true means the caller re-attaches and `onUnavailable` is skipped.
     var retryDrop: ((_ restartAnnounced: Bool) -> Bool)? = nil
+    /// Set when this screen parks its attach in `MirrorSessionCache` on close and takes a parked one on open.
+    let cacheKey: MirrorSessionCache.Key?
 
-    @State private var model = MirrorLiveModel()
+    @State private var model: MirrorLiveModel
     @AppStorage("sendWithReturn") private var sendWithReturn = false
+
+    init(target: MirrorTarget, sessionId: String, open: OpenRequest? = nil, key: String? = nil,
+         cacheable: Bool = false,
+         onUnavailable: ((String) -> Void)?,
+         onAttached: ((MirrorLink.Attached) -> Void)? = nil,
+         retryDrop: ((_ restartAnnounced: Bool) -> Bool)? = nil) {
+        self.target = target
+        self.sessionId = sessionId
+        self.open = open
+        self.key = key
+        self.onUnavailable = onUnavailable
+        self.onAttached = onAttached
+        self.retryDrop = retryDrop
+        // Only a plain attach: one that asks the Mac to open or resume something must reach the Mac.
+        let cacheKey = cacheable && open == nil && key == nil
+            ? MirrorSessionCache.Key(address: target.address, sessionId: sessionId) : nil
+        self.cacheKey = cacheKey
+        _model = State(initialValue: cacheKey.flatMap(MirrorSessionCache.model(for:)) ?? MirrorLiveModel())
+    }
 
     var body: some View {
         content
-            .task { model.start(target: target, sessionId: sessionId, open: open, key: key) }
-            .onDisappear { model.close() }
+            .task {
+                MirrorSessionCache.claim(model)
+                model.start(target: target, sessionId: sessionId, open: open, key: key)
+                // A parked model attached long ago; the caller still needs to hear about it.
+                if case .attached(let attached) = model.phase { onAttached?(attached) }
+            }
+            .onDisappear {
+                if let cacheKey {
+                    MirrorSessionCache.park(model, key: cacheKey)
+                } else {
+                    model.close()
+                }
+            }
             .onChange(of: model.failure) { _, reason in
                 guard let reason else { return }
                 // The notice is read here, at the drop, so it cannot lose a race with it.
@@ -155,7 +187,7 @@ struct MirrorLiveContent: View {
                 // it does, and while the line has nothing to draw (no repo, no window yet).
                 let status = model.status.flatMap { $0.isEmpty ? nil : $0 }
                 VStack(spacing: 0) {
-                    MirrorWebView(link: link, attached: attached, sendWithReturn: sendWithReturn)
+                    MirrorWebView(link: link, attached: attached, page: model.page, sendWithReturn: sendWithReturn)
                     if let status {
                         MirrorStatusBar(status: status)
                     }
@@ -187,6 +219,14 @@ final class MirrorLiveModel {
     /// Set when the Mac sends `daemon_restarting`; read before the drop that follows it.
     private(set) var restartAnnounced = false
     let files = MirrorFileReceiver()
+    let page = MirrorPage()
+    private var closed = false
+
+    /// Attached and still connected: safe to show again from `MirrorSessionCache`.
+    var isReusable: Bool {
+        guard !closed, case .attached = phase else { return false }
+        return true
+    }
 
     /// The Mac refused the attach; retrying will not change that.
     var refused: Bool { link?.refusedByMac == true }
@@ -231,8 +271,10 @@ final class MirrorLiveModel {
     }
 
     func close() {
+        closed = true
         files.connectionDropped()
         link?.close()
+        page.close()
     }
 }
 

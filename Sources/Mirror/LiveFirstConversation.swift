@@ -69,6 +69,7 @@ struct LiveFirstConversation<Offline: View>: View {
         } else if let live, fallback == nil {
             let current = attempt
             MirrorLiveContent(target: live, sessionId: sessionId, open: resumeOnAttach ? .resume : nil,
+                              cacheable: true,
                               onUnavailable: { reason in
                                   // A drop reported by a live view that has already been replaced.
                                   guard current == attempt else { return }

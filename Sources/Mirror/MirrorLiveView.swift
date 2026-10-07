@@ -114,8 +114,8 @@ struct MirrorLiveView: View {
 struct MirrorLiveContent: View {
     let target: MirrorTarget
     let sessionId: String
-    var open: OpenRequest? = nil
-    var key: String? = nil
+    let open: OpenRequest?
+    let key: String?
     /// Called once when the attach cannot start, fails or drops; nil keeps the failure on screen instead.
     let onUnavailable: ((String) -> Void)?
     var onAttached: ((MirrorLink.Attached) -> Void)? = nil
@@ -140,19 +140,27 @@ struct MirrorLiveContent: View {
         self.onUnavailable = onUnavailable
         self.onAttached = onAttached
         self.retryDrop = retryDrop
-        // Only a plain attach: one that asks the Mac to open or resume something must reach the Mac.
-        let cacheKey = cacheable && open == nil && key == nil
-            ? MirrorSessionCache.Key(address: target.address, sessionId: sessionId) : nil
+        let cacheKey = Self.cacheKey(target: target, sessionId: sessionId, open: open, key: key, cacheable: cacheable)
         self.cacheKey = cacheKey
         _model = State(initialValue: cacheKey.flatMap(MirrorSessionCache.model(for:)) ?? MirrorLiveModel())
+    }
+
+    /// Only a plain attach is cached: one that asks the Mac to open or resume something, or names its key, must reach the Mac.
+    nonisolated static func cacheKey(target: MirrorTarget, sessionId: String, open: OpenRequest?, key: String?,
+                                     cacheable: Bool) -> MirrorSessionCache.Key? {
+        guard cacheable, open == nil, key == nil else { return nil }
+        return MirrorSessionCache.Key(address: target.address, sessionId: sessionId)
     }
 
     var body: some View {
         content
             .task {
                 MirrorSessionCache.claim(model)
+                // Closed by the cache before this screen claimed it (evicted between `init` and here), or while
+                // the screen was covered and parked: attach afresh instead of showing a page with no link.
+                if model.isClosed { model = MirrorLiveModel() }
                 model.start(target: target, sessionId: sessionId, open: open, key: key)
-                // A parked model attached long ago; the caller still needs to hear about it.
+                // A model from the cache is already attached, so `attachedCount` will not change; report it here.
                 if case .attached(let attached) = model.phase { onAttached?(attached) }
             }
             .onDisappear {
@@ -220,11 +228,13 @@ final class MirrorLiveModel {
     private(set) var restartAnnounced = false
     let files = MirrorFileReceiver()
     let page = MirrorPage()
-    private var closed = false
+    private(set) var isClosed = false
+    /// Set by `MirrorSessionCache` while the model is parked, so a link that fails there is released at once.
+    var onFailureWhileParked: (() -> Void)?
 
-    /// Attached and still connected: safe to show again from `MirrorSessionCache`.
+    /// Attached, not failed or closed: safe to show again from `MirrorSessionCache`.
     var isReusable: Bool {
-        guard !closed, case .attached = phase else { return false }
+        guard !isClosed, case .attached = phase else { return false }
         return true
     }
 
@@ -256,6 +266,7 @@ final class MirrorLiveModel {
             if case .failed = self.phase { return }
             self.files.connectionDropped()
             self.phase = .failed(reason)
+            self.onFailureWhileParked?()
         }
         link.onFile = { [weak self] frame in
             self?.files.handle(frame)
@@ -271,7 +282,8 @@ final class MirrorLiveModel {
     }
 
     func close() {
-        closed = true
+        isClosed = true
+        onFailureWhileParked = nil
         files.connectionDropped()
         link?.close()
         page.close()

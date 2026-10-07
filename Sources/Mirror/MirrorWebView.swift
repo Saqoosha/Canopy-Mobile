@@ -261,13 +261,13 @@ enum MirrorWebViewPool {
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         ))
-        // Used by `MirrorPageWebView` when the page leaves and re-enters the window: a scroll area at
-        // its bottom goes back to its bottom, any other to where it was. Re-applied on resizes for a
-        // second, while the reinserted view settles into its size. Also the status bar tap: the
-        // tallest scroll area (the conversation) goes to its top.
+        // Used by `MirrorPageWebView` when the page leaves and re-enters the window: a scroll area
+        // within 8 px of its bottom goes back to its bottom, any other to where it was. Re-applied when
+        // those areas resize, for a second or until a touch. Also the status bar tap: the tallest
+        // scroll area (currently the conversation) goes to its top.
         ucc.addUserScript(WKUserScript(
             source: """
-            (()=>{let saved=[];window.__canopySaveScroll=()=>{saved=[...document.querySelectorAll('*')].filter(e=>e.scrollHeight>e.clientHeight+1&&/auto|scroll/.test(getComputedStyle(e).overflowY)).map(e=>({e,top:e.scrollTop,bottom:e.scrollHeight-e.scrollTop-e.clientHeight<8}))};window.__canopyRestoreScroll=()=>{const live=saved.filter(s=>s.e.isConnected);const apply=()=>live.forEach(s=>{s.e.scrollTop=s.bottom?s.e.scrollHeight:s.top});apply();const ro=new ResizeObserver(apply);live.forEach(s=>ro.observe(s.e));setTimeout(()=>ro.disconnect(),1000)};window.__canopyScrollToTop=()=>{const e=[...document.querySelectorAll('*')].filter(e=>e.scrollHeight>e.clientHeight+1&&/auto|scroll/.test(getComputedStyle(e).overflowY)).sort((a,b)=>b.clientHeight-a.clientHeight)[0];e?.scrollTo({top:0,behavior:'smooth'})}})()
+            (()=>{let saved=[];window.__canopySaveScroll=()=>{saved=[...document.querySelectorAll('*')].filter(e=>e.scrollHeight>e.clientHeight+1&&/auto|scroll/.test(getComputedStyle(e).overflowY)).map(e=>({e,top:e.scrollTop,bottom:e.scrollHeight-e.scrollTop-e.clientHeight<8}))};window.__canopyRestoreScroll=()=>{const live=saved.filter(s=>s.e.isConnected);const apply=()=>live.forEach(s=>{s.e.scrollTop=s.bottom?s.e.scrollHeight:s.top});apply();const ro=new ResizeObserver(apply);live.forEach(s=>ro.observe(s.e));const stop=()=>ro.disconnect();setTimeout(stop,1000);addEventListener('touchstart',stop,{once:true,capture:true})};window.__canopyScrollToTop=()=>{const e=[...document.querySelectorAll('*')].filter(e=>e.scrollHeight>e.clientHeight+1&&/auto|scroll/.test(getComputedStyle(e).overflowY)).sort((a,b)=>b.clientHeight-a.clientHeight)[0];e?.scrollTo({top:0,behavior:'smooth'})}})()
             """,
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
@@ -283,15 +283,16 @@ enum MirrorWebViewPool {
     }
 }
 
-/// Keeps the page's scroll position across leaving the window, which a page parked by `MirrorSessionCache` does.
+/// Keeps the page's scroll position across leaving the window (a page parked by `MirrorSessionCache` does), and
+/// makes a status bar tap scroll the conversation to its top.
 ///
-/// Out of the window the webview loses the navigation bar's inset, so the page is briefly taller and clamps its
-/// scroll areas; back in, the inset returns but the position does not, and a page pinned to its bottom ends up a
-/// bar's height short of it. Recorded here, before the removal, rather than in SwiftUI's `onDisappear`, which can
-/// run after it and record the clamped position.
+/// Without the first, a page pinned to its bottom came back about a bar's height short of it. Likely cause, inferred
+/// from the fix working: out of the window the webview loses the navigation bar's inset and clamps its scroll areas.
+/// Saved in `willMove(toWindow:)`, before the removal; SwiftUI's `onDisappear` saved it and still drifted.
 final class MirrorPageWebView: WKWebView {
     /// The status bar tap's target. The page scrolls inside its own elements, never the webview's scroll view, so
-    /// a tap on that one does nothing; this stand-in is the window's only `scrollsToTop` view and forwards the tap.
+    /// a tap on that one does nothing. This stand-in forwards the tap; a second `scrollsToTop` view in the window
+    /// would disable it.
     private let scrollToTopCatcher = UIScrollView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
     private let scrollToTopForwarder = ScrollToTopForwarder()
 
@@ -301,12 +302,12 @@ final class MirrorPageWebView: WKWebView {
         scrollToTopForwarder.webView = self
         scrollToTopCatcher.delegate = scrollToTopForwarder
         scrollToTopCatcher.scrollsToTop = true
-        // Off its top, so UIKit has somewhere to scroll it; the forwarder refuses, so it stays off it.
+        // 1 pt down, so it is not already at its top; the forwarder returns false, so it stays there.
         scrollToTopCatcher.contentSize = CGSize(width: 1, height: 3)
         scrollToTopCatcher.contentOffset = CGPoint(x: 0, y: 1)
         scrollToTopCatcher.showsVerticalScrollIndicator = false
-        // Full width: UIKit only picks a scroll view whose horizontal span holds the tap (measured: at 1 pt wide it was
-        // the window's only candidate and was never asked).
+        // As wide as the webview: at 1 pt wide it was the window's only candidate yet never asked (logged on device),
+        // at full width it is. Probably UIKit only considers a scroll view spanning the tap's x; not documented.
         scrollToTopCatcher.autoresizingMask = [.flexibleWidth]
         addSubview(scrollToTopCatcher)
     }

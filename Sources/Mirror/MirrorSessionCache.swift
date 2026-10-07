@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import WebKit
 
 /// Live sessions kept attached for a while after their screen closes, so reopening one shows its page at once.
 ///
@@ -7,6 +8,9 @@ import UIKit
 /// parked model keeps its socket and webview, and the Mac keeps sending it frames, so the page it hands back is
 /// current. A parked model whose link fails is closed at once, and the whole cache is closed when the app goes to
 /// the background: iOS may close the sockets there, and the app hears of it only after a reopen could take one.
+///
+/// A closed session leaves its drawn page behind as a stale page: a reopen with nothing live to take shows it at
+/// once, over the new attach, until the new page has drawn the conversation.
 @MainActor
 enum MirrorSessionCache {
     static let limit = 3
@@ -24,6 +28,14 @@ enum MirrorSessionCache {
     }
 
     private static var parked: [Entry] = []
+    private static var stale: [StalePage] = []
+    static let staleLifetime: Duration = .seconds(1800)
+
+    private struct StalePage {
+        let key: Key
+        let webView: WKWebView
+        let expiry: Task<Void, Never>
+    }
     private static var backgroundObserver: (any NSObjectProtocol)?
     /// Bumped on each entry to the background; a model claimed before the last one is not parked.
     private static var backgroundCount = 0
@@ -32,6 +44,26 @@ enum MirrorSessionCache {
     /// discard it, so the screen claims the model in `claim` once it is actually on screen.
     static func model(for key: Key) -> MirrorLiveModel? {
         parked.first { $0.key == key && $0.model.isReusable }?.model
+    }
+
+    /// Takes the stale page for `key` out of the cache.
+    static func takeStalePage(for key: Key) -> WKWebView? {
+        guard let index = stale.firstIndex(where: { $0.key == key }) else { return nil }
+        let page = stale.remove(at: index)
+        page.expiry.cancel()
+        return page.webView
+    }
+
+    /// Keeps a drawn page for the next open of `key`, replacing an older one.
+    static func keepStalePage(_ webView: WKWebView, for key: Key) {
+        _ = takeStalePage(for: key)
+        let expiry = Task { @MainActor in
+            try? await Task.sleep(for: staleLifetime)
+            guard !Task.isCancelled else { return }
+            _ = takeStalePage(for: key)
+        }
+        stale.append(StalePage(key: key, webView: webView, expiry: expiry))
+        while stale.count > limit { _ = takeStalePage(for: stale[0].key) }
     }
 
     /// Takes a model now on screen out of the cache: no expiry, no eviction, no longer counted toward `limit`.
@@ -52,11 +84,11 @@ enum MirrorSessionCache {
         claim(model)
         // On screen across a trip to the background: its socket may be dead without the app having heard yet.
         guard model.isReusable, epoch == backgroundCount else {
-            model.close()
+            retire(model, key: key)
             return
         }
         // Another screen of the same session parked earlier: the newer page wins.
-        for stale in parked where stale.key == key { evict(stale.model, reason: "superseded") }
+        for older in parked where older.key == key { evict(older.model, reason: "superseded", keepPage: false) }
         let expiry = Task { @MainActor [weak model] in
             try? await Task.sleep(for: lifetime)
             guard !Task.isCancelled, let model else { return }
@@ -69,11 +101,18 @@ enum MirrorSessionCache {
         while parked.count > limit { evict(parked[0].model, reason: "over the limit") }
     }
 
-    private static func evict(_ model: MirrorLiveModel, reason: String) {
+    /// Closes a model, keeping its drawn page as the stale page for `key`.
+    static func retire(_ model: MirrorLiveModel, key: Key) {
+        if let webView = model.retire() { keepStalePage(webView, for: key) }
+    }
+
+    /// `keepPage` false: a newer page of the same session is parked, and this one would only be shown instead of it.
+    private static func evict(_ model: MirrorLiveModel, reason: String, keepPage: Bool = true) {
         guard let index = parked.firstIndex(where: { $0.model === model }) else { return }
-        parked.remove(at: index).expiry.cancel()
+        let entry = parked.remove(at: index)
+        entry.expiry.cancel()
         NSLog("[MirrorSessionCache] closed a parked session: %@", reason)
-        model.close()
+        if keepPage { retire(model, key: entry.key) } else { model.close() }
     }
 
     private static func observeBackground() {

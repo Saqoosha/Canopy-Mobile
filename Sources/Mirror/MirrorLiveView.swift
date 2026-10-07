@@ -1,5 +1,6 @@
 import QuickLook
 import SwiftUI
+import WebKit
 
 /// The Mac's own session view, attached live over a direct connection, pushed for a session the roster does not
 /// list yet (Open on Mac, or the `LaunchMirror` debug attach). A listed session opens in `LiveFirstConversation` instead.
@@ -126,6 +127,8 @@ struct MirrorLiveContent: View {
     let cacheKey: MirrorSessionCache.Key?
 
     @State private var model: MirrorLiveModel
+    /// The last page drawn for this session, shown over the attach until the new page has drawn the conversation.
+    @State private var stalePage: WKWebView?
     @AppStorage("sendWithReturn") private var sendWithReturn = false
 
     init(target: MirrorTarget, sessionId: String, open: OpenRequest? = nil, key: String? = nil,
@@ -153,8 +156,30 @@ struct MirrorLiveContent: View {
     }
 
     var body: some View {
-        content
+        ZStack {
+            content
+            if let stalePage {
+                MirrorStalePageView(webView: stalePage)
+                    .allowsHitTesting(false)
+                    // Taken here, so a tap meant for the old page does not land on the new one underneath.
+                    .overlay { Color.clear.contentShape(Rectangle()) }
+                    .overlay(alignment: .top) {
+                        Label("Updating…", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.footnote)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(.regularMaterial, in: Capsule())
+                            .padding(.top, 8)
+                    }
+                    .ignoresSafeArea(.container, edges: .bottom)
+            }
+        }
             .task {
+                // Read here, not in `init`: a reattach on the same screen builds this view before the one it
+                // replaces leaves and retires its page.
+                if stalePage == nil, !model.isReusable, let cacheKey {
+                    stalePage = MirrorSessionCache.takeStalePage(for: cacheKey)
+                }
                 if MirrorSessionCache.claim(model) { NSLog("[MirrorSessionCache] took a parked session back") }
                 // Closed by the cache before this screen claimed it (evicted between `init` and here), or while
                 // the screen was covered and parked: attach afresh instead of showing a page with no link.
@@ -165,13 +190,34 @@ struct MirrorLiveContent: View {
             }
             .onDisappear {
                 if let cacheKey {
+                    // Never drawn by the new page: the next open shows it again.
+                    if let stalePage { MirrorSessionCache.keepStalePage(stalePage, for: cacheKey) }
+                    stalePage = nil
                     MirrorSessionCache.park(model, key: cacheKey)
                 } else {
                     model.close()
                 }
             }
+            .task(id: model.transcriptDelivered) {
+                guard model.transcriptDelivered, stalePage != nil else { return }
+                await model.page.waitUntilDrawn()
+                guard !Task.isCancelled else { return }
+                stalePage = nil
+            }
+            // A Mac that answers the page's transcript some other way never reports it delivered.
+            .task(id: model.attachedCount) {
+                guard model.attachedCount > 0, stalePage != nil else { return }
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                stalePage = nil
+            }
             .onChange(of: model.failure) { _, reason in
                 guard let reason else { return }
+                // The failure view, or the caller's fallback, replaces the stale page; it stays kept for the next open.
+                if let stalePage, let cacheKey {
+                    MirrorSessionCache.keepStalePage(stalePage, for: cacheKey)
+                    self.stalePage = nil
+                }
                 // The notice is read here, at the drop, so it cannot lose a race with it.
                 if !model.refused, retryDrop?(model.restartAnnounced) == true { return }
                 onUnavailable?(reason)
@@ -232,6 +278,8 @@ final class MirrorLiveModel {
     private(set) var isClosed = false
     /// `MirrorSessionCache`'s count of trips to the background when this model was last claimed.
     var cacheEpoch = 0
+    /// The page has been handed its transcript, so a retired copy of it shows the conversation.
+    private(set) var transcriptDelivered = false
     /// Set by `MirrorSessionCache` while the model is parked, so a link that fails there is released at once.
     var onFailureWhileParked: (() -> Void)?
 
@@ -271,6 +319,9 @@ final class MirrorLiveModel {
             self.phase = .failed(reason)
             self.onFailureWhileParked?()
         }
+        link.onTranscriptDelivered = { [weak self] in
+            self?.transcriptDelivered = true
+        }
         link.onFile = { [weak self] frame in
             self?.files.handle(frame)
         }
@@ -285,11 +336,18 @@ final class MirrorLiveModel {
     }
 
     func close() {
+        _ = retire()
+    }
+
+    /// Closes the model but hands back its page's webview when it has drawn a conversation, for
+    /// `MirrorSessionCache` to show over the next attach.
+    func retire() -> WKWebView? {
         isClosed = true
         onFailureWhileParked = nil
         files.connectionDropped()
         link?.close()
-        page.close()
+        let webView = page.retire()
+        return transcriptDelivered ? webView : nil
     }
 }
 

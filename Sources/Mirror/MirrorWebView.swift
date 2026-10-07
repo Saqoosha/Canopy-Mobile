@@ -56,17 +56,46 @@ final class MirrorAssetSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 }
 
+/// The webview of one attach, kept by its model so a session reopened from `MirrorSessionCache`
+/// shows the same page, already filled, instead of loading and replaying it again.
+@MainActor
+final class MirrorPage {
+    fileprivate var webView: WKWebView?
+    fileprivate var coordinator: MirrorWebView.Coordinator?
+
+    /// Unhooks the page from its link. Not done when the view leaves the screen: a parked page keeps receiving frames.
+    func close() {
+        if let webView {
+            for name in MirrorWebView.handlerNames {
+                webView.configuration.userContentController.removeScriptMessageHandler(forName: name)
+            }
+        }
+        coordinator?.link?.onFrame = nil
+        coordinator?.deliver = nil
+        coordinator?.queued = []
+        webView = nil
+        coordinator = nil
+    }
+}
+
 struct MirrorWebView: UIViewRepresentable {
     let link: MirrorLink
     let attached: MirrorLink.Attached
+    let page: MirrorPage
     /// Settings › Composer. Off turns the page's Return-sends into a newline.
     let sendWithReturn: Bool
 
     static let handlerNames = ["vscodeHost", "consoleLog", "canopyLink", "canopyInputWidth"]
 
-    func makeCoordinator() -> Coordinator { Coordinator(link: link) }
+    func makeCoordinator() -> Coordinator {
+        if let kept = page.coordinator { return kept }
+        let coordinator = Coordinator(link: link)
+        page.coordinator = coordinator
+        return coordinator
+    }
 
     func makeUIView(context: Context) -> WKWebView {
+        if let kept = page.webView { return kept }
         let prepared = MirrorWebViewPool.take()
         prepared.handler.link = link
         prepared.handler.entryHTML = attached.html
@@ -103,6 +132,7 @@ struct MirrorWebView: UIViewRepresentable {
         }
         context.coordinator.deliver = link.onFrame
         webView.load(URLRequest(url: MirrorAssetSchemeHandler.entryURL))
+        page.webView = webView
         DispatchQueue.main.async { MirrorWebViewPool.warm() }
         return webView
     }
@@ -115,15 +145,6 @@ struct MirrorWebView: UIViewRepresentable {
 
     fileprivate static func sendWithReturnScript(_ on: Bool) -> String {
         "window.__canopyReturnSends=\(on)"
-    }
-
-    static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
-        for name in handlerNames {
-            webView.configuration.userContentController.removeScriptMessageHandler(forName: name)
-        }
-        coordinator.link?.onFrame = nil
-        coordinator.deliver = nil
-        coordinator.queued = []
     }
 
     @MainActor
@@ -240,14 +261,82 @@ enum MirrorWebViewPool {
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         ))
+        // Used by `MirrorPageWebView` when the page leaves and re-enters the window: a scroll area
+        // within 8 px of its bottom goes back to its bottom, any other to where it was. Re-applied when
+        // those areas resize, for a second or until a touch. Also the status bar tap: the tallest
+        // scroll area (currently the conversation) goes to its top.
+        ucc.addUserScript(WKUserScript(
+            source: """
+            (()=>{let saved=[];window.__canopySaveScroll=()=>{saved=[...document.querySelectorAll('*')].filter(e=>e.scrollHeight>e.clientHeight+1&&/auto|scroll/.test(getComputedStyle(e).overflowY)).map(e=>({e,top:e.scrollTop,bottom:e.scrollHeight-e.scrollTop-e.clientHeight<8}))};window.__canopyRestoreScroll=()=>{const live=saved.filter(s=>s.e.isConnected);const apply=()=>live.forEach(s=>{s.e.scrollTop=s.bottom?s.e.scrollHeight:s.top});apply();const ro=new ResizeObserver(apply);live.forEach(s=>ro.observe(s.e));const stop=()=>{ro.disconnect();clearTimeout(t);removeEventListener('touchstart',stop,true)};const t=setTimeout(stop,1000);addEventListener('touchstart',stop,true)};window.__canopyScrollToTop=()=>{const e=[...document.querySelectorAll('*')].filter(e=>e.scrollHeight>e.clientHeight+1&&/auto|scroll/.test(getComputedStyle(e).overflowY)).sort((a,b)=>b.clientHeight-a.clientHeight)[0];e?.scrollTo({top:0,behavior:'smooth'})}})()
+            """,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        ))
         let proxy = WeakMessageProxy()
         for name in MirrorWebView.handlerNames {
             ucc.add(proxy, name: name)
         }
-        let webView = WKWebView(frame: .zero, configuration: config)
+        let webView = MirrorPageWebView(frame: .zero, configuration: config)
         webView.isInspectable = true
         webView.loadHTMLString("<!doctype html><title></title>", baseURL: nil)
         return Prepared(webView: webView, handler: handler, proxy: proxy)
+    }
+}
+
+/// Keeps the page's scroll position across leaving the window (a page parked by `MirrorSessionCache` does), and
+/// makes a status bar tap scroll the conversation to its top.
+///
+/// Without the first, a page pinned to its bottom came back about a bar's height short of it. Likely cause, inferred
+/// from the fix working: out of the window the webview loses the navigation bar's inset and clamps its scroll areas.
+/// Saved in `willMove(toWindow:)`, before the removal; SwiftUI's `onDisappear` saved it and still drifted.
+final class MirrorPageWebView: WKWebView {
+    /// The status bar tap's target. The page scrolls inside its own elements, never the webview's scroll view, so
+    /// a tap on that one does nothing. This stand-in forwards the tap; a second `scrollsToTop` view in the window
+    /// would disable it.
+    private let scrollToTopCatcher = UIScrollView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+    private let scrollToTopForwarder = ScrollToTopForwarder()
+
+    override init(frame: CGRect, configuration: WKWebViewConfiguration) {
+        super.init(frame: frame, configuration: configuration)
+        scrollView.scrollsToTop = false
+        scrollToTopForwarder.webView = self
+        scrollToTopCatcher.delegate = scrollToTopForwarder
+        scrollToTopCatcher.scrollsToTop = true
+        // 1 pt down, so it is not already at its top; the forwarder returns false, so it stays there.
+        scrollToTopCatcher.contentSize = CGSize(width: 1, height: 3)
+        scrollToTopCatcher.contentOffset = CGPoint(x: 0, y: 1)
+        scrollToTopCatcher.showsVerticalScrollIndicator = false
+        // As wide as the webview: at 1 pt wide it was the window's only candidate yet never asked (logged on device),
+        // at full width it is. Probably UIKit only considers a scroll view spanning the tap's x; not documented.
+        scrollToTopCatcher.autoresizingMask = [.flexibleWidth]
+        addSubview(scrollToTopCatcher)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    /// A separate object: WKWebView is its own scroll view's delegate, and its handlers must not see the catcher.
+    private final class ScrollToTopForwarder: NSObject, UIScrollViewDelegate {
+        weak var webView: WKWebView?
+
+        func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
+            webView?.evaluateJavaScript("window.__canopyScrollToTop?.()")
+            return false
+        }
+    }
+
+    override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        if newWindow == nil, window != nil {
+            evaluateJavaScript("window.__canopySaveScroll?.()")
+        }
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil {
+            evaluateJavaScript("window.__canopyRestoreScroll?.()")
+        }
     }
 }
 

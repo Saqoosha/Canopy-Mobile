@@ -114,22 +114,62 @@ struct MirrorLiveView: View {
 struct MirrorLiveContent: View {
     let target: MirrorTarget
     let sessionId: String
-    var open: OpenRequest? = nil
-    var key: String? = nil
+    let open: OpenRequest?
+    let key: String?
     /// Called once when the attach cannot start, fails or drops; nil keeps the failure on screen instead.
     let onUnavailable: ((String) -> Void)?
     var onAttached: ((MirrorLink.Attached) -> Void)? = nil
     /// Asked before `onUnavailable` for a drop that was not a refusal, with whether the Mac announced
     /// a restart first; returning true means the caller re-attaches and `onUnavailable` is skipped.
     var retryDrop: ((_ restartAnnounced: Bool) -> Bool)? = nil
+    /// Set when this screen parks its attach in `MirrorSessionCache` on close and takes a parked one on open.
+    let cacheKey: MirrorSessionCache.Key?
 
-    @State private var model = MirrorLiveModel()
+    @State private var model: MirrorLiveModel
     @AppStorage("sendWithReturn") private var sendWithReturn = false
+
+    init(target: MirrorTarget, sessionId: String, open: OpenRequest? = nil, key: String? = nil,
+         cacheable: Bool = false,
+         onUnavailable: ((String) -> Void)?,
+         onAttached: ((MirrorLink.Attached) -> Void)? = nil,
+         retryDrop: ((_ restartAnnounced: Bool) -> Bool)? = nil) {
+        self.target = target
+        self.sessionId = sessionId
+        self.open = open
+        self.key = key
+        self.onUnavailable = onUnavailable
+        self.onAttached = onAttached
+        self.retryDrop = retryDrop
+        let cacheKey = Self.cacheKey(target: target, sessionId: sessionId, open: open, key: key, cacheable: cacheable)
+        self.cacheKey = cacheKey
+        _model = State(initialValue: cacheKey.flatMap(MirrorSessionCache.model(for:)) ?? MirrorLiveModel())
+    }
+
+    /// Only a plain attach is cached: one that asks the Mac to open or resume something, or names its key, must reach the Mac.
+    nonisolated static func cacheKey(target: MirrorTarget, sessionId: String, open: OpenRequest?, key: String?,
+                                     cacheable: Bool) -> MirrorSessionCache.Key? {
+        guard cacheable, open == nil, key == nil else { return nil }
+        return MirrorSessionCache.Key(address: target.address, sessionId: sessionId)
+    }
 
     var body: some View {
         content
-            .task { model.start(target: target, sessionId: sessionId, open: open, key: key) }
-            .onDisappear { model.close() }
+            .task {
+                if MirrorSessionCache.claim(model) { NSLog("[MirrorSessionCache] took a parked session back") }
+                // Closed by the cache before this screen claimed it (evicted between `init` and here), or while
+                // the screen was covered and parked: attach afresh instead of showing a page with no link.
+                if model.isClosed { model = MirrorLiveModel() }
+                model.start(target: target, sessionId: sessionId, open: open, key: key)
+                // A model from the cache is already attached, so `attachedCount` will not change; report it here.
+                if case .attached(let attached) = model.phase { onAttached?(attached) }
+            }
+            .onDisappear {
+                if let cacheKey {
+                    MirrorSessionCache.park(model, key: cacheKey)
+                } else {
+                    model.close()
+                }
+            }
             .onChange(of: model.failure) { _, reason in
                 guard let reason else { return }
                 // The notice is read here, at the drop, so it cannot lose a race with it.
@@ -150,12 +190,13 @@ struct MirrorLiveContent: View {
         case .connecting:
             ProgressView("Connecting to \(target.address)…")
         case .attached(let attached):
-            if let link = model.link {
+            // A model the cache closed is replaced in `.task`; drawing it first would spend a webview on a dead link.
+            if let link = model.link, !model.isClosed {
                 // Under the page's composer, where the Mac draws it. Absent until a Mac that sends
                 // it does, and while the line has nothing to draw (no repo, no window yet).
                 let status = model.status.flatMap { $0.isEmpty ? nil : $0 }
                 VStack(spacing: 0) {
-                    MirrorWebView(link: link, attached: attached, sendWithReturn: sendWithReturn)
+                    MirrorWebView(link: link, attached: attached, page: model.page, sendWithReturn: sendWithReturn)
                     if let status {
                         MirrorStatusBar(status: status)
                     }
@@ -187,6 +228,18 @@ final class MirrorLiveModel {
     /// Set when the Mac sends `daemon_restarting`; read before the drop that follows it.
     private(set) var restartAnnounced = false
     let files = MirrorFileReceiver()
+    let page = MirrorPage()
+    private(set) var isClosed = false
+    /// `MirrorSessionCache`'s count of trips to the background when this model was last claimed.
+    var cacheEpoch = 0
+    /// Set by `MirrorSessionCache` while the model is parked, so a link that fails there is released at once.
+    var onFailureWhileParked: (() -> Void)?
+
+    /// Attached, not failed or closed: safe to show again from `MirrorSessionCache`.
+    var isReusable: Bool {
+        guard !isClosed, case .attached = phase else { return false }
+        return true
+    }
 
     /// The Mac refused the attach; retrying will not change that.
     var refused: Bool { link?.refusedByMac == true }
@@ -216,6 +269,7 @@ final class MirrorLiveModel {
             if case .failed = self.phase { return }
             self.files.connectionDropped()
             self.phase = .failed(reason)
+            self.onFailureWhileParked?()
         }
         link.onFile = { [weak self] frame in
             self?.files.handle(frame)
@@ -231,8 +285,11 @@ final class MirrorLiveModel {
     }
 
     func close() {
+        isClosed = true
+        onFailureWhileParked = nil
         files.connectionDropped()
         link?.close()
+        page.close()
     }
 }
 

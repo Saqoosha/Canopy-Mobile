@@ -155,7 +155,7 @@ struct MirrorLiveContent: View {
     var body: some View {
         content
             .task {
-                MirrorSessionCache.claim(model)
+                if MirrorSessionCache.claim(model) { NSLog("[MirrorSessionCache] took a parked session back") }
                 // Closed by the cache before this screen claimed it (evicted between `init` and here), or while
                 // the screen was covered and parked: attach afresh instead of showing a page with no link.
                 if model.isClosed { model = MirrorLiveModel() }
@@ -190,7 +190,8 @@ struct MirrorLiveContent: View {
         case .connecting:
             ProgressView("Connecting to \(target.address)…")
         case .attached(let attached):
-            if let link = model.link {
+            // A model the cache closed is replaced in `.task`; drawing it first would spend a webview on a dead link.
+            if let link = model.link, !model.isClosed {
                 // Under the page's composer, where the Mac draws it. Absent until a Mac that sends
                 // it does, and while the line has nothing to draw (no repo, no window yet).
                 let status = model.status.flatMap { $0.isEmpty ? nil : $0 }
@@ -229,6 +230,8 @@ final class MirrorLiveModel {
     let files = MirrorFileReceiver()
     let page = MirrorPage()
     private(set) var isClosed = false
+    /// `MirrorSessionCache`'s count of trips to the background when this model was last claimed.
+    var cacheEpoch = 0
     /// Set by `MirrorSessionCache` while the model is parked, so a link that fails there is released at once.
     var onFailureWhileParked: (() -> Void)?
 

@@ -25,6 +25,8 @@ enum MirrorSessionCache {
 
     private static var parked: [Entry] = []
     private static var backgroundObserver: (any NSObjectProtocol)?
+    /// Bumped on each entry to the background; a model claimed before the last one is not parked.
+    private static var backgroundCount = 0
 
     /// The parked model for `key` if it is still attached. Leaves it parked: SwiftUI may build a view and
     /// discard it, so the screen claims the model in `claim` once it is actually on screen.
@@ -33,29 +35,36 @@ enum MirrorSessionCache {
     }
 
     /// Takes a model now on screen out of the cache: no expiry, no eviction, no longer counted toward `limit`.
-    static func claim(_ model: MirrorLiveModel) {
-        guard let index = parked.firstIndex(where: { $0.model === model }) else { return }
+    /// Returns whether it was parked.
+    @discardableResult
+    static func claim(_ model: MirrorLiveModel) -> Bool {
+        observeBackground()
+        model.cacheEpoch = backgroundCount
+        guard let index = parked.firstIndex(where: { $0.model === model }) else { return false }
         parked.remove(at: index).expiry.cancel()
         model.onFailureWhileParked = nil
-        NSLog("[MirrorSessionCache] took a parked session back")
+        return true
     }
 
     /// Keeps a model whose screen closed, or closes it when it cannot be reused.
     static func park(_ model: MirrorLiveModel, key: Key) {
+        let epoch = model.cacheEpoch
         claim(model)
-        guard model.isReusable else {
+        // On screen across a trip to the background: its socket may be dead without the app having heard yet.
+        guard model.isReusable, epoch == backgroundCount else {
             model.close()
             return
         }
-        observeBackground()
         // Another screen of the same session parked earlier: the newer page wins.
         for stale in parked where stale.key == key { evict(stale.model, reason: "superseded") }
-        let expiry = Task { @MainActor in
+        let expiry = Task { @MainActor [weak model] in
             try? await Task.sleep(for: lifetime)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, let model else { return }
             evict(model, reason: "expired")
         }
-        model.onFailureWhileParked = { evict(model, reason: "link failed") }
+        model.onFailureWhileParked = { [weak model] in
+            if let model { evict(model, reason: "link failed") }
+        }
         parked.append(Entry(key: key, model: model, expiry: expiry))
         while parked.count > limit { evict(parked[0].model, reason: "over the limit") }
     }
@@ -73,6 +82,7 @@ enum MirrorSessionCache {
             forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
         ) { _ in
             MainActor.assumeIsolated {
+                backgroundCount += 1
                 for entry in parked { evict(entry.model, reason: "app went to the background") }
             }
         }

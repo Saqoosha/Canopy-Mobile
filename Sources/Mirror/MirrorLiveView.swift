@@ -161,6 +161,8 @@ struct MirrorLiveContent: View {
             if let stalePage {
                 MirrorStalePageView(webView: stalePage)
                     .allowsHitTesting(false)
+                    // Taken here, so a tap meant for the old page does not land on the new one underneath.
+                    .overlay { Color.clear.contentShape(Rectangle()) }
                     .overlay(alignment: .top) {
                         Label("Updating…", systemImage: "arrow.triangle.2.circlepath")
                             .font(.footnote)
@@ -196,12 +198,18 @@ struct MirrorLiveContent: View {
                     model.close()
                 }
             }
-            .onChange(of: model.transcriptDelivered) { _, delivered in
-                guard delivered, stalePage != nil else { return }
-                Task {
-                    await model.page.waitUntilDrawn()
-                    stalePage = nil
-                }
+            .task(id: model.transcriptDelivered) {
+                guard model.transcriptDelivered, stalePage != nil else { return }
+                await model.page.waitUntilDrawn()
+                guard !Task.isCancelled else { return }
+                stalePage = nil
+            }
+            // A Mac that answers the page's transcript some other way never reports it delivered.
+            .task(id: model.attachedCount) {
+                guard model.attachedCount > 0, stalePage != nil else { return }
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                stalePage = nil
             }
             .onChange(of: model.failure) { _, reason in
                 guard let reason else { return }

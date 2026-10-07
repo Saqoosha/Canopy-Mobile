@@ -34,6 +34,8 @@ final class MirrorLink {
     var onAttached: ((Attached) -> Void)?
     /// A webview frame, as the raw JSON text of its line.
     var onFrame: ((String) -> Void)?
+    /// The page's transcript has been handed to `onFrame`, prefetched or asked for directly.
+    var onTranscriptDelivered: (() -> Void)?
     /// The Mac's status bar, on attach and after every change; never called by an older Mac.
     var onStatus: ((MirrorStatus) -> Void)?
     var onFailure: ((String) -> Void)?
@@ -190,6 +192,7 @@ final class MirrorLink {
         frame["message"] = message
         guard let data = try? JSONSerialization.data(withJSONObject: frame) else { return }
         onFrame?(String(decoding: data, as: UTF8.self))
+        onTranscriptDelivered?()
         flushFramesBehindPrefetch()
     }
 
@@ -345,6 +348,7 @@ final class MirrorLink {
             {
                 pageSessionResponseId = nil
                 onFrame?(String(decoding: line, as: UTF8.self))
+                onTranscriptDelivered?()
                 flushFramesBehindPrefetch()
                 return
             }

@@ -65,6 +65,12 @@ final class MirrorPage {
 
     /// Unhooks the page from its link. Not done when the view leaves the screen: a parked page keeps receiving frames.
     func close() {
+        _ = retire()
+    }
+
+    /// Unhooks the page like `close` but hands back its webview, still showing the last conversation it drew.
+    func retire() -> WKWebView? {
+        let kept = webView
         if let webView {
             for name in MirrorWebView.handlerNames {
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: name)
@@ -75,7 +81,29 @@ final class MirrorPage {
         coordinator?.queued = []
         webView = nil
         coordinator = nil
+        return kept
     }
+
+    /// Waits until the drawn conversation stops growing: two equal heights 150 ms apart, or 3 s at most.
+    func waitUntilDrawn() async {
+        var last = -1
+        for _ in 0..<20 {
+            try? await Task.sleep(for: .milliseconds(150))
+            guard let webView, let height = try? await webView.evaluateJavaScript(
+                "window.__canopyConversationHeight?.() ?? 0") as? Int else { return }
+            if height > 0, height == last { return }
+            last = height
+        }
+    }
+}
+
+/// A retired page shown over a reattach until the new page has drawn the conversation. Its link is gone, so it
+/// takes no touches.
+struct MirrorStalePageView: UIViewRepresentable {
+    let webView: WKWebView
+
+    func makeUIView(context: Context) -> WKWebView { webView }
+    func updateUIView(_ webView: WKWebView, context: Context) {}
 }
 
 struct MirrorWebView: UIViewRepresentable {
@@ -267,7 +295,7 @@ enum MirrorWebViewPool {
         // scroll area (currently the conversation) goes to its top.
         ucc.addUserScript(WKUserScript(
             source: """
-            (()=>{let saved=[];window.__canopySaveScroll=()=>{saved=[...document.querySelectorAll('*')].filter(e=>e.scrollHeight>e.clientHeight+1&&/auto|scroll/.test(getComputedStyle(e).overflowY)).map(e=>({e,top:e.scrollTop,bottom:e.scrollHeight-e.scrollTop-e.clientHeight<8}))};window.__canopyRestoreScroll=()=>{const live=saved.filter(s=>s.e.isConnected);const apply=()=>live.forEach(s=>{s.e.scrollTop=s.bottom?s.e.scrollHeight:s.top});apply();const ro=new ResizeObserver(apply);live.forEach(s=>ro.observe(s.e));const stop=()=>{ro.disconnect();clearTimeout(t);removeEventListener('touchstart',stop,true)};const t=setTimeout(stop,1000);addEventListener('touchstart',stop,true)};window.__canopyScrollToTop=()=>{const e=[...document.querySelectorAll('*')].filter(e=>e.scrollHeight>e.clientHeight+1&&/auto|scroll/.test(getComputedStyle(e).overflowY)).sort((a,b)=>b.clientHeight-a.clientHeight)[0];e?.scrollTo({top:0,behavior:'smooth'})}})()
+            (()=>{let saved=[];window.__canopySaveScroll=()=>{saved=[...document.querySelectorAll('*')].filter(e=>e.scrollHeight>e.clientHeight+1&&/auto|scroll/.test(getComputedStyle(e).overflowY)).map(e=>({e,top:e.scrollTop,bottom:e.scrollHeight-e.scrollTop-e.clientHeight<8}))};window.__canopyRestoreScroll=()=>{const live=saved.filter(s=>s.e.isConnected);const apply=()=>live.forEach(s=>{s.e.scrollTop=s.bottom?s.e.scrollHeight:s.top});apply();const ro=new ResizeObserver(apply);live.forEach(s=>ro.observe(s.e));const stop=()=>{ro.disconnect();clearTimeout(t);removeEventListener('touchstart',stop,true)};const t=setTimeout(stop,1000);addEventListener('touchstart',stop,true)};window.__canopyScrollToTop=()=>{conversation()?.scrollTo({top:0,behavior:'smooth'})};window.__canopyConversationHeight=()=>conversation()?.scrollHeight??document.body.scrollHeight;function conversation(){return [...document.querySelectorAll('*')].filter(e=>e.scrollHeight>e.clientHeight+1&&/auto|scroll/.test(getComputedStyle(e).overflowY)).sort((a,b)=>b.clientHeight-a.clientHeight)[0]}})()
             """,
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true

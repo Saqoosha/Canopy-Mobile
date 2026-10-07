@@ -17,6 +17,8 @@ final class MirrorLink {
         var sessionId: String? = nil
         /// The Mac's key for the open session, which finds it again on a re-attach.
         var hostSessionId: String? = nil
+        /// The Mac accepted `since`: it sends only the frames the kept page missed, and no transcript.
+        var resumed = false
     }
 
     enum AssetError: Error, LocalizedError {
@@ -70,12 +72,18 @@ final class MirrorLink {
     private var closed = false
     private var waitingDeadline: Task<Void, Never>?
     private var lastWaitingError: NWError?
+    private let resumeFrom: MirrorResumePoint?
+    private(set) var tracker = MirrorResumeTracker()
+    /// Where this link's page stands, for the next link to resume from; nil when it cannot.
+    var resumePoint: MirrorResumePoint? { tracker.point }
 
-    init(host: String, port: UInt16, sessionId: String, token: String, open: OpenRequest? = nil, key: String? = nil) {
+    init(host: String, port: UInt16, sessionId: String, token: String, open: OpenRequest? = nil, key: String? = nil,
+         resumeFrom: MirrorResumePoint? = nil) {
         self.sessionId = sessionId
         self.token = token
         self.open = open
         self.key = key
+        self.resumeFrom = resumeFrom
         connection = NWConnection(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: port) ?? .any,
@@ -90,7 +98,8 @@ final class MirrorLink {
     }
 
     /// The attach line sent once the TCP socket is ready. Pure so tests can pin the optional `open` field.
-    nonisolated static func attachMessage(sessionId: String, token: String, open: OpenRequest? = nil, key: String? = nil) -> [String: Any] {
+    nonisolated static func attachMessage(sessionId: String, token: String, open: OpenRequest? = nil, key: String? = nil,
+                                          since: MirrorResumePoint? = nil) -> [String: Any] {
         var message: [String: Any] = [
             "type": "attach",
             "sessionId": sessionId,
@@ -104,7 +113,13 @@ final class MirrorLink {
             "restart": true,
             // A file link tapped here comes back as `MirrorFileWire` frames instead of opening on the Mac.
             "files": true,
+            // The Mac buffers this session's frames, so a later attach can resume a kept page.
+            "resume": true,
         ]
+        if let since {
+            message["since"] = ["epoch": since.epoch, "seq": since.seq]
+            message["channelId"] = since.channelId
+        }
         if let open {
             message["open"] = open.wire
         }
@@ -144,6 +159,7 @@ final class MirrorLink {
     func send(_ object: [String: Any]) {
         if claimsPageSessionRequest(object) { return }
         guard !closed, !failed, let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        tracker.noteSent(object)
         connection.send(content: data + Data([0x0A]), completion: .contentProcessed { error in
             if let error {
                 logger.error("send failed: \(error.localizedDescription, privacy: .public)")
@@ -191,15 +207,23 @@ final class MirrorLink {
         message["requestId"] = requestId
         frame["message"] = message
         guard let data = try? JSONSerialization.data(withJSONObject: frame) else { return }
-        onFrame?(String(decoding: data, as: UTF8.self))
-        onTranscriptDelivered?()
-        flushFramesBehindPrefetch()
+        emit(data, frame)
+        transcriptHandedOver()
     }
 
-    private func flushFramesBehindPrefetch() {
+    /// The transcript reached the page; what the session did after it follows.
+    private func transcriptHandedOver() {
+        tracker.noteTranscriptDelivered()
+        onTranscriptDelivered?()
         let waiting = framesBehindPrefetch
         framesBehindPrefetch = []
-        for line in waiting { onFrame?(String(decoding: line, as: UTF8.self)) }
+        for line in waiting { emit(line, try? JSONSerialization.jsonObject(with: line) as? [String: Any]) }
+    }
+
+    /// One frame into the page, counted toward the resume point.
+    private func emit(_ line: Data, _ object: [String: Any]?) {
+        if let object { tracker.noteDelivered(object) }
+        onFrame?(String(decoding: line, as: UTF8.self))
     }
 
     func requestAsset(path: String) async throws -> (data: Data, mime: String) {
@@ -223,7 +247,7 @@ final class MirrorLink {
             logger.notice("connected; attaching \(self.sessionId, privacy: .public)")
             // `compress`: the prefetched replay is one line of a megabyte or more, and that line is what
             // a slow uplink spends its time on. A Mac without Canopy PR #238 ignores the key and keeps sending plain lines.
-            send(Self.attachMessage(sessionId: sessionId, token: token, open: open, key: key))
+            send(Self.attachMessage(sessionId: sessionId, token: token, open: open, key: key, since: resumeFrom))
             receive()
             // The Mac answers attach at once; a silent Mac would otherwise leave the view connecting forever.
             waitingDeadline = Task { [weak self] in
@@ -310,8 +334,11 @@ final class MirrorLink {
             logger.notice("attach_ok with \(scripts.count) user scripts, extension \(version ?? "unknown", privacy: .public)")
             let nonEmpty = { (key: String) in (object[key] as? String).flatMap { $0.isEmpty ? nil : $0 } }
             pageSessionId = nonEmpty("sessionId")
+            let resumed = resumeFrom != nil && object["resumed"] as? Bool == true
+            tracker.noteAttached(object, resumed: resumed)
+            if let resumeFrom, !resumed { logger.notice("the Mac could not resume from seq \(resumeFrom.seq); rebuilding the page") }
             onAttached?(Attached(html: html, userScripts: scripts, extensionVersion: version,
-                                 sessionId: nonEmpty("sessionId"), hostSessionId: nonEmpty("hostSessionId")))
+                                 sessionId: nonEmpty("sessionId"), hostSessionId: nonEmpty("hostSessionId"), resumed: resumed))
         case "attach_error":
             waitingDeadline?.cancel()
             refusedByMac = true
@@ -347,9 +374,8 @@ final class MirrorLink {
                (object["message"] as? [String: Any])?["requestId"] as? String == pending
             {
                 pageSessionResponseId = nil
-                onFrame?(String(decoding: line, as: UTF8.self))
-                onTranscriptDelivered?()
-                flushFramesBehindPrefetch()
+                emit(line, object)
+                transcriptHandedOver()
                 return
             }
             if pageSessionResponseId != nil,
@@ -373,7 +399,7 @@ final class MirrorLink {
                     }
                     // Every other response answers a request the page made itself — init among
                     // them, and the page cannot ask for its transcript until that one lands.
-                    onFrame?(String(decoding: line, as: UTF8.self))
+                    emit(line, object)
                     return
                 }
                 // What the session did after the snapshot waits for it, or the page would
@@ -381,7 +407,7 @@ final class MirrorLink {
                 framesBehindPrefetch.append(line)
                 return
             }
-            onFrame?(String(decoding: line, as: UTF8.self))
+            emit(line, object)
         }
     }
 

@@ -175,7 +175,9 @@ struct MirrorLiveContent: View {
             .task {
                 // Read here, not in `init`: a reattach on the same screen builds this view before the one it
                 // replaces leaves and retires its page.
-                let stalePage = !model.isReusable ? cacheKey.flatMap(MirrorSessionCache.takeStalePage(for:)) : nil
+                // Only for a model that will start a link: one already connecting would not take it.
+                let stalePage = !model.isReusable && (model.link == nil || model.isClosed)
+                    ? cacheKey.flatMap(MirrorSessionCache.takeStalePage(for:)) : nil
                 if MirrorSessionCache.claim(model) { NSLog("[MirrorSessionCache] took a parked session back") }
                 // Closed by the cache before this screen claimed it (evicted between `init` and here), or while
                 // the screen was covered and parked: attach afresh instead of showing a page with no link.
@@ -302,8 +304,8 @@ final class MirrorLiveModel {
 
     func start(target: MirrorTarget, sessionId: String, open: OpenRequest? = nil, key: String? = nil,
                stalePage: RetiredMirrorPage? = nil) {
-        if let stalePage { self.stalePage = stalePage }
         guard link == nil else { return }
+        self.stalePage = stalePage
         let address = target.address
         guard let colon = address.lastIndex(of: ":"),
               let port = UInt16(address[address.index(after: colon)...]), port != 0,

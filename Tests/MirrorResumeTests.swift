@@ -99,6 +99,10 @@ struct MirrorResumeTests {
         link.send(["type": "request", "requestId": "r1", "request": ["type": "list_sessions_request"]])
         #expect(link.tracker.channelId == "c1")
         #expect(link.tracker.pendingRequests == ["r1"])
+        // A request the page sends after the link closed never leaves, and its answer never comes.
+        link.close()
+        link.send(["type": "request", "requestId": "r2", "request": ["type": "list_sessions_request"]])
+        #expect(link.tracker.pendingRequests == ["r1", "r2"])
     }
 
     @MainActor

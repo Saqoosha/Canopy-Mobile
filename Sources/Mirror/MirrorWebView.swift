@@ -62,6 +62,8 @@ final class MirrorAssetSchemeHandler: NSObject, WKURLSchemeHandler {
 final class MirrorPage {
     fileprivate var webView: WKWebView?
     fileprivate var coordinator: MirrorWebView.Coordinator?
+    fileprivate var handler: MirrorAssetSchemeHandler?
+    fileprivate var proxy: WeakMessageProxy?
 
     /// Unhooks the page from its link. Not done when the view leaves the screen: a parked page keeps receiving frames.
     func close() {
@@ -69,8 +71,10 @@ final class MirrorPage {
     }
 
     /// Unhooks the page like `close` but hands back its webview, still showing the last conversation it drew.
-    func retire() -> WKWebView? {
-        let kept = webView
+    func retire() -> RetiredMirrorPage? {
+        // Frames still queued, or a reload since it loaded, mean the page does not hold what its link counted.
+        let intact = coordinator.map { $0.pageIsReady && $0.queued.isEmpty && !$0.reloaded } ?? false
+        let kept = webView.map { RetiredMirrorPage(webView: $0, handler: handler, proxy: proxy, intact: intact) }
         if let webView {
             for name in MirrorWebView.handlerNames {
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: name)
@@ -79,9 +83,28 @@ final class MirrorPage {
         coordinator?.link?.onFrame = nil
         coordinator?.deliver = nil
         coordinator?.queued = []
+        handler?.link = nil
         webView = nil
         coordinator = nil
+        handler = nil
+        proxy = nil
         return kept
+    }
+
+    /// Takes a retired page back onto `link`, which resumed it: the page keeps what it drew and gets the frames it missed.
+    func adopt(_ retired: RetiredMirrorPage, link: MirrorLink) {
+        guard webView == nil, let handler = retired.handler, let proxy = retired.proxy else { return }
+        let coordinator = MirrorWebView.Coordinator(link: link, pageIsReady: true)
+        handler.link = link
+        proxy.target = coordinator
+        let ucc = retired.webView.configuration.userContentController
+        for name in MirrorWebView.handlerNames { ucc.add(proxy, name: name) }
+        retired.webView.navigationDelegate = coordinator
+        MirrorWebView.connect(link, to: retired.webView, coordinator: coordinator)
+        self.webView = retired.webView
+        self.coordinator = coordinator
+        self.handler = handler
+        self.proxy = proxy
     }
 
     /// Waits until the drawn conversation stops growing: two equal heights 150 ms apart, or 3 s at most.
@@ -94,6 +117,40 @@ final class MirrorPage {
             if height > 0, height == last { return }
             last = height
         }
+    }
+}
+
+/// A page whose link is gone, with what it takes to put it on another link.
+@MainActor
+struct RetiredMirrorPage {
+    let webView: WKWebView
+    fileprivate let handler: MirrorAssetSchemeHandler?
+    fileprivate let proxy: WeakMessageProxy?
+    private let watcher: RetiredPageWatcher
+    /// Where its link left it, set by its model; read through `resumePoint`.
+    var linkPoint: MirrorResumePoint? = nil
+
+    fileprivate init(webView: WKWebView, handler: MirrorAssetSchemeHandler?, proxy: WeakMessageProxy?, intact: Bool) {
+        self.webView = webView
+        self.handler = handler
+        self.proxy = proxy
+        watcher = RetiredPageWatcher(intact: intact)
+        webView.navigationDelegate = watcher
+    }
+
+    /// Nil once iOS has killed its web content while it waited, or when it did not hold what its link counted.
+    var resumePoint: MirrorResumePoint? { watcher.intact ? linkPoint : nil }
+}
+
+/// The retired webview's navigation delegate: a killed web content process leaves a blank page that must not be resumed.
+@MainActor
+private final class RetiredPageWatcher: NSObject, WKNavigationDelegate {
+    private(set) var intact: Bool
+
+    init(intact: Bool) { self.intact = intact }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        intact = false
     }
 }
 
@@ -141,7 +198,24 @@ struct MirrorWebView: UIViewRepresentable {
         }
         let webView = prepared.webView
         webView.navigationDelegate = context.coordinator
-        link.onFrame = { [weak webView, weak coordinator = context.coordinator] line in
+        Self.connect(link, to: webView, coordinator: context.coordinator)
+        webView.load(URLRequest(url: MirrorAssetSchemeHandler.entryURL))
+        page.webView = webView
+        page.handler = prepared.handler
+        page.proxy = prepared.proxy
+        DispatchQueue.main.async { MirrorWebViewPool.warm() }
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        guard context.coordinator.sendWithReturn != sendWithReturn else { return }
+        context.coordinator.sendWithReturn = sendWithReturn
+        webView.evaluateJavaScript(Self.sendWithReturnScript(sendWithReturn))
+    }
+
+    /// Routes `link`'s frames into the page.
+    fileprivate static func connect(_ link: MirrorLink, to webView: WKWebView, coordinator: Coordinator) {
+        link.onFrame = { [weak webView, weak coordinator] line in
             // The page cannot receive a postMessage until its own scripts run; frames that
             // arrive first wait for didFinish. Weak, or the coordinator's own `deliver`
             // would hold this closure and neither would ever be released.
@@ -158,17 +232,7 @@ struct MirrorWebView: UIViewRepresentable {
                 if let error { logger.error("deliver failed: \(error.localizedDescription, privacy: .public)") }
             }
         }
-        context.coordinator.deliver = link.onFrame
-        webView.load(URLRequest(url: MirrorAssetSchemeHandler.entryURL))
-        page.webView = webView
-        DispatchQueue.main.async { MirrorWebViewPool.warm() }
-        return webView
-    }
-
-    func updateUIView(_ webView: WKWebView, context: Context) {
-        guard context.coordinator.sendWithReturn != sendWithReturn else { return }
-        context.coordinator.sendWithReturn = sendWithReturn
-        webView.evaluateJavaScript(Self.sendWithReturnScript(sendWithReturn))
+        coordinator.deliver = link.onFrame
     }
 
     fileprivate static func sendWithReturnScript(_ on: Bool) -> String {
@@ -181,22 +245,27 @@ struct MirrorWebView: UIViewRepresentable {
         /// Frames that arrived before the page could receive them, in the order the Mac sent them.
         var queued: [String] = []
         private(set) var pageIsReady = false
-        var sendWithReturn = false
+        /// Nil until applied, so an adopted page gets the current setting on its first update.
+        var sendWithReturn: Bool?
         var deliver: ((String) -> Void)?
+        /// Navigated again after loading: a web content crash reload, which starts an empty page.
+        private(set) var reloaded = false
 
-        init(link: MirrorLink) {
+        init(link: MirrorLink, pageIsReady: Bool = false) {
             self.link = link
+            self.pageIsReady = pageIsReady
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             // A reload after a web content crash starts an empty page again; frames must wait for it too.
+            if pageIsReady { reloaded = true }
             pageIsReady = false
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             pageIsReady = true
             // A reload re-runs the document-start script with the value from when the view opened.
-            webView.evaluateJavaScript(MirrorWebView.sendWithReturnScript(sendWithReturn))
+            webView.evaluateJavaScript(MirrorWebView.sendWithReturnScript(sendWithReturn ?? false))
             let waiting = queued
             queued = []
             waiting.forEach { deliver?($0) }

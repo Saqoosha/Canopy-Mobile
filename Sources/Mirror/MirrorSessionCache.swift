@@ -10,7 +10,8 @@ import WebKit
 /// the background: iOS may close the sockets there, and the app hears of it only after a reopen could take one.
 ///
 /// A closed session leaves its drawn page behind as a stale page: a reopen with nothing live to take shows it at
-/// once, over the new attach, until the new page has drawn the conversation.
+/// once, over the new attach, until the new page has drawn the conversation — or, when the Mac can resume it,
+/// becomes the live page again with only the frames it missed.
 @MainActor
 enum MirrorSessionCache {
     static let limit = 3
@@ -33,7 +34,7 @@ enum MirrorSessionCache {
 
     private struct StalePage {
         let key: Key
-        let webView: WKWebView
+        let page: RetiredMirrorPage
         let expiry: Task<Void, Never>
     }
     private static var backgroundObserver: (any NSObjectProtocol)?
@@ -47,22 +48,22 @@ enum MirrorSessionCache {
     }
 
     /// Takes the stale page for `key` out of the cache.
-    static func takeStalePage(for key: Key) -> WKWebView? {
+    static func takeStalePage(for key: Key) -> RetiredMirrorPage? {
         guard let index = stale.firstIndex(where: { $0.key == key }) else { return nil }
-        let page = stale.remove(at: index)
-        page.expiry.cancel()
-        return page.webView
+        let entry = stale.remove(at: index)
+        entry.expiry.cancel()
+        return entry.page
     }
 
     /// Keeps a drawn page for the next open of `key`, replacing an older one.
-    static func keepStalePage(_ webView: WKWebView, for key: Key) {
+    static func keepStalePage(_ page: RetiredMirrorPage, for key: Key) {
         _ = takeStalePage(for: key)
         let expiry = Task { @MainActor in
             try? await Task.sleep(for: staleLifetime)
             guard !Task.isCancelled else { return }
             _ = takeStalePage(for: key)
         }
-        stale.append(StalePage(key: key, webView: webView, expiry: expiry))
+        stale.append(StalePage(key: key, page: page, expiry: expiry))
         while stale.count > limit { _ = takeStalePage(for: stale[0].key) }
     }
 
@@ -103,7 +104,7 @@ enum MirrorSessionCache {
 
     /// Closes a model, keeping its drawn page as the stale page for `key`.
     static func retire(_ model: MirrorLiveModel, key: Key) {
-        if let webView = model.retire() { keepStalePage(webView, for: key) }
+        if let page = model.retire() { keepStalePage(page, for: key) }
     }
 
     /// `keepPage` false: a newer page of the same session is parked, and this one would only be shown instead of it.

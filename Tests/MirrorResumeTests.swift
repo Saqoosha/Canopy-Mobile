@@ -5,7 +5,7 @@ import Testing
 struct MirrorResumeTests {
     private func ready() -> MirrorResumeTracker {
         var tracker = MirrorResumeTracker()
-        tracker.noteAttached(["epoch": "e", "seq": 3], resumed: false)
+        tracker.noteAttached(["epoch": "e", "seq": 3], resumedFrom: nil)
         tracker.noteSent(["type": "launch_claude", "channelId": "c1"])
         tracker.noteTranscriptDelivered()
         return tracker
@@ -39,33 +39,34 @@ struct MirrorResumeTests {
 
     @Test func noPointBeforeTheTranscriptAChannelOrAnEpoch() {
         var noTranscript = MirrorResumeTracker()
-        noTranscript.noteAttached(["epoch": "e", "seq": 3], resumed: false)
+        noTranscript.noteAttached(["epoch": "e", "seq": 3], resumedFrom: nil)
         noTranscript.noteSent(["type": "launch_claude", "channelId": "c1"])
         #expect(noTranscript.point == nil)
 
         var noChannel = MirrorResumeTracker()
-        noChannel.noteAttached(["epoch": "e", "seq": 3], resumed: false)
+        noChannel.noteAttached(["epoch": "e", "seq": 3], resumedFrom: nil)
         noChannel.noteTranscriptDelivered()
         #expect(noChannel.point == nil)
 
         // A Mac older than Canopy PR #321 sends neither field.
         var olderMac = MirrorResumeTracker()
-        olderMac.noteAttached([:], resumed: false)
+        olderMac.noteAttached([:], resumedFrom: nil)
         olderMac.noteSent(["type": "launch_claude", "channelId": "c1"])
         olderMac.noteTranscriptDelivered()
         #expect(olderMac.point == nil)
     }
 
-    @Test func aResumedAttachAlreadyHoldsItsTranscript() {
+    @Test func aResumedLinkCanBeResumedFromAgainWithoutANewLaunch() {
         var tracker = MirrorResumeTracker()
-        tracker.noteAttached(["epoch": "e", "seq": 3], resumed: true)
-        tracker.noteSent(["type": "launch_claude", "channelId": "c1"])
-        #expect(tracker.point?.seq == 3)
+        // The kept page sends no launch_claude on a resumed link; its channel comes from the point it resumed from.
+        tracker.noteAttached(["epoch": "e", "seq": 3], resumedFrom: MirrorResumePoint(epoch: "e", seq: 3, channelId: "c1"))
+        tracker.noteDelivered(["type": "from-extension", "seq": 8])
+        #expect(tracker.point == MirrorResumePoint(epoch: "e", seq: 8, channelId: "c1"))
     }
 
     @Test func aBooleanSeqIsNotASeq() {
         var tracker = MirrorResumeTracker()
-        tracker.noteAttached(["epoch": "e", "seq": true], resumed: false)
+        tracker.noteAttached(["epoch": "e", "seq": true], resumedFrom: nil)
         #expect(tracker.seq == nil)
     }
 
@@ -92,6 +93,30 @@ struct MirrorResumeTests {
     }
 
     @MainActor
+    @Test func thePageMessagesSentThroughTheLinkNameItsChannelAndPendingRequests() {
+        let link = MirrorLink(host: "127.0.0.1", port: 1, sessionId: "s", token: "t")
+        link.send(["type": "launch_claude", "channelId": "c1"])
+        link.send(["type": "request", "requestId": "r1", "request": ["type": "list_sessions_request"]])
+        #expect(link.tracker.channelId == "c1")
+        #expect(link.tracker.pendingRequests == ["r1"])
+    }
+
+    @MainActor
+    @Test func theTranscriptAndTheFramesHeldBehindItMakeAResumePoint() {
+        let link = MirrorLink(host: "127.0.0.1", port: 1, sessionId: "s", token: "t")
+        var frames = 0
+        link.onFrame = { _ in frames += 1 }
+        link.handleLine(Data(#"{"type":"attach_ok","html":"<p>","sessionId":"s","prefetchedSessionRequestId":"p1","epoch":"e","seq":5}"#.utf8))
+        link.send(["type": "launch_claude", "channelId": "c1"])
+        link.handleLine(Data(#"{"type":"from-extension","seq":6,"message":{"type":"io_message"}}"#.utf8))
+        // The page's own transcript request is answered by the prefetch, so it never waits on the Mac.
+        link.send(["type": "request", "requestId": "page-1", "request": ["type": "get_session_request", "sessionId": "s"]])
+        link.handleLine(Data(#"{"type":"from-extension","message":{"type":"response","requestId":"p1","response":{}}}"#.utf8))
+        #expect(frames == 2)
+        #expect(link.resumePoint == MirrorResumePoint(epoch: "e", seq: 6, channelId: "c1"))
+    }
+
+    @MainActor
     @Test func framesHandedToThePageAdvanceTheCursor() {
         let link = MirrorLink(host: "127.0.0.1", port: 1, sessionId: "s", token: "t")
         var frames = 0
@@ -113,7 +138,13 @@ struct MirrorResumeTests {
         let fresh = MirrorLink(host: "127.0.0.1", port: 1, sessionId: "s", token: "t")
         fresh.onAttached = { reported.append($0.resumed) }
         fresh.handleLine(Data(#"{"type":"attach_ok","html":"<p>","epoch":"e","seq":5,"resumed":true}"#.utf8))
-        #expect(reported == [true, false])
-        #expect(asked.tracker.transcriptDelivered && !fresh.tracker.transcriptDelivered)
+        let refused = MirrorLink(host: "127.0.0.1", port: 1, sessionId: "s", token: "t",
+                                 resumeFrom: MirrorResumePoint(epoch: "e", seq: 5, channelId: "c1"))
+        refused.onAttached = { reported.append($0.resumed) }
+        refused.handleLine(Data(#"{"type":"attach_ok","html":"<p>","epoch":"e2","seq":9,"resumed":false,"prefetchedSessionRequestId":"p"}"#.utf8))
+        #expect(reported == [true, false, false])
+        #expect(!refused.tracker.transcriptDelivered)
+        #expect(asked.tracker.point == MirrorResumePoint(epoch: "e", seq: 5, channelId: "c1"))
+        #expect(!fresh.tracker.transcriptDelivered)
     }
 }

@@ -72,7 +72,9 @@ final class MirrorPage {
 
     /// Unhooks the page like `close` but hands back its webview, still showing the last conversation it drew.
     func retire() -> RetiredMirrorPage? {
-        let kept = webView.map { RetiredMirrorPage(webView: $0, handler: handler, proxy: proxy) }
+        // Frames still queued, or a reload since it loaded, mean the page does not hold what its link counted.
+        let intact = coordinator.map { $0.pageIsReady && $0.queued.isEmpty && !$0.reloaded } ?? false
+        let kept = webView.map { RetiredMirrorPage(webView: $0, handler: handler, proxy: proxy, intact: intact) }
         if let webView {
             for name in MirrorWebView.handlerNames {
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: name)
@@ -124,8 +126,32 @@ struct RetiredMirrorPage {
     let webView: WKWebView
     fileprivate let handler: MirrorAssetSchemeHandler?
     fileprivate let proxy: WeakMessageProxy?
-    /// Where it stands, set by its model from the link it retired from; nil when it cannot resume.
-    var resumePoint: MirrorResumePoint? = nil
+    private let watcher: RetiredPageWatcher
+    /// Where its link left it, set by its model; read through `resumePoint`.
+    var linkPoint: MirrorResumePoint? = nil
+
+    fileprivate init(webView: WKWebView, handler: MirrorAssetSchemeHandler?, proxy: WeakMessageProxy?, intact: Bool) {
+        self.webView = webView
+        self.handler = handler
+        self.proxy = proxy
+        watcher = RetiredPageWatcher(intact: intact)
+        webView.navigationDelegate = watcher
+    }
+
+    /// Nil once iOS has killed its web content while it waited, or when it did not hold what its link counted.
+    var resumePoint: MirrorResumePoint? { watcher.intact ? linkPoint : nil }
+}
+
+/// The retired webview's navigation delegate: a killed web content process leaves a blank page that must not be resumed.
+@MainActor
+private final class RetiredPageWatcher: NSObject, WKNavigationDelegate {
+    private(set) var intact: Bool
+
+    init(intact: Bool) { self.intact = intact }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        intact = false
+    }
 }
 
 /// A retired page shown over a reattach until the new page has drawn the conversation. Its link is gone, so it
@@ -219,8 +245,11 @@ struct MirrorWebView: UIViewRepresentable {
         /// Frames that arrived before the page could receive them, in the order the Mac sent them.
         var queued: [String] = []
         private(set) var pageIsReady = false
-        var sendWithReturn = false
+        /// Nil until applied, so an adopted page gets the current setting on its first update.
+        var sendWithReturn: Bool?
         var deliver: ((String) -> Void)?
+        /// Navigated again after loading: a web content crash reload, which starts an empty page.
+        private(set) var reloaded = false
 
         init(link: MirrorLink, pageIsReady: Bool = false) {
             self.link = link
@@ -229,13 +258,14 @@ struct MirrorWebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             // A reload after a web content crash starts an empty page again; frames must wait for it too.
+            if pageIsReady { reloaded = true }
             pageIsReady = false
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             pageIsReady = true
             // A reload re-runs the document-start script with the value from when the view opened.
-            webView.evaluateJavaScript(MirrorWebView.sendWithReturnScript(sendWithReturn))
+            webView.evaluateJavaScript(MirrorWebView.sendWithReturnScript(sendWithReturn ?? false))
             let waiting = queued
             queued = []
             waiting.forEach { deliver?($0) }

@@ -302,8 +302,8 @@ final class MirrorLiveModel {
 
     func start(target: MirrorTarget, sessionId: String, open: OpenRequest? = nil, key: String? = nil,
                stalePage: RetiredMirrorPage? = nil) {
+        if let stalePage { self.stalePage = stalePage }
         guard link == nil else { return }
-        self.stalePage = stalePage
         let address = target.address
         guard let colon = address.lastIndex(of: ":"),
               let port = UInt16(address[address.index(after: colon)...]), port != 0,
@@ -360,7 +360,7 @@ final class MirrorLiveModel {
         let point = link?.resumePoint
         link?.close()
         guard var retired = page.retire(), transcriptDelivered else { return nil }
-        retired.resumePoint = point
+        retired.linkPoint = point
         return retired
     }
 }

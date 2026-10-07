@@ -158,8 +158,9 @@ final class MirrorLink {
 
     func send(_ object: [String: Any]) {
         if claimsPageSessionRequest(object) { return }
-        guard !closed, !failed, let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        // Counted even when dropped below: a request that never left still waits for an answer.
         tracker.noteSent(object)
+        guard !closed, !failed, let data = try? JSONSerialization.data(withJSONObject: object) else { return }
         connection.send(content: data + Data([0x0A]), completion: .contentProcessed { error in
             if let error {
                 logger.error("send failed: \(error.localizedDescription, privacy: .public)")
@@ -335,7 +336,7 @@ final class MirrorLink {
             let nonEmpty = { (key: String) in (object[key] as? String).flatMap { $0.isEmpty ? nil : $0 } }
             pageSessionId = nonEmpty("sessionId")
             let resumed = resumeFrom != nil && object["resumed"] as? Bool == true
-            tracker.noteAttached(object, resumed: resumed)
+            tracker.noteAttached(object, resumedFrom: resumed ? resumeFrom : nil)
             if let resumeFrom, !resumed { logger.notice("the Mac could not resume from seq \(resumeFrom.seq); rebuilding the page") }
             onAttached?(Attached(html: html, userScripts: scripts, extensionVersion: version,
                                  sessionId: nonEmpty("sessionId"), hostSessionId: nonEmpty("hostSessionId"), resumed: resumed))

@@ -21,11 +21,16 @@ struct MirrorResumeTracker: Equatable {
     private(set) var transcriptDelivered = false
 
     /// A Mac older than PR #321 sends no epoch, and every point stays nil.
-    mutating func noteAttached(_ attachOK: [String: Any], resumed: Bool) {
+    /// `resumedFrom` is the point a resumed attach sent: the kept page holds its transcript and keeps its channel.
+    mutating func noteAttached(_ attachOK: [String: Any], resumedFrom: MirrorResumePoint?) {
         epoch = (attachOK["epoch"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         seq = Self.integer(attachOK["seq"])
-        // A resumed page already holds its transcript.
-        if resumed { transcriptDelivered = true }
+        if let resumedFrom {
+            transcriptDelivered = true
+            channelId = resumedFrom.channelId
+            // The missed frames follow and advance it; the page holds nothing past this yet.
+            seq = resumedFrom.seq
+        }
     }
 
     /// One frame handed to the page.
@@ -47,11 +52,6 @@ struct MirrorResumeTracker: Equatable {
         default:
             break
         }
-    }
-
-    /// A request that will be answered some other way than by a response on this link (the prefetched transcript).
-    mutating func forget(requestId: String) {
-        pendingRequests.remove(requestId)
     }
 
     mutating func noteTranscriptDelivered() {

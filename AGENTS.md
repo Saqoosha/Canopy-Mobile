@@ -180,6 +180,16 @@ R=$(osascript -e 'tell application "System Events" to tell process "iPhone Mirro
 /usr/sbin/screencapture -x -R"$R" phone.png
 ```
 
+### ライブ画面で質問が 2 つ出て、答えても 1 つ残る
+
+**症状**: `AskUserQuestion` がライブ画面に 2 つ並ぶ。片方に答えても、もう片方が残り続ける。
+
+**原因**: Mac は request を 1 回しか送っていない。2 つ目は extension の webview 自身が描く。transcript 応答の `liveInOtherSurface` が `false` で、transcript の末尾に結果の無い `AskUserQuestion` があると、webview は `maybeReplayUnansweredQuestion` でローカルの複製を出す。この複製は `requestId` を持たないので、`cancel_request` でもツール結果でも消えない。答えると response ではなく「Answering your earlier question …」というユーザーターンが送られる。Canopy は extension の webview を 1 つにまとめて全サーフェスを載せているので、extension から見て他のサーフェスが無く、毎回 `false` になる。一方 Mac はページの `launch_claude` で未回答の request を全部送り直す（Canopy `ShimProcess` の `outstandingDialogRequests`）。だから新しくページを開くたびに 2 つ出る。webview は request を `requestId` で重複排除しない。
+
+**修正**: `MirrorDialogGate`（`MirrorLink.emit` の中、ページに入るフレームが全部通る 1 か所）で、`liveInOtherSurface: false` を `true` に書き換える。ついでに、同じ (`requestId`, `channelId`) への 2 回目の `tool_permission_request` を落とす。チャンネル id は `launchClaude` のたびに乱数で採番されるので、再起動したページへの送り直しは通る。代償として、Mac に未回答の request が無いまま transcript に残った質問（CLI が再起動したなど）は、電話では再表示されなくなる。
+
+**通知の履歴（`HistoryStore`）側ではない。** そちらは `requestId` で upsert 済み。
+
 ### `log show` は `.debug` レベルを出さない
 
 **症状**: `log show --debug` で `[event]` が 0 件。実際には出ている。
@@ -455,7 +465,7 @@ git rebase origin/main --update-refs
 
 | | |
 |---|---|
-| Swift テスト | 269（BackgroundReturn、+13） |
+| Swift テスト | 276（MirrorDialogGate、+7） |
 | worker テスト | 137（2026-09-11 実測） |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 | DO の append 1 件 | 248 rows_read（3 つの上限すべて満杯、2026-09-11 実測）/ 210（生きているセッション 1 本） |

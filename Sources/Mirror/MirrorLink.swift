@@ -74,6 +74,8 @@ final class MirrorLink {
     private var lastWaitingError: NWError?
     private let resumeFrom: MirrorResumePoint?
     private(set) var tracker = MirrorResumeTracker()
+    /// Every prompt the page draws passes here; see `MirrorDialogGate`.
+    private var dialogs = MirrorDialogGate()
     /// Where this link's page stands, for the next link to resume from; nil when it cannot.
     var resumePoint: MirrorResumePoint? { tracker.point }
 
@@ -160,6 +162,7 @@ final class MirrorLink {
         if claimsPageSessionRequest(object) { return }
         // Counted even when dropped below: a request that never left still waits for an answer.
         tracker.noteSent(object)
+        dialogs.noteSent(object)
         guard !closed, !failed, let data = try? JSONSerialization.data(withJSONObject: object) else { return }
         connection.send(content: data + Data([0x0A]), completion: .contentProcessed { error in
             if let error {
@@ -223,7 +226,20 @@ final class MirrorLink {
 
     /// One frame into the page, counted toward the resume point.
     private func emit(_ line: Data, _ object: [String: Any]?) {
-        if let object { tracker.noteDelivered(object) }
+        var line = line
+        if var object {
+            switch dialogs.admit(&object) {
+            case .deliver:
+                break
+            case .drop:
+                logger.notice("dropped a prompt the page already holds")
+                return
+            case .rewritten:
+                guard let data = try? JSONSerialization.data(withJSONObject: object) else { break }
+                line = data
+            }
+            tracker.noteDelivered(object)
+        }
         onFrame?(String(decoding: line, as: UTF8.self))
     }
 

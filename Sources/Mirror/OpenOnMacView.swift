@@ -315,7 +315,7 @@ private struct NewRemoteFolderSheet: View {
     @FocusState private var nameFocused: Bool
     @State private var name = ""
     @State private var busy = false
-    @State private var error: String?
+    @State private var errorMessage: String?
 
     private var trimmedName: String {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -336,9 +336,9 @@ private struct NewRemoteFolderSheet: View {
                 } footer: {
                     Text("Inside \(parentPath)")
                 }
-                if let error {
+                if let errorMessage {
                     Section {
-                        Label(error, systemImage: "exclamationmark.triangle")
+                        Label(errorMessage, systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -377,11 +377,11 @@ private struct NewRemoteFolderSheet: View {
 
     private func create(startSession: Bool) async {
         if let validationMessage {
-            error = validationMessage
+            errorMessage = validationMessage
             return
         }
         busy = true
-        error = nil
+        errorMessage = nil
         defer { busy = false }
         do {
             let createdPath = try await control.createFolder(parentPath: parentPath, name: trimmedName)
@@ -391,8 +391,8 @@ private struct NewRemoteFolderSheet: View {
             if startSession {
                 onCreateAndOpen(createdPath, displayName.isEmpty ? trimmedName : displayName)
             }
-        } catch {
-            error = RemoteFolder.createErrorMessage(error)
+        } catch let failure {
+            errorMessage = RemoteFolder.createErrorMessage(failure)
         }
     }
 }

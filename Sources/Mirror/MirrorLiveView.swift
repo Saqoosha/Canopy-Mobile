@@ -139,7 +139,7 @@ struct MirrorLiveContent: View {
     }
 
     var body: some View {
-        // Outside the attach's phases, so connecting and a stale page keep the bar; only the restart wait replaces it.
+        // Outside the attach's phases, so connecting and a stale page keep the bar.
         VStack(spacing: 0) {
             ZStack {
                 content
@@ -269,8 +269,12 @@ final class MirrorLiveModel {
         return remembered ?? current
     }
 
+    /// An empty line after content on this link is the Mac's own value, so it clears the memory too.
     private func remember(_ status: MirrorStatus) {
-        guard !status.isEmpty else { return }
+        if status.isEmpty {
+            if statusHadContent { for key in statusKeys { Self.lastStatus[key] = nil } }
+            return
+        }
         statusHadContent = true
         for key in statusKeys { Self.lastStatus[key] = status }
     }

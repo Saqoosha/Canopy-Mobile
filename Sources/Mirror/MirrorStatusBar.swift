@@ -5,8 +5,7 @@ import SwiftUI
 /// composer already names the model, and the count is not worth the width on a phone.
 /// The numbers come from the Mac, so this only draws.
 ///
-/// Always laid out at the same height: with nothing to draw yet (an older Mac, or before the first line)
-/// it shows a placeholder, so the page above never jumps when the bar arrives.
+/// Always laid out at the same height: a nil or empty status draws a placeholder, so the page above never jumps.
 struct MirrorStatusBar: View {
     let status: MirrorStatus?
 

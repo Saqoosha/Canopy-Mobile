@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Display-ready: the percentage and level are the Mac's own, computed from the CLI's
 /// thresholds there. Only a Mac told `"status": true` at attach sends it; from an
-/// older Mac the line never arrives and the bar stays hidden.
+/// older Mac the line never arrives and the bar shows its placeholder.
 ///
 /// The line's raw context numbers are for a Mac's mirror pane and are not read here.
 struct MirrorStatus: Equatable {

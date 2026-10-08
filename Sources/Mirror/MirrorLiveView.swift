@@ -139,7 +139,7 @@ struct MirrorLiveContent: View {
     }
 
     var body: some View {
-        // The status bar sits outside the attach's phases, so connecting, a stale page or a reattach never takes it away.
+        // Outside the attach's phases, so connecting and a stale page keep the bar; only the restart wait replaces it.
         VStack(spacing: 0) {
             ZStack {
                 content
@@ -243,23 +243,35 @@ final class MirrorLiveModel {
 
     private(set) var phase: Phase = .connecting
     private(set) var link: MirrorLink?
-    /// The Mac's status bar; nil until the first `status` line, so an older Mac shows none.
+    /// The Mac's status bar; nil until the first `status` line (never, from an older Mac).
     private(set) var status: MirrorStatus?
-    /// The session ids this model's status is remembered under: the one it attached by, and the one the Mac named.
+    /// The keys this model's status is remembered under: the session it attached by, and the one the Mac named.
     private var statusKeys: [String] = []
+    private var address = ""
+    /// A line with content has arrived on this link, so an empty one after it is the Mac's, not a gap.
+    private var statusHadContent = false
 
     /// The last status with something to draw for each session, so a new model (a reattach, a reopened screen)
     /// and a Mac that has not computed it yet show the previous bar instead of none.
     private static var lastStatus: [String: MirrorStatus] = [:]
 
-    /// What the status bar draws: the current line, or the last one with content while this one has none.
+    /// What the status bar draws; nil (a placeholder) on a failed attach, so nothing reads as live there.
     var shownStatus: MirrorStatus? {
-        if let status, !status.isEmpty { return status }
-        return statusKeys.lazy.compactMap { Self.lastStatus[$0] }.first ?? status
+        if case .failed = phase { return nil }
+        return Self.shown(current: status, hadContent: statusHadContent,
+                          remembered: statusKeys.lazy.compactMap { Self.lastStatus[$0] }.first)
+    }
+
+    /// The current line when it has content or when this link has already had content (the Mac emptied it),
+    /// otherwise the remembered one: a gap before the Mac has computed the bar, not a change.
+    nonisolated static func shown(current: MirrorStatus?, hadContent: Bool, remembered: MirrorStatus?) -> MirrorStatus? {
+        if let current, !current.isEmpty || hadContent { return current }
+        return remembered ?? current
     }
 
     private func remember(_ status: MirrorStatus) {
         guard !status.isEmpty else { return }
+        statusHadContent = true
         for key in statusKeys { Self.lastStatus[key] = status }
     }
     /// Bumped on each `attach_ok`, so a view can react to it without `Attached` being Equatable.
@@ -303,8 +315,9 @@ final class MirrorLiveModel {
                stalePage: RetiredMirrorPage? = nil) {
         guard link == nil else { return }
         self.stalePage = stalePage
-        statusKeys = [sessionId]
         let address = target.address
+        self.address = address
+        statusKeys = ["\(address)/\(sessionId)"]
         guard let colon = address.lastIndex(of: ":"),
               let port = UInt16(address[address.index(after: colon)...]), port != 0,
               !address[..<colon].isEmpty
@@ -316,7 +329,7 @@ final class MirrorLiveModel {
                               open: open, key: key, resumeFrom: stalePage?.resumePoint)
         link.onAttached = { [weak self, weak link] attached in
             guard let self else { return }
-            if let named = attached.sessionId, !self.statusKeys.contains(named) {
+            if let named = attached.sessionId.map({ "\(self.address)/\($0)" }), !self.statusKeys.contains(named) {
                 self.statusKeys.append(named)
                 if let status = self.status { self.remember(status) }
             }

@@ -17,7 +17,7 @@ struct MirrorStatusBar: View {
             } else {
                 Text("—")
                     .foregroundStyle(.tertiary)
-                    .accessibilityLabel("No status yet")
+                    .accessibilityLabel("No status")
             }
         }
         .font(.system(size: 11))

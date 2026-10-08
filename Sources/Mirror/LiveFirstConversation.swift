@@ -17,14 +17,7 @@ struct LiveFirstConversation<Offline: View>: View {
     @State private var fallback: Fallback?
     /// Bumped to rebuild the live view with a fresh link; iOS closes the socket while the app is in the background.
     @State private var attempt = 0
-    /// Whether the live view was on screen when the app left the foreground.
-    @State private var wasLiveInBackground = false
-    /// A drop reported while still in the background, rebuilt as soon as the app starts coming back.
-    @State private var droppedInBackground = false
-    /// `scenePhase` as the last handler saw it; the environment value a closure captured can be a phase behind.
-    @State private var currentPhase = ScenePhase.active
-    /// Until when a drop reported after returning from the background rebuilds live instead of falling back.
-    @State private var reconnectUntil: Date?
+    @State private var backgroundReturn = BackgroundReturn()
     /// Until when a drop re-attaches because the Mac announced a restart for an update.
     @State private var restartUntil: Date?
     @State private var waitingForRestart = false
@@ -39,28 +32,10 @@ struct LiveFirstConversation<Offline: View>: View {
 
     var body: some View {
         content
-            // iOS may close the socket while the app is in the background. A drop reported on the
-            // way back, or for a few seconds after, rebuilds the live view instead of falling back.
-            // Only a drop: a page whose link survived keeps its half-typed reply, and an offline
-            // view is never touched.
+            // An offline view is never touched: only a live view on screen counts as `live`.
             .onChange(of: scenePhase) { _, phase in
-                currentPhase = phase
-                switch phase {
-                case .background:
-                    wasLiveInBackground = live != nil && fallback == nil
-                    droppedInBackground = false
-                case .inactive:
-                    if droppedInBackground { rebuildAfterBackground() }
-                case .active:
-                    guard wasLiveInBackground else { return }
-                    if droppedInBackground {
-                        rebuildAfterBackground()
-                    } else {
-                        wasLiveInBackground = false
-                        reconnectUntil = Date().addingTimeInterval(3)
-                    }
-                @unknown default:
-                    break
+                if backgroundReturn.phaseChanged(to: phase, live: live != nil && fallback == nil, now: Date()) == .rebuild {
+                    attempt += 1
                 }
             }
     }
@@ -81,22 +56,11 @@ struct LiveFirstConversation<Offline: View>: View {
                                   guard current == attempt else { return }
                                   resumeOnAttach = false
                                   restartUntil = nil
-                                  // The drop often lands before `.active` does. Falling back here and
-                                  // undoing it there flashed the offline view for a frame on every return.
-                                  if wasLiveInBackground {
-                                      if currentPhase == .background {
-                                          droppedInBackground = true
-                                      } else {
-                                          rebuildAfterBackground()
-                                      }
-                                      return
+                                  switch backgroundReturn.dropped(now: Date()) {
+                                  case .none: break
+                                  case .rebuild: attempt += 1
+                                  case .fail: fallback = .unavailable(reason)
                                   }
-                                  if let until = reconnectUntil, Date() < until {
-                                      reconnectUntil = nil
-                                      attempt += 1
-                                      return
-                                  }
-                                  fallback = .unavailable(reason)
                               },
                               onAttached: { _ in
                                   restartUntil = nil
@@ -144,19 +108,11 @@ struct LiveFirstConversation<Offline: View>: View {
         return { showLive() }
     }
 
-    /// Rebuilds a live view whose link iOS closed while the app was away, without passing through the offline view.
-    private func rebuildAfterBackground() {
-        wasLiveInBackground = false
-        droppedInBackground = false
-        reconnectUntil = nil
-        attempt += 1
-    }
-
     /// A fresh attempt, so the live view that gave up is not the one shown again.
     private func showLive() {
         waitingForRestart = false
         restartUntil = nil
-        reconnectUntil = nil
+        backgroundReturn.cancelReconnect()
         resumeOnAttach = false
         fallback = nil
         attempt += 1

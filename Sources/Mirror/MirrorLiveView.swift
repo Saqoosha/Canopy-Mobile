@@ -16,13 +16,7 @@ struct MirrorLiveView: View {
     /// Bumped to rebuild the live content with a fresh link; iOS closes the socket while the app is in the background.
     @State private var attempt = 0
     @State private var dropped = false
-    @State private var wasInBackground = false
-    /// A drop reported while still in the background, rebuilt as soon as the app starts coming back.
-    @State private var droppedInBackground = false
-    /// `scenePhase` as the last handler saw it; the environment value a closure captured can be a phase behind.
-    @State private var currentPhase = ScenePhase.active
-    /// Until when a drop reported after returning from the background rebuilds instead of staying failed.
-    @State private var reconnectUntil: Date?
+    @State private var backgroundReturn = BackgroundReturn()
     /// Until when a drop re-attaches because the Mac announced a restart for an update.
     @State private var restartUntil: Date?
     @State private var waitingForRestart = false
@@ -60,21 +54,11 @@ struct MirrorLiveView: View {
                                       guard thisAttempt == attempt else { return }
                                       resumeForRestart = false
                                       restartUntil = nil
-                                      // The drop often lands before `.active` does; rebuilding only there left
-                                      // the failure view on screen for a frame on every return.
-                                      if wasInBackground, attach != nil {
-                                          if currentPhase == .background {
-                                              droppedInBackground = true
-                                          } else {
-                                              rebuildAfterBackground()
-                                          }
-                                          return
-                                      }
-                                      if let until = reconnectUntil, Date() < until, attach != nil {
-                                          reconnectUntil = nil
-                                          attempt += 1
-                                      } else {
-                                          dropped = true
+                                      // Until the Mac has named the session, a rebuild has nothing to attach by.
+                                      switch backgroundReturn.dropped(canRebuild: attach != nil, now: Date()) {
+                                      case .none: break
+                                      case .rebuild: attempt += 1
+                                      case .fail: dropped = true
                                       }
                                   },
                                   onAttached: { attached in
@@ -103,36 +87,11 @@ struct MirrorLiveView: View {
         }
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
-        // Same rule as `LiveFirstConversation`: only a drop around a return from the background
-        // rebuilds, so a link that survived keeps its page and a half-typed reply.
         .onChange(of: scenePhase) { _, phase in
-            currentPhase = phase
-            switch phase {
-            case .background:
-                wasInBackground = !dropped
-                droppedInBackground = false
-            case .inactive:
-                if droppedInBackground { rebuildAfterBackground() }
-            case .active:
-                guard wasInBackground else { return }
-                if droppedInBackground {
-                    rebuildAfterBackground()
-                } else {
-                    wasInBackground = false
-                    reconnectUntil = Date().addingTimeInterval(3)
-                }
-            @unknown default:
-                break
+            if backgroundReturn.phaseChanged(to: phase, live: !dropped, now: Date()) == .rebuild {
+                attempt += 1
             }
         }
-    }
-
-    /// Rebuilds the live content whose link iOS closed while the app was away, without drawing its failure first.
-    private func rebuildAfterBackground() {
-        wasInBackground = false
-        droppedInBackground = false
-        reconnectUntil = nil
-        attempt += 1
     }
 }
 

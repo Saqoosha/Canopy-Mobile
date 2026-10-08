@@ -74,6 +74,8 @@ final class MirrorLink {
     private var lastWaitingError: NWError?
     private let resumeFrom: MirrorResumePoint?
     private(set) var tracker = MirrorResumeTracker()
+    /// Every prompt the page draws passes here; see `MirrorDialogGate`.
+    private var dialogs = MirrorDialogGate()
     /// Where this link's page stands, for the next link to resume from; nil when it cannot.
     var resumePoint: MirrorResumePoint? { tracker.point }
 
@@ -160,6 +162,7 @@ final class MirrorLink {
         if claimsPageSessionRequest(object) { return }
         // Counted even when dropped below: a request that never left still waits for an answer.
         tracker.noteSent(object)
+        dialogs.noteSent(object)
         guard !closed, !failed, let data = try? JSONSerialization.data(withJSONObject: object) else { return }
         connection.send(content: data + Data([0x0A]), completion: .contentProcessed { error in
             if let error {
@@ -207,6 +210,8 @@ final class MirrorLink {
         prefetched = nil
         message["requestId"] = requestId
         frame["message"] = message
+        // Rewritten before the one encode below, so `emit` passes it unchanged.
+        if dialogs.admit(&frame) == .rewritten { logger.notice("turned off the page's replay of an unanswered question") }
         guard let data = try? JSONSerialization.data(withJSONObject: frame) else { return }
         emit(data, frame)
         transcriptHandedOver()
@@ -223,7 +228,27 @@ final class MirrorLink {
 
     /// One frame into the page, counted toward the resume point.
     private func emit(_ line: Data, _ object: [String: Any]?) {
-        if let object { tracker.noteDelivered(object) }
+        var line = line
+        if var object {
+            switch dialogs.admit(&object) {
+            case .deliver:
+                break
+            case .drop:
+                // Counted all the same: the page holds it, so a resume must not replay it.
+                tracker.noteDelivered(object)
+                let message = object["message"] as? [String: Any]
+                logger.notice("dropped a prompt the page already holds: \(message?["requestId"] as? String ?? "", privacy: .public) on \(message?["channelId"] as? String ?? "", privacy: .public)")
+                return
+            case .rewritten:
+                guard let data = try? JSONSerialization.data(withJSONObject: object) else {
+                    logger.error("could not re-encode a transcript; the page may replay its question")
+                    break
+                }
+                line = data
+                logger.notice("turned off the page's replay of an unanswered question")
+            }
+            tracker.noteDelivered(object)
+        }
         onFrame?(String(decoding: line, as: UTF8.self))
     }
 

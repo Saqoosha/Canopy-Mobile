@@ -180,7 +180,7 @@ R=$(osascript -e 'tell application "System Events" to tell process "iPhone Mirro
 /usr/sbin/screencapture -x -R"$R" phone.png
 ```
 
-### ライブ画面で質問が 2 つ出て、答えても 1 つ残る
+### ライブ画面で質問が 2 つ出て、答えても 1 つ残る問題
 
 **症状**: `AskUserQuestion` がライブ画面に 2 つ並ぶ。片方に答えても、もう片方が残り続ける。
 

@@ -11,7 +11,8 @@ import SwiftUI
 /// link survived keeps its half-typed reply.
 nonisolated struct BackgroundReturn {
     enum Action: Equatable {
-        case none
+        /// Leave the view as it is.
+        case keep
         case rebuild
         /// Show the drop: the caller's fallback or failure view.
         case fail
@@ -20,8 +21,8 @@ nonisolated struct BackgroundReturn {
     static let reconnectWindow: TimeInterval = 3
 
     /// Kept here rather than read from the environment: a closure's captured `scenePhase` can be a phase behind.
-    private(set) var phase = ScenePhase.active
-    /// A live view was on screen when the app left, and nothing has rebuilt it since.
+    private var phase = ScenePhase.active
+    /// A live view was on screen when the app left, and the return has not been settled yet.
     private var wasAway = false
     private var droppedAway = false
     private var reconnectUntil: Date?
@@ -33,17 +34,17 @@ nonisolated struct BackgroundReturn {
         case .background:
             wasAway = live
             droppedAway = false
-            return .none
+            return .keep
         case .inactive:
-            return droppedAway ? rebuild() : .none
+            return droppedAway ? rebuild() : .keep
         case .active:
-            guard wasAway else { return .none }
+            guard wasAway else { return .keep }
             if droppedAway { return rebuild() }
             wasAway = false
             reconnectUntil = now.addingTimeInterval(Self.reconnectWindow)
-            return .none
+            return .keep
         @unknown default:
-            return .none
+            return .keep
         }
     }
 
@@ -53,7 +54,7 @@ nonisolated struct BackgroundReturn {
         if wasAway {
             if phase == .background {
                 droppedAway = true
-                return .none
+                return .keep
             }
             return rebuild()
         }

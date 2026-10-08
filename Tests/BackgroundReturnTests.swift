@@ -8,24 +8,24 @@ struct BackgroundReturnTests {
 
     @Test func aDropOnTheWayBackRebuildsAtOnceAndNeverFails() {
         var r = BackgroundReturn()
-        #expect(r.phaseChanged(to: .background, live: true, now: now) == .none)
-        #expect(r.phaseChanged(to: .inactive, live: true, now: now) == .none)
+        #expect(r.phaseChanged(to: .background, live: true, now: now) == .keep)
+        #expect(r.phaseChanged(to: .inactive, live: true, now: now) == .keep)
         #expect(r.dropped(now: now) == .rebuild)
-        #expect(r.phaseChanged(to: .active, live: true, now: now) == .none)
+        #expect(r.phaseChanged(to: .active, live: true, now: now) == .keep)
     }
 
     @Test func aDropInTheBackgroundWaitsForInactiveAndRebuildsOnce() {
         var r = BackgroundReturn()
         _ = r.phaseChanged(to: .background, live: true, now: now)
-        #expect(r.dropped(now: now) == .none)
+        #expect(r.dropped(now: now) == .keep)
         #expect(r.phaseChanged(to: .inactive, live: true, now: now) == .rebuild)
-        #expect(r.phaseChanged(to: .active, live: true, now: now) == .none)
+        #expect(r.phaseChanged(to: .active, live: true, now: now) == .keep)
     }
 
     @Test func aDropInTheBackgroundRebuildsOnActiveWhenInactiveIsSkipped() {
         var r = BackgroundReturn()
         _ = r.phaseChanged(to: .background, live: true, now: now)
-        #expect(r.dropped(now: now) == .none)
+        #expect(r.dropped(now: now) == .keep)
         #expect(r.phaseChanged(to: .active, live: true, now: now) == .rebuild)
     }
 
@@ -36,7 +36,7 @@ struct BackgroundReturnTests {
 
     @Test func inactiveWithoutABackgroundTripDoesNotRebuild() {
         var r = BackgroundReturn()
-        #expect(r.phaseChanged(to: .inactive, live: true, now: now) == .none)
+        #expect(r.phaseChanged(to: .inactive, live: true, now: now) == .keep)
         #expect(r.dropped(now: now) == .fail)
     }
 
@@ -44,7 +44,7 @@ struct BackgroundReturnTests {
         var r = BackgroundReturn()
         _ = r.phaseChanged(to: .background, live: true, now: now)
         _ = r.phaseChanged(to: .inactive, live: true, now: now)
-        #expect(r.phaseChanged(to: .active, live: true, now: now) == .none)
+        #expect(r.phaseChanged(to: .active, live: true, now: now) == .keep)
         #expect(r.dropped(now: now.addingTimeInterval(2)) == .rebuild)
         // The window is spent by the rebuild.
         #expect(r.dropped(now: now.addingTimeInterval(2.5)) == .fail)
@@ -77,8 +77,8 @@ struct BackgroundReturnTests {
         var r = BackgroundReturn()
         _ = r.phaseChanged(to: .background, live: false, now: now)
         #expect(r.dropped(now: now) == .fail)
-        #expect(r.phaseChanged(to: .inactive, live: false, now: now) == .none)
-        #expect(r.phaseChanged(to: .active, live: false, now: now) == .none)
+        #expect(r.phaseChanged(to: .inactive, live: false, now: now) == .keep)
+        #expect(r.phaseChanged(to: .active, live: false, now: now) == .keep)
         #expect(r.dropped(now: now) == .fail)
     }
 
@@ -87,6 +87,21 @@ struct BackgroundReturnTests {
         _ = r.phaseChanged(to: .background, live: true, now: now)
         _ = r.phaseChanged(to: .inactive, live: true, now: now)
         #expect(r.dropped(canRebuild: false, now: now) == .fail)
+    }
+
+    @Test func nothingToAttachByShowsADropStillInTheBackground() {
+        var r = BackgroundReturn()
+        _ = r.phaseChanged(to: .background, live: true, now: now)
+        #expect(r.dropped(canRebuild: false, now: now) == .fail)
+        #expect(r.phaseChanged(to: .inactive, live: false, now: now) == .keep)
+    }
+
+    @Test func aNewTripToTheBackgroundForgetsAnEarlierDeferredDrop() {
+        var r = BackgroundReturn()
+        _ = r.phaseChanged(to: .background, live: true, now: now)
+        #expect(r.dropped(now: now) == .keep)
+        _ = r.phaseChanged(to: .background, live: true, now: now)
+        #expect(r.phaseChanged(to: .inactive, live: true, now: now) == .keep)
     }
 
     @Test func cancelReconnectClosesTheWindow() {

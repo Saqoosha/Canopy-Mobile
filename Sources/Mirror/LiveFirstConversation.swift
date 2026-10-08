@@ -57,7 +57,7 @@ struct LiveFirstConversation<Offline: View>: View {
                                   resumeOnAttach = false
                                   restartUntil = nil
                                   switch backgroundReturn.dropped(now: Date()) {
-                                  case .none: break
+                                  case .keep: break
                                   case .rebuild: attempt += 1
                                   case .fail: fallback = .unavailable(reason)
                                   }
@@ -77,6 +77,7 @@ struct LiveFirstConversation<Offline: View>: View {
                                       try? await Task.sleep(for: .seconds(MirrorRestart.interval))
                                       waitingForRestart = false
                                       guard current == attempt else { return }
+                                      backgroundReturn.cancelReconnect()
                                       attempt += 1
                                   }
                                   return true

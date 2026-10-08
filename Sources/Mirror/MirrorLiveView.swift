@@ -56,7 +56,7 @@ struct MirrorLiveView: View {
                                       restartUntil = nil
                                       // Until the Mac has named the session, a rebuild has nothing to attach by.
                                       switch backgroundReturn.dropped(canRebuild: attach != nil, now: Date()) {
-                                      case .none: break
+                                      case .keep: break
                                       case .rebuild: attempt += 1
                                       case .fail: dropped = true
                                       }
@@ -78,6 +78,7 @@ struct MirrorLiveView: View {
                                           try? await Task.sleep(for: .seconds(MirrorRestart.interval))
                                           waitingForRestart = false
                                           guard thisAttempt == attempt else { return }
+                                          backgroundReturn.cancelReconnect()
                                           attempt += 1
                                       }
                                       return true

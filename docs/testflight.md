@@ -63,6 +63,10 @@ asc versions update --version-id <ID> --version "0.1.0"
 ## 手順
 
 ```bash
+# 0. main の最新で .xcodeproj を作り直し、版を確かめる（古い pbxproj のままだと前の版で archive される）
+xcodegen generate
+grep 'MARKETING_VERSION = ' CanopyMobile.xcodeproj/project.pbxproj | sort | uniq -c   # 2 ターゲット × Debug/Release で 4 行、全部同じ版
+
 # 1. archive（ビルド番号はタイムスタンプで毎回ユニークに）
 BUILD_NUMBER="$(date +%Y%m%d%H%M)"
 ARCHIVE=/tmp/canopy-$BUILD_NUMBER.xcarchive
@@ -84,6 +88,12 @@ asc builds add-groups --app 6810164313 --latest --group dfd19ebb-1ca7-43c9-8d59-
 ```
 
 グループは `hasAccessToAllBuilds: false` なので、**ビルドを上げるたびに手順 4 が要る**。
+
+**アップロード前に archive の版を見る**: `plutil -p "$ARCHIVE/Products/Applications/CanopyMobile.app/Info.plist" | grep CFBundleShortVersionString`。手順 0 を飛ばした archive が前の版で出来て、捨てたことがある。
+
+**手順 4 はアップロード直後に落ちることがある。** `upload --wait` が VALID まで待って build id を返したあとでも、`add-groups` が `There is no resource of type 'builds' with id '<id>'` を返した。ASC 側の反映待ちで、30 秒おきに再試行したら約 1 分で通った。exit code は 0 のままなので、出力の `Successfully added` を見る。配布されたかは `asc testflight distribution view --build-id <id>` の `internalBuildState: IN_BETA_TESTING`。
+
+export 中に `Your session has expired. Please log in.`（developerservices2）が出ても、手元の profile で署名して `.ipa` は出る。署名が正しいかは `codesign -d --entitlements - --xml <app> | plutil -p -` で `aps-environment => production` / `get-task-allow => false`。
 
 ### アップロードに `asc` を使う理由
 
@@ -147,7 +157,7 @@ Xcode から入れた開発ビルドは sandbox のデバイストークンを�
 | | |
 |---|---|
 | アップロード後にビルドが見えるまで | 約 157 秒 |
-| `.ipa` サイズ | 約 4.4MB |
+| `.ipa` サイズ | 約 5.0MB（3.5.1） |
 | 初回リリース | `0.1.0 (202609091843)`、`processingState: VALID`、`internalBuildState: IN_BETA_TESTING` |
 
 ## 輸出コンプライアンス

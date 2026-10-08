@@ -63,17 +63,28 @@ asc versions update --version-id <ID> --version "0.1.0"
 ## 手順
 
 ```bash
-# 1. archive（ビルド番号はタイムスタンプで毎回ユニークに）
+set -e   # どの段で落ちても、後ろの upload に進ませない
+
+# 0. main の最新で .xcodeproj を作り直す（古い pbxproj のままだと前の版で archive される）
+xcodegen generate
+EXPECTED="$(sed -nE 's/.*MARKETING_VERSION: "([^"]+)".*/\1/p' project.yml | sort -u)"   # app と通知拡張の 2 か所。1 行でなければ食い違い
+test "$(printf '%s\n' "$EXPECTED" | wc -l)" -eq 1
+
+# 1. archive（ビルド番号はタイムスタンプで毎回ユニークに）して、版が project.yml と同じか見る
 BUILD_NUMBER="$(date +%Y%m%d%H%M)"
 ARCHIVE=/tmp/canopy-$BUILD_NUMBER.xcarchive
 xcodebuild archive -project CanopyMobile.xcodeproj -scheme CanopyMobile \
   -configuration Release -destination "generic/platform=iOS" \
   -archivePath "$ARCHIVE" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   -allowProvisioningUpdates
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+  "$ARCHIVE/Products/Applications/CanopyMobile.app/Info.plist")" = "$EXPECTED"
 
-# 2. .ipa を出す（scripts/ExportOptions.plist は destination: export）
+# 2. .ipa を出す（scripts/ExportOptions.plist は destination: export）。前回の .ipa を残さない
+rm -rf /tmp/canopy-export
 xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath /tmp/canopy-export \
   -exportOptionsPlist scripts/ExportOptions.plist -allowProvisioningUpdates
+test -s /tmp/canopy-export/CanopyMobile.ipa
 
 # 3. アップロード。処理完了まで待って、exit code で判定してよい
 asc builds upload --app 6810164313 --ipa /tmp/canopy-export/CanopyMobile.ipa \
@@ -84,6 +95,12 @@ asc builds add-groups --app 6810164313 --latest --group dfd19ebb-1ca7-43c9-8d59-
 ```
 
 グループは `hasAccessToAllBuilds: false` なので、**ビルドを上げるたびに手順 4 が要る**。
+
+**手順 1 の版チェックは削らない。** 手順 0 を飛ばした archive が前の版で出来て、捨てたことがある。pbxproj の `MARKETING_VERSION` は 2 ターゲット × Debug/Release で 4 行あるが、見るべきは成果物の版なので archive の `Info.plist` で比べる。
+
+**手順 4 はアップロード直後に落ちることがある。** `upload --wait` が VALID まで待って build id を返したあとでも、`add-groups` が `There is no resource of type 'builds' with id '<id>'` を返した。ASC 側の反映待ちで、30 秒おきに再試行したら約 1 分で通った。exit code は 0 のままなので、出力の `Successfully added` を見る。配布されたかは `asc testflight distribution view --build-id <id>` の `internalBuildState: IN_BETA_TESTING`。
+
+export 中に `Your session has expired. Please log in.`（developerservices2）が出ても、手元の profile で署名して `.ipa` は出る。署名が正しいかは `codesign -d --entitlements - --xml <app> | plutil -p -` で `aps-environment => production` / `get-task-allow => false`。
 
 ### アップロードに `asc` を使う理由
 
@@ -147,7 +164,7 @@ Xcode から入れた開発ビルドは sandbox のデバイストークンを�
 | | |
 |---|---|
 | アップロード後にビルドが見えるまで | 約 157 秒 |
-| `.ipa` サイズ | 約 4.4MB |
+| `.ipa` サイズ | 約 5.0MB（3.5.1） |
 | 初回リリース | `0.1.0 (202609091843)`、`processingState: VALID`、`internalBuildState: IN_BETA_TESTING` |
 
 ## 輸出コンプライアンス

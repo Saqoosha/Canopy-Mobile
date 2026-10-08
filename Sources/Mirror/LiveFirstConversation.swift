@@ -17,10 +17,7 @@ struct LiveFirstConversation<Offline: View>: View {
     @State private var fallback: Fallback?
     /// Bumped to rebuild the live view with a fresh link; iOS closes the socket while the app is in the background.
     @State private var attempt = 0
-    /// Whether the live view was on screen when the app left the foreground.
-    @State private var wasLiveInBackground = false
-    /// Until when a drop reported after returning from the background rebuilds live instead of falling back.
-    @State private var reconnectUntil: Date?
+    @State private var backgroundReturn = BackgroundReturn()
     /// Until when a drop re-attaches because the Mac announced a restart for an update.
     @State private var restartUntil: Date?
     @State private var waitingForRestart = false
@@ -35,26 +32,10 @@ struct LiveFirstConversation<Offline: View>: View {
 
     var body: some View {
         content
-            // iOS may close the socket while the app is in the background, and the app only
-            // hears about it once active again. For a few seconds after a return, a drop
-            // rebuilds the live view instead of falling back. Only a drop: a page whose link
-            // survived keeps its half-typed reply, and an offline view is never touched.
+            // An offline view is never touched: only a live view on screen counts as `live`.
             .onChange(of: scenePhase) { _, phase in
-                switch phase {
-                case .background:
-                    wasLiveInBackground = live != nil && fallback == nil
-                case .active:
-                    guard wasLiveInBackground else { return }
-                    wasLiveInBackground = false
-                    if case .unavailable = fallback {
-                        // The drop was delivered before this handler ran.
-                        fallback = nil
-                        attempt += 1
-                    } else {
-                        reconnectUntil = Date().addingTimeInterval(3)
-                    }
-                default:
-                    break
+                if backgroundReturn.phaseChanged(to: phase, live: live != nil && fallback == nil, now: Date()) == .rebuild {
+                    attempt += 1
                 }
             }
     }
@@ -75,12 +56,11 @@ struct LiveFirstConversation<Offline: View>: View {
                                   guard current == attempt else { return }
                                   resumeOnAttach = false
                                   restartUntil = nil
-                                  if let until = reconnectUntil, Date() < until {
-                                      reconnectUntil = nil
-                                      attempt += 1
-                                      return
+                                  switch backgroundReturn.dropped(now: Date()) {
+                                  case .keep: break
+                                  case .rebuild: attempt += 1
+                                  case .fail: fallback = .unavailable(reason)
                                   }
-                                  fallback = .unavailable(reason)
                               },
                               onAttached: { _ in
                                   restartUntil = nil
@@ -97,6 +77,7 @@ struct LiveFirstConversation<Offline: View>: View {
                                       try? await Task.sleep(for: .seconds(MirrorRestart.interval))
                                       waitingForRestart = false
                                       guard current == attempt else { return }
+                                      backgroundReturn.cancelReconnect()
                                       attempt += 1
                                   }
                                   return true
@@ -132,7 +113,7 @@ struct LiveFirstConversation<Offline: View>: View {
     private func showLive() {
         waitingForRestart = false
         restartUntil = nil
-        reconnectUntil = nil
+        backgroundReturn.cancelReconnect()
         resumeOnAttach = false
         fallback = nil
         attempt += 1

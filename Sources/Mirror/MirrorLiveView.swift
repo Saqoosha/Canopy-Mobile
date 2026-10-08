@@ -17,6 +17,8 @@ struct MirrorLiveView: View {
     @State private var attempt = 0
     @State private var dropped = false
     @State private var wasInBackground = false
+    /// A drop reported while still in the background, rebuilt as soon as the app starts coming back.
+    @State private var droppedInBackground = false
     /// Until when a drop reported after returning from the background rebuilds instead of staying failed.
     @State private var reconnectUntil: Date?
     /// Until when a drop re-attaches because the Mac announced a restart for an update.
@@ -56,6 +58,16 @@ struct MirrorLiveView: View {
                                       guard thisAttempt == attempt else { return }
                                       resumeForRestart = false
                                       restartUntil = nil
+                                      // The drop often lands before `.active` does; rebuilding only there left
+                                      // the failure view on screen for a frame on every return.
+                                      if wasInBackground, attach != nil {
+                                          if scenePhase == .background {
+                                              droppedInBackground = true
+                                          } else {
+                                              rebuildAfterBackground()
+                                          }
+                                          return
+                                      }
                                       if let until = reconnectUntil, Date() < until, attach != nil {
                                           reconnectUntil = nil
                                           attempt += 1
@@ -95,19 +107,28 @@ struct MirrorLiveView: View {
             switch phase {
             case .background:
                 wasInBackground = !dropped
+                droppedInBackground = false
+            case .inactive:
+                if droppedInBackground { rebuildAfterBackground() }
             case .active:
                 guard wasInBackground else { return }
-                wasInBackground = false
-                if dropped, attach != nil {
-                    dropped = false
-                    attempt += 1
+                if droppedInBackground {
+                    rebuildAfterBackground()
                 } else {
+                    wasInBackground = false
                     reconnectUntil = Date().addingTimeInterval(3)
                 }
-            default:
+            @unknown default:
                 break
             }
         }
+    }
+
+    /// Rebuilds the live content whose link iOS closed while the app was away, without drawing its failure first.
+    private func rebuildAfterBackground() {
+        wasInBackground = false
+        droppedInBackground = false
+        attempt += 1
     }
 }
 

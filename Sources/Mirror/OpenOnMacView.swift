@@ -215,6 +215,7 @@ struct FolderBrowserView: View {
 
     @State private var phase: Phase = .loading
     @State private var entries: [DirEntry] = []
+    @State private var showingNewFolder = false
 
     private enum Phase {
         case loading
@@ -240,7 +241,7 @@ struct FolderBrowserView: View {
                     ForEach(entries) { entry in
                         if entry.isDirectory {
                             NavigationLink {
-                                FolderBrowserView(control: control, path: join(path, entry.name), onOpen: onOpen)
+                                FolderBrowserView(control: control, path: RemoteFolder.join(base: path, name: entry.name), onOpen: onOpen)
                             } label: {
                                 Label(entry.name, systemImage: "folder")
                             }
@@ -255,6 +256,24 @@ struct FolderBrowserView: View {
         }
         .navigationTitle(folderTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if case .ready = phase {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingNewFolder = true
+                    } label: {
+                        Label("New Folder", systemImage: "folder.badge.plus")
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showingNewFolder) {
+            NewRemoteFolderSheet(parentPath: path, control: control) { createdPath, displayName in
+                onOpen(UUID().uuidString.lowercased(), .new(cwd: createdPath), displayName)
+            } onCreated: {
+                Task { await load() }
+            }
+        }
         .safeAreaInset(edge: .bottom) {
             if case .ready = phase {
                 Button {
@@ -283,8 +302,97 @@ struct FolderBrowserView: View {
         }
     }
 
-    private func join(_ base: String, _ name: String) -> String {
-        if base == "/" { return "/\(name)" }
-        return (base as NSString).appendingPathComponent(name)
+}
+
+/// Creates a directory on the paired Mac under the folder browser's current path.
+private struct NewRemoteFolderSheet: View {
+    let parentPath: String
+    let control: MachineControl
+    let onCreateAndOpen: (String, String) -> Void
+    let onCreated: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var nameFocused: Bool
+    @State private var name = ""
+    @State private var busy = false
+    @State private var error: String?
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var validationMessage: String? {
+        RemoteFolder.validateName(name)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Folder name", text: $name)
+                        .focused($nameFocused)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } footer: {
+                    Text("Inside \(parentPath)")
+                }
+                if let error {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("New Folder")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(busy)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") {
+                        Task { await create(startSession: false) }
+                    }
+                    .disabled(busy || validationMessage != nil)
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                Button {
+                    Task { await create(startSession: true) }
+                } label: {
+                    Text("Create & Start Session")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(busy || validationMessage != nil)
+                .padding()
+                .background(.bar)
+            }
+            .interactiveDismissDisabled(busy)
+            .task { nameFocused = true }
+        }
+        .presentationDetents([.medium])
+    }
+
+    private func create(startSession: Bool) async {
+        if let validationMessage {
+            error = validationMessage
+            return
+        }
+        busy = true
+        error = nil
+        defer { busy = false }
+        do {
+            let createdPath = try await control.createFolder(parentPath: parentPath, name: trimmedName)
+            let displayName = (createdPath as NSString).lastPathComponent
+            onCreated()
+            dismiss()
+            if startSession {
+                onCreateAndOpen(createdPath, displayName.isEmpty ? trimmedName : displayName)
+            }
+        } catch {
+            error = RemoteFolder.createErrorMessage(error)
+        }
     }
 }

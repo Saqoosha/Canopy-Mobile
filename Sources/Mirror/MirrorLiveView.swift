@@ -139,23 +139,28 @@ struct MirrorLiveContent: View {
     }
 
     var body: some View {
-        ZStack {
-            content
-            if let stalePage = model.stalePage {
-                MirrorStalePageView(webView: stalePage.webView)
-                    .allowsHitTesting(false)
-                    // Taken here, so a tap meant for the old page does not land on the new one underneath.
-                    .overlay { Color.clear.contentShape(Rectangle()) }
-                    .overlay(alignment: .top) {
-                        Label("Updating…", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.footnote)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(.regularMaterial, in: Capsule())
-                            .padding(.top, 8)
-                    }
-                    .ignoresSafeArea(.container, edges: .bottom)
+        // The status bar sits outside the attach's phases, so connecting, a stale page or a reattach never takes it away.
+        VStack(spacing: 0) {
+            ZStack {
+                content
+                if let stalePage = model.stalePage {
+                    MirrorStalePageView(webView: stalePage.webView)
+                        .allowsHitTesting(false)
+                        // Taken here, so a tap meant for the old page does not land on the new one underneath.
+                        .overlay { Color.clear.contentShape(Rectangle()) }
+                        .overlay(alignment: .top) {
+                            Label("Updating…", systemImage: "arrow.triangle.2.circlepath")
+                                .font(.footnote)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(.regularMaterial, in: Capsule())
+                                .padding(.top, 8)
+                        }
+                }
             }
+            // Fills the screen in every phase, so the bar stays at the bottom edge rather than under a centred spinner.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            MirrorStatusBar(status: model.shownStatus)
         }
             .task {
                 // Read here, not in `init`: a reattach on the same screen builds this view before the one it
@@ -219,17 +224,7 @@ struct MirrorLiveContent: View {
         case .attached(let attached):
             // A model the cache closed is replaced in `.task`; drawing it first would spend a webview on a dead link.
             if let link = model.link, !model.isClosed {
-                // Under the page's composer, where the Mac draws it. Absent until a Mac that sends
-                // it does, and while the line has nothing to draw (no repo, no window yet).
-                let status = model.status.flatMap { $0.isEmpty ? nil : $0 }
-                VStack(spacing: 0) {
-                    MirrorWebView(link: link, attached: attached, page: model.page, sendWithReturn: sendWithReturn)
-                    if let status {
-                        MirrorStatusBar(status: status)
-                    }
-                }
-                // The page reaches the screen's bottom edge only while nothing sits under it.
-                .ignoresSafeArea(.container, edges: status == nil ? .bottom : [])
+                MirrorWebView(link: link, attached: attached, page: model.page, sendWithReturn: sendWithReturn)
             }
         case .failed(let reason):
             ContentUnavailableView("Can't open live session", systemImage: "wifi.exclamationmark", description: Text(reason))
@@ -250,6 +245,23 @@ final class MirrorLiveModel {
     private(set) var link: MirrorLink?
     /// The Mac's status bar; nil until the first `status` line, so an older Mac shows none.
     private(set) var status: MirrorStatus?
+    /// The session ids this model's status is remembered under: the one it attached by, and the one the Mac named.
+    private var statusKeys: [String] = []
+
+    /// The last status with something to draw for each session, so a new model (a reattach, a reopened screen)
+    /// and a Mac that has not computed it yet show the previous bar instead of none.
+    private static var lastStatus: [String: MirrorStatus] = [:]
+
+    /// What the status bar draws: the current line, or the last one with content while this one has none.
+    var shownStatus: MirrorStatus? {
+        if let status, !status.isEmpty { return status }
+        return statusKeys.lazy.compactMap { Self.lastStatus[$0] }.first ?? status
+    }
+
+    private func remember(_ status: MirrorStatus) {
+        guard !status.isEmpty else { return }
+        for key in statusKeys { Self.lastStatus[key] = status }
+    }
     /// Bumped on each `attach_ok`, so a view can react to it without `Attached` being Equatable.
     private(set) var attachedCount = 0
     /// Set when the Mac sends `daemon_restarting`; read before the drop that follows it.
@@ -291,6 +303,7 @@ final class MirrorLiveModel {
                stalePage: RetiredMirrorPage? = nil) {
         guard link == nil else { return }
         self.stalePage = stalePage
+        statusKeys = [sessionId]
         let address = target.address
         guard let colon = address.lastIndex(of: ":"),
               let port = UInt16(address[address.index(after: colon)...]), port != 0,
@@ -303,6 +316,10 @@ final class MirrorLiveModel {
                               open: open, key: key, resumeFrom: stalePage?.resumePoint)
         link.onAttached = { [weak self, weak link] attached in
             guard let self else { return }
+            if let named = attached.sessionId, !self.statusKeys.contains(named) {
+                self.statusKeys.append(named)
+                if let status = self.status { self.remember(status) }
+            }
             // In the same pass as the phase change: the webview leaves the stale overlay before the live view takes it.
             if attached.resumed, let link, let page = self.takeStalePage() {
                 self.page.adopt(page, link: link)
@@ -326,6 +343,7 @@ final class MirrorLiveModel {
         }
         link.onStatus = { [weak self] status in
             self?.status = status
+            self?.remember(status)
         }
         link.onRestarting = { [weak self] in
             self?.restartAnnounced = true

@@ -4,7 +4,32 @@ import SwiftUI
 /// A port of Canopy's `StatusBarView` without its model pill and message count — the page's
 /// composer already names the model, and the count is not worth the width on a phone.
 /// The numbers come from the Mac, so this only draws.
+///
+/// Always laid out at the same height: with nothing to draw yet (an older Mac, or before the first line)
+/// it shows a placeholder, so the page above never jumps when the bar arrives.
 struct MirrorStatusBar: View {
+    let status: MirrorStatus?
+
+    var body: some View {
+        Group {
+            if let status, !status.isEmpty {
+                Content(status: status)
+            } else {
+                Text("—")
+                    .foregroundStyle(.tertiary)
+                    .accessibilityLabel("No status yet")
+            }
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .frame(height: 22)
+        .frame(maxWidth: .infinity)
+        .background(Color(.systemBackground))
+    }
+}
+
+private struct Content: View {
     let status: MirrorStatus
 
     var body: some View {
@@ -35,12 +60,6 @@ struct MirrorStatusBar: View {
             }
             Spacer(minLength: 0)
         }
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 10)
-        .frame(height: 28)
-        .frame(maxWidth: .infinity)
-        .background(Color(.systemBackground))
     }
 
     private var branchPill: some View {

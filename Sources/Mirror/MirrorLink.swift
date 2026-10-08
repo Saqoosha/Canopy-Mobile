@@ -210,6 +210,8 @@ final class MirrorLink {
         prefetched = nil
         message["requestId"] = requestId
         frame["message"] = message
+        // Rewritten before the one encode below, so `emit` passes it unchanged.
+        if dialogs.admit(&frame) == .rewritten { logger.notice("turned off the page's replay of an unanswered question") }
         guard let data = try? JSONSerialization.data(withJSONObject: frame) else { return }
         emit(data, frame)
         transcriptHandedOver()
@@ -232,11 +234,18 @@ final class MirrorLink {
             case .deliver:
                 break
             case .drop:
-                logger.notice("dropped a prompt the page already holds")
+                // Counted all the same: the page holds it, so a resume must not replay it.
+                tracker.noteDelivered(object)
+                let message = object["message"] as? [String: Any]
+                logger.notice("dropped a prompt the page already holds: \(message?["requestId"] as? String ?? "", privacy: .public) on \(message?["channelId"] as? String ?? "", privacy: .public)")
                 return
             case .rewritten:
-                guard let data = try? JSONSerialization.data(withJSONObject: object) else { break }
+                guard let data = try? JSONSerialization.data(withJSONObject: object) else {
+                    logger.error("could not re-encode a transcript; the page may replay its question")
+                    break
+                }
                 line = data
+                logger.notice("turned off the page's replay of an unanswered question")
             }
             tracker.noteDelivered(object)
         }

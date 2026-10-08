@@ -18,16 +18,20 @@ import Foundation
 ///    real request at the page's `launch_claude` (Canopy `ShimProcess`, `outstandingDialogRequests`), so the page
 ///    showed the question twice and kept the replayed one after the real one was answered. Canopy runs one
 ///    extension webview for all its surfaces, so the extension finds no other surface and reports `false` for
-///    every load. The flag is read nowhere else in the page, so it is rewritten to `true` here.
+///    every load. The flag is read nowhere else in the page, so it is rewritten to `true` here. The page still replays
+///    when its init said `sweptStaleChannels`, which the Mac sends only on a forwarded init, where no real request competes.
 ///
-///    The cost: a question left in the transcript with no outstanding request on the Mac (its CLI restarted, say)
-///    is no longer replayed on the phone. Before, it was replayed, and answering it posted a user turn.
-/// 2. **The same request sent twice to the same channel.** A request is keyed by its `requestId` and the channel it
-///    is addressed to. The page mints a new channel id on every `launch_claude`, so a re-sent prompt for a
+///    The cost: when no CLI is running for the session, the Mac forwards the page's `launch_claude` and has nothing
+///    to re-send, so a question left unanswered in the transcript is no longer shown on the phone. Before, the page
+///    replayed it, and answering it posted a user turn. Attach does not say which case it is.
+/// 2. **The same prompt sent twice to the same channel.** A `tool_permission_request` or `user_dialog_request` (the
+///    two kinds the Mac re-sends) is keyed by its `requestId` and the channel it is addressed to; one with no
+///    channel is never dropped. The page mints a new channel id on every `launch_claude`, so a re-sent prompt for a
 ///    relaunched page has a new key and is let through; only a copy the page already holds is dropped.
 ///    The key is released when the page answers it or a `cancel_request` withdraws it.
 struct MirrorDialogGate {
     private var shown: Set<Key> = []
+    private static let promptKinds: Set<String> = ["tool_permission_request", "user_dialog_request"]
 
     private struct Key: Hashable {
         let requestId: String
@@ -47,10 +51,11 @@ struct MirrorDialogGate {
         switch message["type"] as? String {
         case "request":
             guard let requestId = message["requestId"] as? String,
-                  let request = message["request"] as? [String: Any],
-                  request["type"] as? String == "tool_permission_request"
+                  let channelId = message["channelId"] as? String,
+                  let kind = (message["request"] as? [String: Any])?["type"] as? String,
+                  Self.promptKinds.contains(kind)
             else { return .deliver }
-            let key = Key(requestId: requestId, channelId: message["channelId"] as? String ?? "")
+            let key = Key(requestId: requestId, channelId: channelId)
             return shown.insert(key).inserted ? .deliver : .drop
         case "cancel_request":
             if let target = message["targetRequestId"] as? String { release(target) }

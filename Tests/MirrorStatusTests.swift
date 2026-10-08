@@ -121,4 +121,20 @@ struct MirrorStatusTests {
         #expect(MirrorStatus.formatTokens(1_000_000) == "1.0M")
         #expect(MirrorStatus.formatTokens(999) == "999")
     }
+
+    @Test func theBarShowsTheRememberedLineUntilThisLinkHasContent() throws {
+        let live = try #require(MirrorStatus(frame: Self.line))
+        var frame = Self.line
+        frame["branch"] = ""
+        frame["contextWindow"] = 0
+        let empty = try #require(MirrorStatus(frame: frame))
+        #expect(empty.isEmpty)
+        // Before any line, and while the Mac has not computed it yet: the last one with content.
+        #expect(MirrorLiveModel.shown(current: nil, hadContent: false, remembered: live) == live)
+        #expect(MirrorLiveModel.shown(current: empty, hadContent: false, remembered: live) == live)
+        // Emptied by the Mac after content on this link: its value, drawn as the placeholder.
+        #expect(MirrorLiveModel.shown(current: empty, hadContent: true, remembered: live) == empty)
+        #expect(MirrorLiveModel.shown(current: live, hadContent: false, remembered: nil) == live)
+        #expect(MirrorLiveModel.shown(current: nil, hadContent: false, remembered: nil) == nil)
+    }
 }

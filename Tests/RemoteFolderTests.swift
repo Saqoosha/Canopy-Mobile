@@ -33,7 +33,7 @@ struct RemoteFolderTests {
     @Test func createErrorMapsCommonFailures() {
         #expect(RemoteFolder.createErrorMessage(MachineControl.ControlError.failed("already exists")).contains("already exists"))
         #expect(RemoteFolder.createErrorMessage(MachineControl.ControlError.failed("permission denied")).contains("can't create"))
-        #expect(RemoteFolder.createErrorMessage(MachineControl.ControlError.failed("unknown verb create_folder")).contains("Update Canopy"))
+        #expect(RemoteFolder.createErrorMessage(MachineControl.ControlError.failed("unknown verb")).contains("Update Canopy"))
         #expect(RemoteFolder.createErrorMessage(MachineControl.ControlError.closed).contains("Lost connection"))
     }
 }

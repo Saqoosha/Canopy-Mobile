@@ -1,6 +1,6 @@
 import Foundation
 
-/// Path helpers and validation for the Mac control API's folder verbs (`browse_dir`, `create_folder`).
+/// Path helpers and validation for the Mac control API's folder verbs (`browse_dir`, `mkdir`).
 enum RemoteFolder {
     /// Joins a parent directory path and a single path segment (not a nested relative path).
     static func join(base: String, name: String) -> String {
@@ -18,7 +18,7 @@ enum RemoteFolder {
         return nil
     }
 
-    /// Reads the created directory from a `create_folder` result.
+    /// Reads the created directory from a `mkdir` result.
     static func createdPath(from result: [String: Any]) -> String? {
         guard let path = result["path"] as? String, !path.isEmpty else { return nil }
         return path
@@ -52,18 +52,15 @@ enum RemoteFolder {
         if lower.contains("unknown verb") || lower.contains("unsupported verb") || lower.contains("not supported") {
             return "Update Canopy on that Mac to create folders from your iPhone."
         }
-        if lower.contains("invalid") && lower.contains("name") {
-            return text
-        }
         return text
     }
 }
 
 extension MachineControl {
-    /// Asks the Mac to create `name` inside `parentPath`. Requires Canopy's `create_folder` control verb.
+    /// Asks the Mac to create `name` inside `parentPath`. Uses Canopy's `mkdir` control verb (Canopy 3.0+).
     func createFolder(parentPath: String, name: String) async throws -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let result = try await request("create_folder", ["path": parentPath, "name": trimmed])
+        let result = try await request("mkdir", ["parent": parentPath, "name": trimmed])
         guard let path = RemoteFolder.createdPath(from: result) else {
             throw ControlError.failed("Empty response")
         }

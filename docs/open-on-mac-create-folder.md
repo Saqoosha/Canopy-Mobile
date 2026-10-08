@@ -1,42 +1,27 @@
 # Open on Mac: create folder from iPhone
 
-Canopy Mobile's **Open on Mac → Folders → Browse** flow can ask the Mac to create a directory before starting a live session. The phone side is implemented in `RemoteFolder.swift` and `NewRemoteFolderSheet` in `OpenOnMacView.swift`.
+Canopy Mobile's **Open on Mac → Folders → Browse** flow can ask the Mac to create a directory before starting a live session. The phone side is `RemoteFolder.swift` and `NewRemoteFolderSheet` in `OpenOnMacView.swift`.
 
-## Mac control API (Canopy, not yet in all releases)
+## Mac control verb: `mkdir`
 
-Add a handler alongside `browse_dir` / `list_folders` on the phone control connection (same NDJSON `request` / `response` framing as existing verbs).
-
-### `create_folder`
+The phone uses Canopy's existing `mkdir` verb, the same one a peer Mac's folder browser uses. It has shipped since Canopy 3.0.0, so no Mac update is needed.
 
 **Request params**
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `path` | string | Parent directory (absolute path), same meaning as `browse_dir`'s `path` |
-| `name` | string | Single path segment; no `/`. Phone trims whitespace before send |
+| `parent` | string | Parent directory (absolute path), same meaning as `browse_dir`'s `path` |
+| `name` | string | Single path segment; no `/`. Trimmed on both sides |
 
-**Success result**
+**Success result:** `path`, the absolute path of the created directory.
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `path` | string | Absolute path of the created directory |
-
-**Behavior**
-
-- Create `path/name` with `FileManager` (or equivalent). Do not follow symlinks out of the parent in a surprising way; reject if parent does not exist or is not a directory.
-- If the directory already exists, respond with `error` (e.g. `"already exists"`).
-- Invalid names (empty after trim, `.`, `..`, contains `/`) → `error` (e.g. `"invalid name"`).
-- Permission failure → `error` (e.g. `"permission denied"`).
-
-**Example**
+**Errors** (shown verbatim unless `RemoteFolder.mapFailed` rewrites them): `already exists`, `permission denied` (Canopy 3.6.2+; older builds say `cannot create folder`), `not a folder`, `path must be absolute`, and the name rules' own messages such as `That name is reserved.`
 
 ```json
-{"type":"request","id":"…","verb":"create_folder","params":{"path":"/Users/me/Projects","name":"new-app"}}
+{"type":"request","id":"…","verb":"mkdir","params":{"parent":"/Users/me/Projects","name":"new-app"}}
 {"type":"response","id":"…","result":{"path":"/Users/me/Projects/new-app"}}
 ```
 
-Unknown verb on older Canopy builds: phone maps `"unknown verb"` style errors to **Update Canopy on that Mac**.
-
 ## Remote SSH panes
 
-Creating a folder uses the **local Mac's** filesystem where Canopy's daemon runs. If the user later opens a session that runs on a **remote** SSH host, that is unchanged — remote cwd is still chosen inside Canopy on the Mac. This API does not SSH-mkdir on the remote; extend Canopy separately if that is needed.
+The folder is created on the Mac where Canopy's daemon runs. A session that later runs on an SSH host still picks its remote cwd inside Canopy on the Mac; this verb does not create folders on the SSH host.

@@ -19,6 +19,8 @@ struct MirrorLiveView: View {
     @State private var wasInBackground = false
     /// A drop reported while still in the background, rebuilt as soon as the app starts coming back.
     @State private var droppedInBackground = false
+    /// `scenePhase` as the last handler saw it; the environment value a closure captured can be a phase behind.
+    @State private var currentPhase = ScenePhase.active
     /// Until when a drop reported after returning from the background rebuilds instead of staying failed.
     @State private var reconnectUntil: Date?
     /// Until when a drop re-attaches because the Mac announced a restart for an update.
@@ -61,7 +63,7 @@ struct MirrorLiveView: View {
                                       // The drop often lands before `.active` does; rebuilding only there left
                                       // the failure view on screen for a frame on every return.
                                       if wasInBackground, attach != nil {
-                                          if scenePhase == .background {
+                                          if currentPhase == .background {
                                               droppedInBackground = true
                                           } else {
                                               rebuildAfterBackground()
@@ -104,6 +106,7 @@ struct MirrorLiveView: View {
         // Same rule as `LiveFirstConversation`: only a drop around a return from the background
         // rebuilds, so a link that survived keeps its page and a half-typed reply.
         .onChange(of: scenePhase) { _, phase in
+            currentPhase = phase
             switch phase {
             case .background:
                 wasInBackground = !dropped
@@ -128,6 +131,7 @@ struct MirrorLiveView: View {
     private func rebuildAfterBackground() {
         wasInBackground = false
         droppedInBackground = false
+        reconnectUntil = nil
         attempt += 1
     }
 }

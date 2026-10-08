@@ -21,6 +21,8 @@ struct LiveFirstConversation<Offline: View>: View {
     @State private var wasLiveInBackground = false
     /// A drop reported while still in the background, rebuilt as soon as the app starts coming back.
     @State private var droppedInBackground = false
+    /// `scenePhase` as the last handler saw it; the environment value a closure captured can be a phase behind.
+    @State private var currentPhase = ScenePhase.active
     /// Until when a drop reported after returning from the background rebuilds live instead of falling back.
     @State private var reconnectUntil: Date?
     /// Until when a drop re-attaches because the Mac announced a restart for an update.
@@ -37,11 +39,12 @@ struct LiveFirstConversation<Offline: View>: View {
 
     var body: some View {
         content
-            // iOS may close the socket while the app is in the background, and the app only
-            // hears about it once active again. For a few seconds after a return, a drop
-            // rebuilds the live view instead of falling back. Only a drop: a page whose link
-            // survived keeps its half-typed reply, and an offline view is never touched.
+            // iOS may close the socket while the app is in the background. A drop reported on the
+            // way back, or for a few seconds after, rebuilds the live view instead of falling back.
+            // Only a drop: a page whose link survived keeps its half-typed reply, and an offline
+            // view is never touched.
             .onChange(of: scenePhase) { _, phase in
+                currentPhase = phase
                 switch phase {
                 case .background:
                     wasLiveInBackground = live != nil && fallback == nil
@@ -81,7 +84,7 @@ struct LiveFirstConversation<Offline: View>: View {
                                   // The drop often lands before `.active` does. Falling back here and
                                   // undoing it there flashed the offline view for a frame on every return.
                                   if wasLiveInBackground {
-                                      if scenePhase == .background {
+                                      if currentPhase == .background {
                                           droppedInBackground = true
                                       } else {
                                           rebuildAfterBackground()
@@ -145,6 +148,7 @@ struct LiveFirstConversation<Offline: View>: View {
     private func rebuildAfterBackground() {
         wasLiveInBackground = false
         droppedInBackground = false
+        reconnectUntil = nil
         attempt += 1
     }
 

@@ -105,7 +105,8 @@ final class NotificationService: UNNotificationServiceExtension {
             choices: AskChoice.form(userInfo: userInfo["choices"]),
             // Canopy's id for the streamed event holding this same text. The
             // conversation view draws one of the two, not both.
-            eventId: userInfo["eventId"] as? String
+            eventId: userInfo["eventId"] as? String,
+            sessionName: (userInfo["sessionTitle"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         )
 
         do {

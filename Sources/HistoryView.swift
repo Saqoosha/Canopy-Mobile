@@ -131,11 +131,12 @@ extension NotificationHistoryItem {
         return panes.first { $0.sessionId == sessionId }
     }
 
-    /// The session's name from the roster. Nil once the session has closed:
-    /// the push's own title is "Canopy" on every row, which names nothing.
+    /// The session's name: the roster's while it lists the session, else the
+    /// one the push carried. Never the push's own title, which is "Canopy" on
+    /// every row and names nothing.
     func sessionTitle(in snapshots: [String: MachineSnapshot]) -> String? {
-        guard let title = pane(in: snapshots)?.title, !title.isEmpty else { return nil }
-        return title
+        if let title = pane(in: snapshots)?.title, !title.isEmpty { return title }
+        return sessionName
     }
 
     /// The roster's name for the machine. The raw id only when the machine is

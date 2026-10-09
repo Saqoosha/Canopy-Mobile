@@ -66,6 +66,9 @@ export interface NotifyBody {
   choices?: AskChoice[];
   /** The CLI's own session id, stable across Canopy restarts. */
   resumeId?: string;
+  /** The session's name. `title` is the banner title ("Canopy"), so this is
+   *  what names the session in History once the roster no longer lists it. */
+  sessionTitle?: string;
 }
 
 /** What the phone posts to /reply. */

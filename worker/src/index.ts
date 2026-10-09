@@ -189,6 +189,8 @@ export default {
       // `bodyFull` above carries the real text. A slow LLM call must never
       // delay the push, which is why shortenWithLLM has its own timeout.
       const BANNER_MAX = 100;
+      // Canopy's SessionTitleGenerator.maxTitleLength.
+      const SESSION_TITLE_MAX = 60;
       // Summarise a COMPLETED push only. An asking push's body is the tool's
       // raw input — a command line, a file path, whatever was pasted into an
       // edit — and sending that to api.anthropic.com is a data flow the design
@@ -243,6 +245,11 @@ export default {
         // restart, which mints a new sessionId and would otherwise orphan
         // everything stored so far.
         ...(body.resumeId ? { resumeId: body.resumeId } : {}),
+        // Names the session in History after it closes. Capped here as well as
+        // on the Mac: it rides beside `bodyFull`, which is what gets shrunk.
+        ...(typeof body.sessionTitle === "string" && body.sessionTitle
+          ? { sessionTitle: Array.from(body.sessionTitle).slice(0, SESSION_TITLE_MAX).join("") }
+          : {}),
         ...(body.requestId ? { requestId: body.requestId } : {}),
         // The phone draws this notification OR the streamed event carrying the
         // same text, never both, and this id is the only thing that can say

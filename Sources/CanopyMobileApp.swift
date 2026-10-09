@@ -580,7 +580,7 @@ struct CanopyMobileApp: App {
         // beats landing on somebody else's session with a correct one.
         // Not `item?.title`: Canopy titles every push "Canopy" or "Canopy —
         // <tool>", which names no session.
-        let title = pane?.title ?? "Session"
+        let title = pane?.title ?? item?.sessionName ?? "Session"
         if pane == nil, item == nil {
             // Surfaced, never swallowed: this is the state that used to be
             // indistinguishable from "the tap did nothing".

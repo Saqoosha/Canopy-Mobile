@@ -614,6 +614,17 @@ describe("/notify puts the banner it builds into the push", () => {
     expect(banner.endsWith("…")).toBe(true);
   });
 
+  it("carries the session's name, capped, and omits an empty one", async () => {
+    await bannerSentFor({
+      machine: "m1", sessionId: "s1", kind: "completed", title: "Canopy", body: "done",
+      sessionTitle: "🐛".repeat(70),
+    });
+    const named = (lastPayload as unknown as Record<string, unknown>).sessionTitle as string;
+    expect(Array.from(named)).toEqual(Array(60).fill("🐛"));
+    await bannerSentFor({ machine: "m1", sessionId: "s1", kind: "completed", title: "Canopy", body: "done", sessionTitle: "" });
+    expect((lastPayload as unknown as Record<string, unknown>).sessionTitle).toBeUndefined();
+  });
+
   it("sends the questions for an ask that carries a form", async () => {
     expect(
       await bannerSentFor({

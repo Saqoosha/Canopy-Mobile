@@ -218,6 +218,10 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
     /// build that predates this field — read `nil` as "not a duplicate", never
     /// as "duplicate", or the history disappears.
     var eventId: String?
+    /// The session's name as the Mac knew it when it pushed. The fallback for
+    /// History and the conversation title once the roster no longer lists the
+    /// session. Absent on an older Mac's push and on items stored before this.
+    var sessionName: String?
 
     init(
         id: String,
@@ -236,7 +240,8 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         resumeId: String? = nil,
         answerable: Bool? = nil,
         choices: [AskChoice]? = nil,
-        eventId: String? = nil
+        eventId: String? = nil,
+        sessionName: String? = nil
     ) {
         self.id = id
         self.receivedAt = receivedAt
@@ -255,6 +260,7 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
         self.answerable = answerable
         self.choices = choices
         self.eventId = eventId
+        self.sessionName = sessionName
     }
 
     /// Jq and some pipelines pass through the four ASCII letters `null` as

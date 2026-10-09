@@ -8,12 +8,13 @@ struct HistoryView: View {
     /// Fires when a row is tapped, with the item whose session to open. The
     /// row does not push anything itself: `CanopyMobileApp` owns the
     /// navigation path, so one type of destination is built in one place.
-    let onSelect: (NotificationHistoryItem) -> Void
+    let onSelect: (NotificationHistoryItem, String?) -> Void
     /// The roster, for the names a row shows. The push itself carries only
     /// ids and a title that reads "Canopy" on every row.
     let snapshots: [String: MachineSnapshot]
 
     @State private var items: [NotificationHistoryItem] = []
+    @State private var names: [String: String] = [:]
     @State private var loadError: Error?
 
     var body: some View {
@@ -29,7 +30,7 @@ struct HistoryView: View {
                     ForEach(days, id: \.self) { day in
                         Section {
                             ForEach(items.filter { Calendar.current.isDate($0.receivedAt, inSameDayAs: day) }) { item in
-                                Button { onSelect(item) } label: { row(item) }
+                                Button { onSelect(item, item.sessionTitle(in: snapshots, names: names)) } label: { row(item) }
                                     .buttonStyle(.plain)
                             }
                         } header: {
@@ -59,7 +60,7 @@ struct HistoryView: View {
                 .padding(.top, 2)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                if let sessionTitle = item.sessionTitle(in: snapshots) {
+                if let sessionTitle = item.sessionTitle(in: snapshots, names: names) {
                     Text(sessionTitle).font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
@@ -94,6 +95,7 @@ struct HistoryView: View {
             } else {
                 items = try HistoryStore.loadAll()
             }
+            names = NotificationHistoryItem.pushedNames(items)
             loadError = nil
         } catch {
             loadError = error
@@ -131,11 +133,28 @@ extension NotificationHistoryItem {
         return panes.first { $0.sessionId == sessionId }
     }
 
-    /// The session's name from the roster. Nil once the session has closed:
-    /// the push's own title is "Canopy" on every row, which names nothing.
-    func sessionTitle(in snapshots: [String: MachineSnapshot]) -> String? {
-        guard let title = pane(in: snapshots)?.title, !title.isEmpty else { return nil }
-        return title
+    /// The session's name: the roster's while it lists the session, else the
+    /// newest name a push carried for it (`pushedNames`), else this item's own.
+    /// Never the push's own title, which is "Canopy" on every row.
+    func sessionTitle(in snapshots: [String: MachineSnapshot],
+                      names: [String: String] = [:]) -> String? {
+        if let title = pane(in: snapshots)?.title, !title.isEmpty { return title }
+        return nameKeys.lazy.compactMap { names[$0] }.first ?? sessionName
+    }
+
+    /// Each session's newest pushed name, so a `sent` row or an older push names
+    /// it the same way. `items` newest first, as `HistoryStore.loadAll` returns.
+    static func pushedNames(_ items: [NotificationHistoryItem]) -> [String: String] {
+        var names: [String: String] = [:]
+        for item in items {
+            guard let name = item.sessionName else { continue }
+            for key in item.nameKeys where names[key] == nil { names[key] = name }
+        }
+        return names
+    }
+
+    private var nameKeys: [String] {
+        [resumeId.map { "\(machine)|r|\($0)" }, "\(machine)|s|\(sessionId)"].compactMap { $0 }
     }
 
     /// The roster's name for the machine. The raw id only when the machine is

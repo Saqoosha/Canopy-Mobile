@@ -53,7 +53,7 @@ const ALLOWED_IMAGE_TYPES = new Set([
  *
  *  Without the second stage the loop simply exits with an oversized payload
  *  and APNs drops it: no notification, and silence on both ends. */
-export function fitPushPayload<T extends { bodyFull: string; choices?: unknown }>(
+export function fitPushPayload<T extends { bodyFull: string; choices?: unknown; sessionTitle?: unknown }>(
   payload: T,
   limit = 4096,
 ): T {
@@ -71,6 +71,11 @@ export function fitPushPayload<T extends { bodyFull: string; choices?: unknown }
       ...shrunk,
       bodyFull: safeSlice(shrunk.bodyFull, Math.max(0, points.length - drop)),
     };
+  }
+  // The History name goes before the answer buttons.
+  if (shrunk.sessionTitle !== undefined && encodedLength(shrunk) > limit) {
+    const { sessionTitle: _dropped, ...withoutName } = shrunk;
+    shrunk = withoutName as T;
   }
   if (shrunk.choices !== undefined && encodedLength(shrunk) > limit) {
     console.warn("notify: dropping choices to fit the APNs limit");
@@ -189,6 +194,8 @@ export default {
       // `bodyFull` above carries the real text. A slow LLM call must never
       // delay the push, which is why shortenWithLLM has its own timeout.
       const BANNER_MAX = 100;
+      // Canopy's SessionTitleGenerator.maxTitleLength.
+      const SESSION_TITLE_MAX = 60;
       // Summarise a COMPLETED push only. An asking push's body is the tool's
       // raw input — a command line, a file path, whatever was pasted into an
       // edit — and sending that to api.anthropic.com is a data flow the design
@@ -243,6 +250,11 @@ export default {
         // restart, which mints a new sessionId and would otherwise orphan
         // everything stored so far.
         ...(body.resumeId ? { resumeId: body.resumeId } : {}),
+        // Names the session in History after it closes. Capped here as well as
+        // on the Mac: it rides beside `bodyFull`, which is what gets shrunk.
+        ...(typeof body.sessionTitle === "string" && body.sessionTitle.trim()
+          ? { sessionTitle: safeSlice(body.sessionTitle.trim(), SESSION_TITLE_MAX) }
+          : {}),
         ...(body.requestId ? { requestId: body.requestId } : {}),
         // The phone draws this notification OR the streamed event carrying the
         // same text, never both, and this id is the only thing that can say

@@ -381,6 +381,20 @@ describe("AskUserQuestion form", () => {
     expect(new TextEncoder().encode(JSON.stringify(fitted)).length).toBeLessThanOrEqual(1000);
   });
 
+  it("drops the session name before the answer buttons", () => {
+    // Sized so the payload fits without the name and not with it.
+    const base = { title: "t", body: "b", bodyFull: "" };
+    const emptyForm = [{ question: "", header: "h", multiSelect: false, options: [] }];
+    const room = 4096 - new TextEncoder().encode(JSON.stringify({ ...base, choices: emptyForm })).length;
+    const form = [{ ...emptyForm[0], question: "q".repeat(room - 10) }];
+    const fitted = fitPushPayload({ ...base, choices: form, sessionTitle: "n".repeat(60) }, 4096) as {
+      choices?: unknown;
+      sessionTitle?: unknown;
+    };
+    expect(fitted.sessionTitle).toBeUndefined();
+    expect(fitted.choices).toBeDefined();
+  });
+
   // `eventId` is the phone's only handle for "this push and that streamed
   // event are one turn". Losing it under pressure would draw the assistant's
   // message twice — which is exactly what happened when the relay accepted the
@@ -612,6 +626,17 @@ describe("/notify puts the banner it builds into the push", () => {
     const banner = await bannerSentFor({ machine: "m1", kind: "battery", title: "t", body: "x".repeat(1000) });
     expect(Array.from(banner).length).toBe(401);
     expect(banner.endsWith("…")).toBe(true);
+  });
+
+  it("carries the session's name, capped, and omits an empty one", async () => {
+    await bannerSentFor({
+      machine: "m1", sessionId: "s1", kind: "completed", title: "Canopy", body: "done",
+      sessionTitle: "🐛".repeat(70),
+    });
+    const named = (lastPayload as unknown as Record<string, unknown>).sessionTitle as string;
+    expect(Array.from(named)).toEqual(Array(60).fill("🐛"));
+    await bannerSentFor({ machine: "m1", sessionId: "s1", kind: "completed", title: "Canopy", body: "done", sessionTitle: "" });
+    expect((lastPayload as unknown as Record<string, unknown>).sessionTitle).toBeUndefined();
   });
 
   it("sends the questions for an ask that carries a form", async () => {

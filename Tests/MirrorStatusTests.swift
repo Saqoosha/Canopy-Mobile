@@ -137,4 +137,10 @@ struct MirrorStatusTests {
         #expect(MirrorLiveModel.shown(current: live, hadContent: false, remembered: nil) == live)
         #expect(MirrorLiveModel.shown(current: nil, hadContent: false, remembered: nil) == nil)
     }
+
+    @Test func theBarKeepsOnlyEnoughOfTheHomeIndicatorInset() {
+        #expect(MirrorLiveContent.homeIndicatorClearance(windowInset: 34) == 22)
+        #expect(MirrorLiveContent.homeIndicatorClearance(windowInset: 20) == 20)
+        #expect(MirrorLiveContent.homeIndicatorClearance(windowInset: 0) == 0)
+    }
 }

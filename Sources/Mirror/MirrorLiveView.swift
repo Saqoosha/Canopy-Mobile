@@ -113,6 +113,7 @@ struct MirrorLiveContent: View {
 
     @State private var model: MirrorLiveModel
     @AppStorage("sendWithReturn") private var sendWithReturn = false
+    @State private var keyboardShown = false
 
     init(target: MirrorTarget, sessionId: String, open: OpenRequest? = nil, key: String? = nil,
          cacheable: Bool = false,
@@ -129,6 +130,18 @@ struct MirrorLiveContent: View {
         let cacheKey = Self.cacheKey(target: target, sessionId: sessionId, open: open, key: key, cacheable: cacheable)
         self.cacheKey = cacheKey
         _model = State(initialValue: cacheKey.flatMap(MirrorSessionCache.model(for:)) ?? MirrorLiveModel())
+    }
+
+    /// Space under the status bar: the bar's text clears the home indicator (its top is about 13pt up)
+    /// without keeping the whole 34pt inset. Zero on a screen without one.
+    nonisolated static func homeIndicatorClearance(windowInset: CGFloat) -> CGFloat {
+        max(0, windowInset - 22)
+    }
+
+    /// The window's own inset, which the keyboard does not change.
+    private static var windowBottomInset: CGFloat {
+        UIApplication.shared.connectedScenes.lazy.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first?
+            .safeAreaInsets.bottom ?? 0
     }
 
     /// Only a plain attach is cached: one that asks the Mac to open or resume something, or names its key, must reach the Mac.
@@ -161,6 +174,15 @@ struct MirrorLiveContent: View {
             // Fills the screen in every phase, so the bar stays at the bottom edge rather than under a centred spinner.
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             MirrorStatusBar(status: model.shownStatus)
+                .padding(.bottom, keyboardShown ? 0 : Self.homeIndicatorClearance(windowInset: Self.windowBottomInset))
+        }
+        // Into the home indicator's area; the keyboard's area is still respected, so the bar stays on top of it.
+        .ignoresSafeArea(.container, edges: .bottom)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardShown = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardShown = false
         }
             .task {
                 // Read here, not in `init`: a reattach on the same screen builds this view before the one it

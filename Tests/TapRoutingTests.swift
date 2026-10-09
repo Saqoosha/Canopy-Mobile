@@ -15,6 +15,12 @@ struct TapRoutingTests {
         #expect(PushRegistrar.missingTapKeys(in: info).isEmpty)
     }
 
+    @Test("A battery notice is a machine notice, not a session tap")
+    func batteryIsMachineNotice() {
+        #expect(PushRegistrar.isMachineNotice(["machine": "m1", "kind": "battery"]))
+        #expect(!PushRegistrar.isMachineNotice(["machine": "m1", "sessionId": "s1", "kind": "completed"]))
+    }
+
     @Test("Each missing key is named")
     func namesWhatIsMissing() {
         #expect(PushRegistrar.missingTapKeys(in: ["sessionId": "s1"]) == ["machine"])

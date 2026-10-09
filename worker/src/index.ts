@@ -1,7 +1,7 @@
 import { MachineDO } from "./machine";
 import { sendPush, type ApnsEnv } from "./apns";
 import { plainBanner, safeSlice, shortenWithLLM, type LlmEnv } from "./llm";
-import type { DecisionBody, NotifyBody, ReplyBody } from "./types";
+import type { BatteryNotifyBody, DecisionBody, NotifyBody, ReplyBody } from "./types";
 export { MachineDO };
 
 interface Env extends ApnsEnv, LlmEnv {
@@ -150,7 +150,10 @@ export default {
       return json({ ok: true });
     }
     if (url.pathname === "/notify" && request.method === "POST") {
-      const body = await request.json<NotifyBody>().catch(() => null);
+      const body = await request.json<NotifyBody | BatteryNotifyBody>().catch(() => null);
+      // A battery notice belongs to the machine, not a session: no sessionId, no LLM banner
+      // (it is one short line Canopy wrote), and no ids for the phone to file it under.
+      if (body?.kind === "battery") return notifyBattery(env, body);
       if (!body?.machine || !body.sessionId) return json({ error: "machine and sessionId required" }, 400);
       if (body.kind !== "completed" && body.kind !== "asking") {
         return json({ error: "kind must be completed or asking" }, 400);
@@ -414,3 +417,44 @@ export default {
     return new Response("not found", { status: 404 });
   },
 };
+
+async function notifyBattery(env: Env, body: BatteryNotifyBody): Promise<Response> {
+  const nonEmpty = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0;
+  if (!nonEmpty(body.machine)) return json({ error: "machine required" }, 400);
+  if (!nonEmpty(body.title) || !nonEmpty(body.body)) return json({ error: "title and body required" }, 400);
+  // A battery notice is about the machine: a payload carrying session fields was meant
+  // for the session path, and is refused rather than quietly stripped.
+  const loose = body as unknown as Record<string, unknown>;
+  if (loose.sessionId != null || loose.requestId != null) {
+    return json({ error: "battery takes no sessionId or requestId" }, 400);
+  }
+  const deviceToken = await env.MACHINES.get("device_token");
+  if (!deviceToken) return json({ error: "no device registered" }, 503);
+  // Capped so the payload stays far under APNs's 4 KB whatever a caller sends; Canopy's
+  // own lines are one sentence. No `mutable-content`: there is nothing for the
+  // Notification Service Extension to file, so iOS shows it directly.
+  const payload = {
+    aps: {
+      alert: { title: capped(body.title, 120), body: capped(body.body, 400) },
+      sound: "default",
+    },
+    machine: body.machine,
+    kind: "battery",
+  };
+  // One live battery notice per machine: each 10 % step replaces the last. Because they
+  // replace each other, a phone that is offline for a while can be given the latest one
+  // later instead of losing it (the session pushes stay deliver-now-or-never).
+  return sendPush(env, deviceToken, payload, undefined, {
+    collapseId: batteryCollapseId(body.machine),
+    expiration: Math.floor(Date.now() / 1000) + 3600,
+  });
+}
+
+/** `apns-collapse-id` is at most 64 bytes and must be a valid header value. */
+export function batteryCollapseId(machine: string): string {
+  return `battery:${machine.replace(/[^A-Za-z0-9-]/g, "")}`.slice(0, 64);
+}
+
+function capped(text: string, max: number): string {
+  return Array.from(text).length > max ? safeSlice(text, max) + "…" : text;
+}

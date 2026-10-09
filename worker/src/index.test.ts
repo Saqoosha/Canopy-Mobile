@@ -2,7 +2,7 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { plainBanner, safeSlice } from "./llm";
-import worker, { fitPushPayload } from "./index";
+import worker, { batteryCollapseId, fitPushPayload } from "./index";
 
 // Must match the SHARED_SECRET binding in vitest.config.ts. Spelled as a
 // literal rather than read back out of `env` — an expectation derived from
@@ -61,6 +61,61 @@ describe("push notifications", () => {
       headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
       body: JSON.stringify({ machine: "m1", sessionId: "s1", title: "t", body: "b", kind: "completed" }),
     });
+    expect(res.status).toBe(503);
+  });
+
+  it("notify rejects a battery notice without a title", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", kind: "battery", body: "b" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("notify rejects a battery notice with an empty body", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", kind: "battery", title: "t", body: "  " }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("notify rejects a battery notice carrying a sessionId", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", sessionId: "s1", kind: "battery", title: "t", body: "b" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("notify takes a battery notice with a null sessionId", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", sessionId: null, kind: "battery", title: "t", body: "b" }),
+    });
+    expect(res.status).toBe(503);
+  });
+
+  it("notify still requires a sessionId on a completed push", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", kind: "completed", title: "t", body: "b" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("notify takes a battery notice without a sessionId", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", kind: "battery", title: "t", body: "b" }),
+    });
+    // Past validation: the only refusal left is that no phone has registered.
     expect(res.status).toBe(503);
   });
 
@@ -501,6 +556,7 @@ describe("/notify puts the banner it builds into the push", () => {
         return Response.json({ type: "message", content: [{ type: "text", text: "LLM said this" }] });
       }
       sent = String((init as RequestInit).body);
+      lastHeaders = ((init as RequestInit).headers ?? {}) as Record<string, string>;
       return new Response("", { status: 200 });
     });
 
@@ -522,12 +578,41 @@ describe("/notify puts the banner it builds into the push", () => {
     choices?: unknown;
     answerable?: boolean;
   };
+  let lastHeaders: Record<string, string> = {};
   // Every URL the route fetched, in order. The banner branch is the only
   // thing that can put api.anthropic.com in here.
   let fetched: string[] = [];
   const reachedTheLLM = () => fetched.some((u) => u.startsWith("https://api.anthropic.com/"));
 
   const askJson = '```json\n{\n  "questions" : [\n    { "question" : "Which database?" }\n  ]\n}\n```';
+
+  it("sends a battery notice with no session and without the LLM", async () => {
+    const banner = await bannerSentFor({
+      machine: "m1", kind: "battery", title: "MBP battery 60%",
+      body: "Still awake with the lid closed: a session is busy. It sleeps below 20%.",
+    });
+    expect(banner).toBe("Still awake with the lid closed: a session is busy. It sleeps below 20%.");
+    const sent = lastPayload as unknown as Record<string, unknown>;
+    expect(sent.kind).toBe("battery");
+    expect(sent.sessionId).toBeUndefined();
+    expect(lastPayload.aps.category).toBeUndefined();
+    expect((lastPayload.aps as Record<string, unknown>)["mutable-content"]).toBeUndefined();
+    expect(lastHeaders["apns-collapse-id"]).toBe("battery:m1");
+    expect(Number(lastHeaders["apns-expiration"])).toBeGreaterThan(Date.now() / 1000);
+    expect(reachedTheLLM()).toBe(false);
+  });
+
+  it("caps a battery notice's title", async () => {
+    await bannerSentFor({ machine: "m1", kind: "battery", title: "t".repeat(500), body: "b" });
+    const title = (lastPayload.aps.alert as unknown as { title: string }).title;
+    expect(Array.from(title).length).toBe(121);
+  });
+
+  it("caps a battery notice's body", async () => {
+    const banner = await bannerSentFor({ machine: "m1", kind: "battery", title: "t", body: "x".repeat(1000) });
+    expect(Array.from(banner).length).toBe(401);
+    expect(banner.endsWith("…")).toBe(true);
+  });
 
   it("sends the questions for an ask that carries a form", async () => {
     expect(
@@ -780,5 +865,14 @@ describe("session images", () => {
     const big = new Uint8Array(13 * 1024 * 1024);
     const res = await put("machine=M7&session=s1&event=e1&variant=full", big);
     expect(res.status).toBe(413);
+  });
+});
+
+describe("batteryCollapseId", () => {
+  it("keeps an id within 64 ASCII bytes whatever the machine is called", () => {
+    const id = batteryCollapseId("マック-" + "x".repeat(100));
+    expect(id.startsWith("battery:-")).toBe(true);
+    expect(new TextEncoder().encode(id).length).toBeLessThanOrEqual(64);
+    expect(/^[A-Za-z0-9:-]+$/.test(id)).toBe(true);
   });
 });

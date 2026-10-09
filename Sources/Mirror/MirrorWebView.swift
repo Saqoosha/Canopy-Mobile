@@ -338,10 +338,10 @@ enum MirrorWebViewPool {
         // The subagents pill wraps the composer toolbar onto a second row at phone width;
         // wider layouts (iPad) have room and keep it.
         // Matched by its data attribute: the class name carries a per-build hash.
-        // Also at phone width: the composer sits 6px above the status bar instead of 16px. It is the
+        // Also at phone width: the composer sits 10px above the status bar instead of 16px. It is the
         // `inputContainer_` that follows `messageGradient_`; the other two `inputContainer_` classes are not offset.
         ucc.addUserScript(WKUserScript(
-            source: "document.head.appendChild(Object.assign(document.createElement('style'),{textContent:'@media (max-width:600px){button[data-agents-dot]{display:none!important}[class*=messageGradient_]+[class*=inputContainer_]{bottom:6px!important}}'}))",
+            source: "document.head.appendChild(Object.assign(document.createElement('style'),{textContent:'@media (max-width:600px){button[data-agents-dot]{display:none!important}[class*=messageGradient_]+[class*=inputContainer_]{bottom:10px!important}}'}))",
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         ))

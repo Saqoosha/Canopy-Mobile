@@ -132,10 +132,10 @@ struct MirrorLiveContent: View {
         _model = State(initialValue: cacheKey.flatMap(MirrorSessionCache.model(for:)) ?? MirrorLiveModel())
     }
 
-    /// Space under the status bar: 12pt clears the home indicator (its top is about 13pt up, the bar's text 5pt
-    /// above the bar's bottom) without keeping the whole inset (34pt on iPhone, 20pt on iPad). Zero on a screen without one.
+    /// Space under the status bar: 22pt clears the home indicator (its top is about 13pt up) without keeping the
+    /// whole 34pt iPhone inset; 12pt was tried and read as too tight on device. Zero on a screen without one.
     nonisolated static func homeIndicatorClearance(windowInset: CGFloat) -> CGFloat {
-        min(windowInset, 12)
+        min(windowInset, 22)
     }
 
     /// The window's own inset, which the keyboard does not change.

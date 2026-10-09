@@ -6,10 +6,11 @@ import Testing
 /// `sessionName`) names a History row once the roster no longer lists it.
 @MainActor
 struct HistorySessionNameTests {
-    private func item(sessionName: String?) -> NotificationHistoryItem {
-        NotificationHistoryItem(id: "h1", receivedAt: Date(timeIntervalSince1970: 0),
+    private func item(sessionName: String?, kind: String = "completed",
+                      resumeId: String? = "r1") -> NotificationHistoryItem {
+        NotificationHistoryItem(id: UUID().uuidString, receivedAt: Date(timeIntervalSince1970: 0),
                                 title: "Canopy", body: "b", machine: "M",
-                                sessionId: "s1", kind: "completed", resumeId: "r1",
+                                sessionId: "s1", kind: kind, resumeId: resumeId,
                                 sessionName: sessionName)
     }
 
@@ -28,6 +29,15 @@ struct HistorySessionNameTests {
     @Test func pushedNameNamesAClosedSession() throws {
         #expect(item(sessionName: "Pushed").sessionTitle(in: try snapshots(paneTitle: nil)) == "Pushed")
         #expect(item(sessionName: nil).sessionTitle(in: try snapshots(paneTitle: nil)) == nil)
+    }
+
+    @Test func aSentRowAndAnOlderPushTakeTheNewestName() throws {
+        let newestFirst = [item(sessionName: nil, kind: "sent", resumeId: nil),
+                           item(sessionName: "Renamed"),
+                           item(sessionName: "First")]
+        let names = NotificationHistoryItem.pushedNames(newestFirst)
+        let closed = try snapshots(paneTitle: nil)
+        #expect(newestFirst.map { $0.sessionTitle(in: closed, names: names) } == ["Renamed", "Renamed", "Renamed"])
     }
 
     @Test func anItemStoredBeforeTheFieldStillDecodes() throws {

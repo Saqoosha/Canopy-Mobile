@@ -390,6 +390,20 @@ describe("AskUserQuestion form", () => {
   // put into the payload in the first place is not reachable from here — the
   // route needs a registered device token and an APNs call — and was verified
   // on device instead.
+  it("drops the session name before the answer buttons", () => {
+    // Sized so the payload fits without the name and not with it.
+    const base = { title: "t", body: "b", bodyFull: "" };
+    const emptyForm = [{ question: "", header: "h", multiSelect: false, options: [] }];
+    const room = 4096 - new TextEncoder().encode(JSON.stringify({ ...base, choices: emptyForm })).length;
+    const form = [{ ...emptyForm[0], question: "q".repeat(room - 10) }];
+    const fitted = fitPushPayload({ ...base, choices: form, sessionTitle: "n".repeat(60) }, 4096) as {
+      choices?: unknown;
+      sessionTitle?: unknown;
+    };
+    expect(fitted.sessionTitle).toBeUndefined();
+    expect(fitted.choices).toBeDefined();
+  });
+
   it("keeps eventId while shrinking the body", () => {
     const fitted = fitPushPayload(
       { title: "t", body: "b", bodyFull: "x".repeat(4000), eventId: "abc" },

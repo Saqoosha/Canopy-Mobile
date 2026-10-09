@@ -53,7 +53,7 @@ const ALLOWED_IMAGE_TYPES = new Set([
  *
  *  Without the second stage the loop simply exits with an oversized payload
  *  and APNs drops it: no notification, and silence on both ends. */
-export function fitPushPayload<T extends { bodyFull: string; choices?: unknown }>(
+export function fitPushPayload<T extends { bodyFull: string; choices?: unknown; sessionTitle?: unknown }>(
   payload: T,
   limit = 4096,
 ): T {
@@ -71,6 +71,11 @@ export function fitPushPayload<T extends { bodyFull: string; choices?: unknown }
       ...shrunk,
       bodyFull: safeSlice(shrunk.bodyFull, Math.max(0, points.length - drop)),
     };
+  }
+  // The History name goes before the answer buttons.
+  if (shrunk.sessionTitle !== undefined && encodedLength(shrunk) > limit) {
+    const { sessionTitle: _dropped, ...withoutName } = shrunk;
+    shrunk = withoutName as T;
   }
   if (shrunk.choices !== undefined && encodedLength(shrunk) > limit) {
     console.warn("notify: dropping choices to fit the APNs limit");
@@ -247,8 +252,8 @@ export default {
         ...(body.resumeId ? { resumeId: body.resumeId } : {}),
         // Names the session in History after it closes. Capped here as well as
         // on the Mac: it rides beside `bodyFull`, which is what gets shrunk.
-        ...(typeof body.sessionTitle === "string" && body.sessionTitle
-          ? { sessionTitle: Array.from(body.sessionTitle).slice(0, SESSION_TITLE_MAX).join("") }
+        ...(typeof body.sessionTitle === "string" && body.sessionTitle.trim()
+          ? { sessionTitle: safeSlice(body.sessionTitle.trim(), SESSION_TITLE_MAX) }
           : {}),
         ...(body.requestId ? { requestId: body.requestId } : {}),
         // The phone draws this notification OR the streamed event carrying the

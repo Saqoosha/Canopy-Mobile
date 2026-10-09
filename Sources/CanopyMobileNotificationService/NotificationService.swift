@@ -106,7 +106,9 @@ final class NotificationService: UNNotificationServiceExtension {
             // Canopy's id for the streamed event holding this same text. The
             // conversation view draws one of the two, not both.
             eventId: userInfo["eventId"] as? String,
-            sessionName: (userInfo["sessionTitle"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            sessionName: (userInfo["sessionTitle"] as? String).flatMap {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
+            }
         )
 
         do {

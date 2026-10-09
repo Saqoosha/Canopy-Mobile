@@ -169,12 +169,12 @@ struct CanopyMobileApp: App {
                                        title: live.title, open: live.open)
                             .id(live)
                     case .history:
-                        HistoryView(onSelect: { item in
+                        HistoryView(onSelect: { item, title in
                             path.append(.conversation(ConversationTarget(
                                 machine: item.machine,
                                 sessionId: item.sessionId,
                                 resumeId: item.resumeId,
-                                title: item.sessionTitle(in: snapshots) ?? "Session",
+                                title: title ?? "Session",
                                 // The roster's own name for the machine when
                                 // it has one. A raw machine UUID under the
                                 // title is an id the reader cannot use.
@@ -560,10 +560,11 @@ struct CanopyMobileApp: App {
         // open" and "this session has not notified" want different responses,
         // and the first means every push since has been lost.
         var item: NotificationHistoryItem?
+        var names: [String: String] = [:]
         do {
-            item = try HistoryStore.loadAll().first {
-                $0.machine == machine && $0.sessionId == sessionId
-            }
+            let all = try HistoryStore.loadAll()
+            item = all.first { $0.machine == machine && $0.sessionId == sessionId }
+            names = NotificationHistoryItem.pushedNames(all)
         } catch {
             NSLog("Notification tap: history unreadable for machine=%@ session=%@: %@",
                   machine, sessionId, String(describing: error))
@@ -580,7 +581,8 @@ struct CanopyMobileApp: App {
         // beats landing on somebody else's session with a correct one.
         // Not `item?.title`: Canopy titles every push "Canopy" or "Canopy —
         // <tool>", which names no session.
-        let title = pane?.title ?? item?.sessionName ?? "Session"
+        let rosterTitle = pane.flatMap { $0.title.isEmpty ? nil : $0.title }
+        let title = rosterTitle ?? item?.sessionTitle(in: snapshots, names: names) ?? "Session"
         if pane == nil, item == nil {
             // Surfaced, never swallowed: this is the state that used to be
             // indistinguishable from "the tap did nothing".

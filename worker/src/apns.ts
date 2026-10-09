@@ -48,12 +48,20 @@ async function generateAPNsJWT(env: ApnsEnv): Promise<string> {
   return `${unsigned}.${base64url(signature)}`;
 }
 
+/** Per-push APNs options; the defaults are the session pushes' behaviour. */
+export interface PushOptions {
+  /** `apns-collapse-id`: a newer push with the same id replaces the older one. */
+  collapseId?: string;
+  /** `apns-expiration`, UNIX seconds. 0 (default) means deliver now or never. */
+  expiration?: number;
+}
+
 async function sendPushDirect(
   env: ApnsEnv,
   deviceToken: string,
   payload: object,
   sandbox: boolean,
-  collapseId?: string,
+  options: PushOptions = {},
 ): Promise<Response> {
   const jwt = await generateAPNsJWT(env);
   const apnsHost = sandbox ? "api.sandbox.push.apple.com" : "api.push.apple.com";
@@ -64,10 +72,10 @@ async function sendPushDirect(
       "apns-topic": env.APNS_BUNDLE_ID,
       "apns-push-type": "alert",
       "apns-priority": "10",
-      "apns-expiration": "0",
+      "apns-expiration": String(options.expiration ?? 0),
       "content-type": "application/json",
       // A newer push with the same id replaces the older one on the phone.
-      ...(collapseId ? { "apns-collapse-id": collapseId } : {}),
+      ...(options.collapseId ? { "apns-collapse-id": options.collapseId } : {}),
     },
     body: JSON.stringify(payload),
   });
@@ -194,9 +202,9 @@ export async function sendPush(
   deviceToken: string,
   payload: object,
   useSandbox?: boolean,
-  collapseId?: string,
+  options: PushOptions = {},
 ): Promise<Response> {
-  const first = await sendPushResolvingEnv(env, deviceToken, payload, useSandbox, collapseId);
+  const first = await sendPushResolvingEnv(env, deviceToken, payload, useSandbox, options);
   if (first.status !== 429) {
     // Every other rejection is logged here for the reason the 429 above was
     // invisible: only the 400 paths said anything, so a 410 (dead token) or a
@@ -214,7 +222,7 @@ export async function sendPush(
 
   const firstReason = await apnsReason(first);
   await sleep(APNS_THROTTLE_RETRY_MS);
-  const retry = await sendPushResolvingEnv(env, deviceToken, payload, useSandbox, collapseId);
+  const retry = await sendPushResolvingEnv(env, deviceToken, payload, useSandbox, options);
   if (retry.ok) {
     console.warn("APNs throttled a push; the retry landed", {
       deviceToken: maskDeviceToken(deviceToken),
@@ -239,19 +247,19 @@ async function sendPushResolvingEnv(
   deviceToken: string,
   payload: object,
   useSandbox?: boolean,
-  collapseId?: string,
+  options: PushOptions = {},
 ): Promise<Response> {
   // typeof check (rather than `!== undefined`) so a JSON `null` from a
   // misconfigured client falls through to auto-detect instead of being treated
   // as "production".
   if (typeof useSandbox === "boolean") {
-    return sendPushDirect(env, deviceToken, payload, useSandbox, collapseId);
+    return sendPushDirect(env, deviceToken, payload, useSandbox, options);
   }
 
   const cached = await readCachedApnsEnv(env, deviceToken);
   const firstTrySandbox = cached ?? (env.APNS_USE_SANDBOX === "true");
 
-  const first = await sendPushDirect(env, deviceToken, payload, firstTrySandbox, collapseId);
+  const first = await sendPushDirect(env, deviceToken, payload, firstTrySandbox, options);
   if (first.ok) {
     if (cached !== firstTrySandbox) {
       await writeCachedApnsEnv(env, deviceToken, firstTrySandbox);
@@ -271,7 +279,7 @@ async function sendPushResolvingEnv(
       parseError = e instanceof Error ? e : new Error(String(e));
     }
     if (reason && RETRYABLE_400_REASONS.has(reason)) {
-      const retry = await sendPushDirect(env, deviceToken, payload, !firstTrySandbox, collapseId);
+      const retry = await sendPushDirect(env, deviceToken, payload, !firstTrySandbox, options);
       if (retry.ok) {
         await writeCachedApnsEnv(env, deviceToken, !firstTrySandbox);
         return retry;

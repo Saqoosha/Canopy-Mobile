@@ -2,7 +2,7 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { plainBanner, safeSlice } from "./llm";
-import worker, { fitPushPayload } from "./index";
+import worker, { batteryCollapseId, fitPushPayload } from "./index";
 
 // Must match the SHARED_SECRET binding in vitest.config.ts. Spelled as a
 // literal rather than read back out of `env` — an expectation derived from
@@ -89,6 +89,15 @@ describe("push notifications", () => {
       body: JSON.stringify({ machine: "m1", sessionId: "s1", kind: "battery", title: "t", body: "b" }),
     });
     expect(res.status).toBe(400);
+  });
+
+  it("notify takes a battery notice with a null sessionId", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", sessionId: null, kind: "battery", title: "t", body: "b" }),
+    });
+    expect(res.status).toBe(503);
   });
 
   it("notify still requires a sessionId on a completed push", async () => {
@@ -586,10 +595,17 @@ describe("/notify puts the banner it builds into the push", () => {
     const sent = lastPayload as unknown as Record<string, unknown>;
     expect(sent.kind).toBe("battery");
     expect(sent.sessionId).toBeUndefined();
-    expect(lastPayload.aps.category).toBe("CANOPY_BATTERY");
+    expect(lastPayload.aps.category).toBeUndefined();
     expect((lastPayload.aps as Record<string, unknown>)["mutable-content"]).toBeUndefined();
     expect(lastHeaders["apns-collapse-id"]).toBe("battery:m1");
+    expect(Number(lastHeaders["apns-expiration"])).toBeGreaterThan(Date.now() / 1000);
     expect(reachedTheLLM()).toBe(false);
+  });
+
+  it("caps a battery notice's title", async () => {
+    await bannerSentFor({ machine: "m1", kind: "battery", title: "t".repeat(500), body: "b" });
+    const title = (lastPayload.aps.alert as unknown as { title: string }).title;
+    expect(Array.from(title).length).toBe(121);
   });
 
   it("caps a battery notice's body", async () => {
@@ -849,5 +865,14 @@ describe("session images", () => {
     const big = new Uint8Array(13 * 1024 * 1024);
     const res = await put("machine=M7&session=s1&event=e1&variant=full", big);
     expect(res.status).toBe(413);
+  });
+});
+
+describe("batteryCollapseId", () => {
+  it("keeps an id within 64 ASCII bytes whatever the machine is called", () => {
+    const id = batteryCollapseId("マック-" + "x".repeat(100));
+    expect(id.startsWith("battery:-")).toBe(true);
+    expect(new TextEncoder().encode(id).length).toBeLessThanOrEqual(64);
+    expect(/^[A-Za-z0-9:-]+$/.test(id)).toBe(true);
   });
 });

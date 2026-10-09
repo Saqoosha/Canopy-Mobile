@@ -425,7 +425,7 @@ async function notifyBattery(env: Env, body: BatteryNotifyBody): Promise<Respons
   // A battery notice is about the machine: a payload carrying session fields was meant
   // for the session path, and is refused rather than quietly stripped.
   const loose = body as unknown as Record<string, unknown>;
-  if ("sessionId" in loose || "requestId" in loose) {
+  if (loose.sessionId != null || loose.requestId != null) {
     return json({ error: "battery takes no sessionId or requestId" }, 400);
   }
   const deviceToken = await env.MACHINES.get("device_token");
@@ -437,13 +437,22 @@ async function notifyBattery(env: Env, body: BatteryNotifyBody): Promise<Respons
     aps: {
       alert: { title: capped(body.title, 120), body: capped(body.body, 400) },
       sound: "default",
-      category: "CANOPY_BATTERY",
     },
     machine: body.machine,
     kind: "battery",
   };
-  // One live battery notice per machine: each 10 % step replaces the last.
-  return sendPush(env, deviceToken, payload, undefined, `battery:${body.machine}`.slice(0, 64));
+  // One live battery notice per machine: each 10 % step replaces the last. Because they
+  // replace each other, a phone that is offline for a while can be given the latest one
+  // later instead of losing it (the session pushes stay deliver-now-or-never).
+  return sendPush(env, deviceToken, payload, undefined, {
+    collapseId: batteryCollapseId(body.machine),
+    expiration: Math.floor(Date.now() / 1000) + 3600,
+  });
+}
+
+/** `apns-collapse-id` is at most 64 bytes and must be a valid header value. */
+export function batteryCollapseId(machine: string): string {
+  return `battery:${machine.replace(/[^A-Za-z0-9-]/g, "")}`.slice(0, 64);
 }
 
 function capped(text: string, max: number): string {

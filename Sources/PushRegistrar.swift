@@ -195,6 +195,11 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         completionHandler()
     }
 
+    /// A push about the machine rather than a session (`kind: "battery"`): no session to open.
+    nonisolated static func isMachineNotice(_ userInfo: [AnyHashable: Any]) -> Bool {
+        userInfo["kind"] as? String == "battery"
+    }
+
     /// Which of the two keys a tap needs to route are absent.
     ///
     /// Pure and static so it can be pinned without a `UNNotificationResponse`,
@@ -204,10 +209,6 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
     ///
     /// `nonisolated` because it is exactly that — a function of its argument.
     /// This type is `@MainActor` for the delegate callbacks around it.
-    nonisolated static func isMachineNotice(_ userInfo: [AnyHashable: Any]) -> Bool {
-        userInfo["kind"] as? String == "battery"
-    }
-
     nonisolated static func missingTapKeys(in userInfo: [AnyHashable: Any]) -> [String] {
         ["machine", "sessionId"].filter { userInfo[$0] as? String == nil }
     }

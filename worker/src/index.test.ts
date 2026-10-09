@@ -64,6 +64,25 @@ describe("push notifications", () => {
     expect(res.status).toBe(503);
   });
 
+  it("notify rejects a battery notice without a title", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", kind: "battery", body: "b" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("notify takes a battery notice without a sessionId", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", kind: "battery", title: "t", body: "b" }),
+    });
+    // Past validation: the only refusal left is that no phone has registered.
+    expect(res.status).toBe(503);
+  });
+
   it("notify rejects an unknown kind", async () => {
     const res = await SELF.fetch("https://x/notify", {
       method: "POST",
@@ -528,6 +547,20 @@ describe("/notify puts the banner it builds into the push", () => {
   const reachedTheLLM = () => fetched.some((u) => u.startsWith("https://api.anthropic.com/"));
 
   const askJson = '```json\n{\n  "questions" : [\n    { "question" : "Which database?" }\n  ]\n}\n```';
+
+  it("sends a battery notice with no session and without the LLM", async () => {
+    const banner = await bannerSentFor({
+      machine: "m1", kind: "battery", title: "MBP battery 60%",
+      body: "Still awake with the lid closed: a session is busy. It sleeps below 20%.", percent: 60,
+    });
+    expect(banner).toBe("Still awake with the lid closed: a session is busy. It sleeps below 20%.");
+    const sent = lastPayload as unknown as Record<string, unknown>;
+    expect(sent.kind).toBe("battery");
+    expect(sent.sessionId).toBeUndefined();
+    expect(sent.percent).toBe(60);
+    expect(lastPayload.aps.category).toBe("CANOPY_BATTERY");
+    expect(reachedTheLLM()).toBe(false);
+  });
 
   it("sends the questions for an ask that carries a form", async () => {
     expect(

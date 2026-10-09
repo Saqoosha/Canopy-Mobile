@@ -20,6 +20,17 @@ export interface PaneRow {
   live?: boolean;
 }
 
+/** What Canopy posts to /notify for `kind: "battery"`: a machine-level notice with no
+ *  session behind it, sent while a lid-closed Mac is held awake on battery. */
+export interface BatteryNotifyBody {
+  machine: string;
+  kind: "battery";
+  title: string;
+  body: string;
+  /** The charge it was sent at, 0-100. */
+  percent?: number;
+}
+
 /** What Canopy posts to /notify. */
 export interface NotifyBody {
   machine: string;

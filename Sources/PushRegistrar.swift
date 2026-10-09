@@ -152,6 +152,11 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         // — composer for a reply, the ask for an unanswered one — and
         // `requestId` was what chose between them. That branch is gone;
         // `handleReplyRequested` still takes the id and does not read it.
+        // A battery notice has no session to open; the tap just brings the app up.
+        if userInfo["kind"] as? String == "battery" {
+            completionHandler()
+            return
+        }
         if let machine = userInfo["machine"] as? String,
            let sessionId = userInfo["sessionId"] as? String {
             var info: [String: Any] = ["machine": machine, "sessionId": sessionId]

@@ -1,7 +1,7 @@
 import { MachineDO } from "./machine";
 import { sendPush, type ApnsEnv } from "./apns";
 import { plainBanner, safeSlice, shortenWithLLM, type LlmEnv } from "./llm";
-import type { DecisionBody, NotifyBody, ReplyBody } from "./types";
+import type { BatteryNotifyBody, DecisionBody, NotifyBody, ReplyBody } from "./types";
 export { MachineDO };
 
 interface Env extends ApnsEnv, LlmEnv {
@@ -150,7 +150,10 @@ export default {
       return json({ ok: true });
     }
     if (url.pathname === "/notify" && request.method === "POST") {
-      const body = await request.json<NotifyBody>().catch(() => null);
+      const body = await request.json<NotifyBody | BatteryNotifyBody>().catch(() => null);
+      // A battery notice belongs to the machine, not a session: no sessionId, no LLM banner
+      // (it is one short line Canopy wrote), and no ids for the phone to file it under.
+      if (body?.kind === "battery") return notifyBattery(env, body);
       if (!body?.machine || !body.sessionId) return json({ error: "machine and sessionId required" }, 400);
       if (body.kind !== "completed" && body.kind !== "asking") {
         return json({ error: "kind must be completed or asking" }, 400);
@@ -414,3 +417,19 @@ export default {
     return new Response("not found", { status: 404 });
   },
 };
+
+async function notifyBattery(env: Env, body: BatteryNotifyBody): Promise<Response> {
+  if (!body.machine) return json({ error: "machine required" }, 400);
+  if (typeof body.title !== "string" || typeof body.body !== "string") {
+    return json({ error: "title and body required" }, 400);
+  }
+  const deviceToken = await env.MACHINES.get("device_token");
+  if (!deviceToken) return json({ error: "no device registered" }, 503);
+  const payload = {
+    aps: { alert: { title: body.title, body: body.body }, sound: "default", category: "CANOPY_BATTERY" },
+    machine: body.machine,
+    kind: "battery",
+    ...(typeof body.percent === "number" ? { percent: body.percent } : {}),
+  };
+  return sendPush(env, deviceToken, payload);
+}

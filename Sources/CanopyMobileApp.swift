@@ -737,7 +737,7 @@ struct CanopyMobileApp: App {
         // The Mac matches on resumeId; a session without one cannot attach, and one the roster reports as not live would only be refused.
         // Nil for BOTH views, so the offline screen offers no Live button either.
         let live = (target.resumeId == nil || pane?.isLive == false) ? nil : mirrorStore.target(for: target.machine)
-        let title = pane?.title ?? target.title
+        let title = pane.flatMap { $0.title.isEmpty ? nil : $0.title } ?? target.title
         return LiveFirstConversation(
             live: live,
             sessionId: target.resumeId ?? target.sessionId,

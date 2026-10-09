@@ -381,15 +381,6 @@ describe("AskUserQuestion form", () => {
     expect(new TextEncoder().encode(JSON.stringify(fitted)).length).toBeLessThanOrEqual(1000);
   });
 
-  // `eventId` is the phone's only handle for "this push and that streamed
-  // event are one turn". Losing it under pressure would draw the assistant's
-  // message twice — which is exactly what happened when the relay accepted the
-  // field and never put it in the payload at all (measured on device).
-  //
-  // **This pins only that the shrink cascade preserves it.** That the field is
-  // put into the payload in the first place is not reachable from here — the
-  // route needs a registered device token and an APNs call — and was verified
-  // on device instead.
   it("drops the session name before the answer buttons", () => {
     // Sized so the payload fits without the name and not with it.
     const base = { title: "t", body: "b", bodyFull: "" };
@@ -404,6 +395,15 @@ describe("AskUserQuestion form", () => {
     expect(fitted.choices).toBeDefined();
   });
 
+  // `eventId` is the phone's only handle for "this push and that streamed
+  // event are one turn". Losing it under pressure would draw the assistant's
+  // message twice — which is exactly what happened when the relay accepted the
+  // field and never put it in the payload at all (measured on device).
+  //
+  // **This pins only that the shrink cascade preserves it.** That the field is
+  // put into the payload in the first place is not reachable from here — the
+  // route needs a registered device token and an APNs call — and was verified
+  // on device instead.
   it("keeps eventId while shrinking the body", () => {
     const fitted = fitPushPayload(
       { title: "t", body: "b", bodyFull: "x".repeat(4000), eventId: "abc" },

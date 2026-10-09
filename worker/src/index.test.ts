@@ -73,6 +73,33 @@ describe("push notifications", () => {
     expect(res.status).toBe(400);
   });
 
+  it("notify rejects a battery notice with an empty body", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", kind: "battery", title: "t", body: "  " }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("notify rejects a battery notice carrying a sessionId", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", sessionId: "s1", kind: "battery", title: "t", body: "b" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("notify still requires a sessionId on a completed push", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", kind: "completed", title: "t", body: "b" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("notify takes a battery notice without a sessionId", async () => {
     const res = await SELF.fetch("https://x/notify", {
       method: "POST",
@@ -520,6 +547,7 @@ describe("/notify puts the banner it builds into the push", () => {
         return Response.json({ type: "message", content: [{ type: "text", text: "LLM said this" }] });
       }
       sent = String((init as RequestInit).body);
+      lastHeaders = ((init as RequestInit).headers ?? {}) as Record<string, string>;
       return new Response("", { status: 200 });
     });
 
@@ -541,6 +569,7 @@ describe("/notify puts the banner it builds into the push", () => {
     choices?: unknown;
     answerable?: boolean;
   };
+  let lastHeaders: Record<string, string> = {};
   // Every URL the route fetched, in order. The banner branch is the only
   // thing that can put api.anthropic.com in here.
   let fetched: string[] = [];
@@ -551,15 +580,22 @@ describe("/notify puts the banner it builds into the push", () => {
   it("sends a battery notice with no session and without the LLM", async () => {
     const banner = await bannerSentFor({
       machine: "m1", kind: "battery", title: "MBP battery 60%",
-      body: "Still awake with the lid closed: a session is busy. It sleeps below 20%.", percent: 60,
+      body: "Still awake with the lid closed: a session is busy. It sleeps below 20%.",
     });
     expect(banner).toBe("Still awake with the lid closed: a session is busy. It sleeps below 20%.");
     const sent = lastPayload as unknown as Record<string, unknown>;
     expect(sent.kind).toBe("battery");
     expect(sent.sessionId).toBeUndefined();
-    expect(sent.percent).toBe(60);
     expect(lastPayload.aps.category).toBe("CANOPY_BATTERY");
+    expect((lastPayload.aps as Record<string, unknown>)["mutable-content"]).toBeUndefined();
+    expect(lastHeaders["apns-collapse-id"]).toBe("battery:m1");
     expect(reachedTheLLM()).toBe(false);
+  });
+
+  it("caps a battery notice's body", async () => {
+    const banner = await bannerSentFor({ machine: "m1", kind: "battery", title: "t", body: "x".repeat(1000) });
+    expect(Array.from(banner).length).toBe(401);
+    expect(banner.endsWith("…")).toBe(true);
   });
 
   it("sends the questions for an ask that carries a form", async () => {

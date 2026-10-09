@@ -6,7 +6,7 @@ Mac の [Canopy](https://github.com/Saqoosha/Canopy) で動いているセッシ
 
 データは 2 経路ある。**どちらも他方の代わりにはならない。**
 
-- **APNs push** — アプリが閉じていても届く。耐久性がある。`asking` は答えられる。`completed` / `asking` / `sent` の 3 種だけ
+- **APNs push** — アプリが閉じていても届く。耐久性がある。`asking` は答えられる。`completed` / `asking` / `sent` に加えて、セッションに属さない `battery`（蓋を閉じた MacBook をバッテリーで起こしている間の残量通知。`sessionId` なし、`mutable-content` なしなので History には入らない。`apns-collapse-id` で前の通知を置き換える）
 - **WebSocket のセッションイベント** — 前面のアプリにだけ届く。会話をそのまま流す。relay のリングバッファが持っている間だけ生きる
 
 会話画面は両方を `eventId` で突き合わせてマージする。**レンチアイコンの細い行（tool）はストリーム経由でしか出ない** ので、ストリームが生きているかの目視判定に使える。

@@ -41,12 +41,6 @@ final class NotificationService: UNNotificationServiceExtension {
         }
 
         let userInfo = request.content.userInfo
-        // A battery notice is about the Mac, not a session: shown, never filed in History.
-        if userInfo["kind"] as? String == "battery" {
-            contentHandler(deliverableContent)
-            self.contentHandler = nil
-            return
-        }
         // These three are required by the worker's /notify contract (see
         // NotifyBody in worker/src/types.ts). A push missing any of them was
         // not sent by Canopy's relay, and there is nothing to key a history

@@ -27,8 +27,6 @@ export interface BatteryNotifyBody {
   kind: "battery";
   title: string;
   body: string;
-  /** The charge it was sent at, 0-100. */
-  percent?: number;
 }
 
 /** What Canopy posts to /notify. */

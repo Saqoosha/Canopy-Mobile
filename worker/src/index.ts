@@ -419,17 +419,33 @@ export default {
 };
 
 async function notifyBattery(env: Env, body: BatteryNotifyBody): Promise<Response> {
-  if (!body.machine) return json({ error: "machine required" }, 400);
-  if (typeof body.title !== "string" || typeof body.body !== "string") {
-    return json({ error: "title and body required" }, 400);
+  const nonEmpty = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0;
+  if (!nonEmpty(body.machine)) return json({ error: "machine required" }, 400);
+  if (!nonEmpty(body.title) || !nonEmpty(body.body)) return json({ error: "title and body required" }, 400);
+  // A battery notice is about the machine: a payload carrying session fields was meant
+  // for the session path, and is refused rather than quietly stripped.
+  const loose = body as unknown as Record<string, unknown>;
+  if ("sessionId" in loose || "requestId" in loose) {
+    return json({ error: "battery takes no sessionId or requestId" }, 400);
   }
   const deviceToken = await env.MACHINES.get("device_token");
   if (!deviceToken) return json({ error: "no device registered" }, 503);
+  // Capped so the payload stays far under APNs's 4 KB whatever a caller sends; Canopy's
+  // own lines are one sentence. No `mutable-content`: there is nothing for the
+  // Notification Service Extension to file, so iOS shows it directly.
   const payload = {
-    aps: { alert: { title: body.title, body: body.body }, sound: "default", category: "CANOPY_BATTERY" },
+    aps: {
+      alert: { title: capped(body.title, 120), body: capped(body.body, 400) },
+      sound: "default",
+      category: "CANOPY_BATTERY",
+    },
     machine: body.machine,
     kind: "battery",
-    ...(typeof body.percent === "number" ? { percent: body.percent } : {}),
   };
-  return sendPush(env, deviceToken, payload);
+  // One live battery notice per machine: each 10 % step replaces the last.
+  return sendPush(env, deviceToken, payload, undefined, `battery:${body.machine}`.slice(0, 64));
+}
+
+function capped(text: string, max: number): string {
+  return Array.from(text).length > max ? safeSlice(text, max) + "…" : text;
 }

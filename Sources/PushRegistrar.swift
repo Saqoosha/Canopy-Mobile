@@ -146,14 +146,14 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
         }
 
         // A tap (no registered action — `UNNotificationDefaultActionIdentifier`)
-        // opens that session's conversation, whatever the push was: an
+        // on a session push opens that session's conversation: an
         // unanswered ask renders its own Allow/Deny inline there, so there is
         // nothing to branch on. This paragraph used to describe such a branch
         // — composer for a reply, the ask for an unanswered one — and
         // `requestId` was what chose between them. That branch is gone;
         // `handleReplyRequested` still takes the id and does not read it.
         // A battery notice has no session to open; the tap just brings the app up.
-        if userInfo["kind"] as? String == "battery" {
+        if Self.isMachineNotice(userInfo) {
             completionHandler()
             return
         }
@@ -204,6 +204,10 @@ final class PushRegistrar: NSObject, UIApplicationDelegate, @MainActor UNUserNot
     ///
     /// `nonisolated` because it is exactly that — a function of its argument.
     /// This type is `@MainActor` for the delegate callbacks around it.
+    nonisolated static func isMachineNotice(_ userInfo: [AnyHashable: Any]) -> Bool {
+        userInfo["kind"] as? String == "battery"
+    }
+
     nonisolated static func missingTapKeys(in userInfo: [AnyHashable: Any]) -> [String] {
         ["machine", "sessionId"].filter { userInfo[$0] as? String == nil }
     }

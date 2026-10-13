@@ -23,6 +23,9 @@ struct LiveFirstConversation<Offline: View>: View {
     @State private var waitingForRestart = false
     /// Set by a restart: the new service holds no sessions, so the next attach asks it to resume.
     @State private var resumeOnAttach = false
+    /// Until when an attach the network stopped is retried; set by the first such failure, cleared by an attach.
+    @State private var stallUntil: Date?
+    @State private var waitingForNetwork = false
     @Environment(\.scenePhase) private var scenePhase
 
     private enum Fallback: Equatable {
@@ -47,6 +50,11 @@ struct LiveFirstConversation<Offline: View>: View {
                 .navigationTitle(title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { offlineButton }
+        } else if live != nil, fallback == nil, waitingForNetwork {
+            ProgressView(MirrorStall.label)
+                .navigationTitle(title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { offlineButton }
         } else if let live, fallback == nil {
             let current = attempt
             MirrorLiveContent(target: live, sessionId: sessionId, open: resumeOnAttach ? .resume : nil,
@@ -64,6 +72,7 @@ struct LiveFirstConversation<Offline: View>: View {
                               },
                               onAttached: { _ in
                                   restartUntil = nil
+                                  stallUntil = nil
                                   // Only the attaches inside a restart ask the Mac to resume.
                                   resumeOnAttach = false
                               },
@@ -81,7 +90,27 @@ struct LiveFirstConversation<Offline: View>: View {
                                       attempt += 1
                                   }
                                   return true
-                              })
+                              },
+                              retryStall: {
+                                  guard current == attempt else { return true }
+                                  let now = Date()
+                                  let until = MirrorStall.deadline(current: stallUntil, now: now)
+                                  guard now < until else {
+                                      stallUntil = nil
+                                      return false
+                                  }
+                                  stallUntil = until
+                                  waitingForNetwork = true
+                                  Task { @MainActor in
+                                      try? await Task.sleep(for: .seconds(MirrorStall.interval))
+                                      waitingForNetwork = false
+                                      guard current == attempt else { return }
+                                      backgroundReturn.cancelReconnect()
+                                      attempt += 1
+                                  }
+                                  return true
+                              },
+                              connectingLabel: stallUntil == nil ? nil : MirrorStall.label)
             .id(attempt)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
@@ -96,6 +125,8 @@ struct LiveFirstConversation<Offline: View>: View {
             Button {
                 waitingForRestart = false
                 restartUntil = nil
+                waitingForNetwork = false
+                stallUntil = nil
                 fallback = .chosen
             } label: {
                 Image(systemName: "rectangle.on.rectangle.slash")
@@ -113,6 +144,8 @@ struct LiveFirstConversation<Offline: View>: View {
     private func showLive() {
         waitingForRestart = false
         restartUntil = nil
+        waitingForNetwork = false
+        stallUntil = nil
         backgroundReturn.cancelReconnect()
         resumeOnAttach = false
         fallback = nil

@@ -47,6 +47,13 @@ final class MirrorLink {
     var onFile: (([String: Any]) -> Void)?
     /// Set when the Mac answered `attach_error`: a refusal, which waiting will not change.
     private(set) var refusedByMac = false
+    /// The Mac's answer to the attach, `attach_ok` or `attach_error`, has arrived.
+    private(set) var attachAnswered = false
+    /// The link failed on the network (no route, no answer, a dropped socket), not on anything the Mac said.
+    private(set) var failedOnNetwork = false
+    /// The attach never got an answer because the network failed: the path to the Mac, not the Mac, is what
+    /// is wrong, and right after the phone changes networks it can recover within a minute or so.
+    var stalledBeforeAttach: Bool { failedOnNetwork && !attachAnswered }
 
     nonisolated(unsafe) private let connection: NWConnection
     nonisolated private let buffer = LineBuffer()
@@ -143,7 +150,7 @@ final class MirrorLink {
             try? await Task.sleep(for: .seconds(10))
             guard !Task.isCancelled, let self else { return }
             let detail = self.lastWaitingError?.localizedDescription ?? "no answer in 10 s"
-            self.fail("Cannot reach the Mac: \(detail).")
+            self.fail("Cannot reach the Mac: \(detail).", network: true)
         }
         connection.start(queue: queue)
     }
@@ -279,14 +286,14 @@ final class MirrorLink {
             waitingDeadline = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(10))
                 guard !Task.isCancelled else { return }
-                self?.fail("The Mac did not answer the attach.")
+                self?.fail("The Mac did not answer the attach.", network: true)
             }
         case .waiting(let error):
             // Transient: NWConnection keeps retrying under the deadline `start()` armed.
             lastWaitingError = error
             logger.notice("waiting: \(error.localizedDescription, privacy: .public)")
         case .failed(let error):
-            fail("Connection failed: \(error.localizedDescription)")
+            fail("Connection failed: \(error.localizedDescription)", network: true)
         default:
             break
         }
@@ -325,7 +332,7 @@ final class MirrorLink {
             if let error {
                 logger.error("receive failed: \(error.localizedDescription, privacy: .public)")
                 DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self.fail("Disconnected from the Mac (\(error.localizedDescription))") }
+                    MainActor.assumeIsolated { self.fail("Disconnected from the Mac (\(error.localizedDescription))", network: true) }
                 }
                 return
             }
@@ -347,6 +354,7 @@ final class MirrorLink {
         case "attach_ok":
             waitingDeadline?.cancel()
             waitingDeadline = nil
+            attachAnswered = true
             guard let html = object["html"] as? String, !html.isEmpty else {
                 fail("The Mac sent an empty page. Update Canopy on the Mac.")
                 return
@@ -367,6 +375,7 @@ final class MirrorLink {
                                  sessionId: nonEmpty("sessionId"), hostSessionId: nonEmpty("hostSessionId"), resumed: resumed))
         case "attach_error":
             waitingDeadline?.cancel()
+            attachAnswered = true
             refusedByMac = true
             switch object["message"] as? String {
             case "unauthorized": fail("The Mac rejected the password. Copy the connection again from Canopy's Settings.")
@@ -437,9 +446,10 @@ final class MirrorLink {
         }
     }
 
-    private func fail(_ reason: String) {
+    private func fail(_ reason: String, network: Bool = false) {
         guard !failed, !closed else { return }
         failed = true
+        failedOnNetwork = network
         waitingDeadline?.cancel()
         prefetchFallback?.cancel()
         logger.error("\(reason, privacy: .public)")
@@ -466,6 +476,23 @@ enum MirrorRestart {
     nonisolated static func shouldRetry(until: Date?, now: Date) -> Bool {
         guard let until else { return false }
         return now < until
+    }
+}
+
+/// How long, and how often, a live view re-attaches when its attach got no answer because of the network.
+///
+/// Seen on a phone that had just woken while on the move (2026-10-13): the TCP connection and the attach line
+/// reached the Mac, the Mac answered, and the answer never arrived; three attaches over 30 s failed alike, and
+/// the next one, 6 s after Tailscale re-established its path to the phone, worked at once. Each attempt already
+/// waits up to 10 s for its answer, so the interval only spaces out the attempts.
+enum MirrorStall {
+    static let budget: TimeInterval = 90
+    static let interval: TimeInterval = 1
+    static let label = "No answer from the Mac yet. Waiting for the network…"
+
+    /// The deadline the first stall starts; a later stall keeps it, so the budget is not extended forever.
+    nonisolated static func deadline(current: Date?, now: Date) -> Date {
+        current ?? now.addingTimeInterval(budget)
     }
 }
 

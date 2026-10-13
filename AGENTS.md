@@ -205,6 +205,16 @@ R=$(osascript -e 'tell application "System Events" to tell process "iPhone Mirro
 
 `log` はシェル組み込みに食われるので**絶対パスで呼ぶ**。同じプロセス名のビルドが 2 つ動いているときは `Canopy[<pid>` で絞る。
 
+### 移動中のスリープ明けに、ライブ画面が白いまま 10 秒で落ちる
+
+**症状**: 通知をタップするとライブ画面が開くが、スピナーのまま何も出ない。約 10 秒でオフライン表示に落ち、バナーは「The Mac did not answer the attach.」。Live を押し直しても同じ。1〜2 分後には普通に開く。移動中（回線の切り替わり）に起きやすい。
+
+**原因**: Mac ではなく、電話と Mac の間の Tailscale の経路。2026-10-13 の実例では、TCP 接続と attach の 1 行は Mac に届き、Mac は `attached` をログして replay まで用意していた。けど、その応答が電話に届かなかった。3 回の attach が全部同じ形で落ち、Tailscale が電話との経路を張り直した（Mac の `IPNExtension` ログで `magicsock: new contact: … via=derp` → `via=direct`）6 秒後の attach は即座に成功した。「小さいパケットは通る、大きい応答は落ちる」という点は推定で、測っていない。
+
+**見分け方**: Mac 側で `[mirror-server] attached <id>` のあと、そのミラーからの `[mirror→shim]` が `get_session_request`（Mac 自身の prefetch）以外 1 本も無く、約 10 秒後に `Connection reset by peer` で切れていれば、この形。成功した attach では直後に `init answered from cache` と、ページのリクエスト群が続く。relay 経由のもの（オフライン表示からの返信、push）は Tailscale を通らないので、同じ時刻でも普通に通る。
+
+**対策**: `MirrorLink.stalledBeforeAttach`（ネットワーク由来の失敗で、attach への応答が来ていない）のときだけ、`LiveFirstConversation` が `MirrorStall.budget`（90 秒）のあいだ自動で再 attach する。Mac が拒否したもの（`attach_error`）と、attach 後の切断は対象外。後者には既存の `BackgroundReturn` がある。**Open on Mac の `MirrorLiveView` は対象外**: 最初の attach は `open: .new` で、今回の形では Mac がセッションを開始済みなので、繰り返すと Mac にセッションが二重にできうる。
+
 ### Worker のデプロイが全 WebSocket を切る
 
 DO が再起動するので publisher も watcher も落ちる。Canopy 側は ping 駆動で復帰する（数十秒）。**デプロイ直後にストリームが死んで見えても、それは復帰待ち。**
@@ -465,7 +475,7 @@ git rebase origin/main --update-refs
 
 | | |
 |---|---|
-| Swift テスト | 286（ステータスバー下の余白、+1） |
+| Swift テスト | 293（attach の stall 再試行、+2） |
 | worker テスト | 137（2026-09-11 実測） |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 | DO の append 1 件 | 248 rows_read（3 つの上限すべて満杯、2026-09-11 実測）/ 210（生きているセッション 1 本） |

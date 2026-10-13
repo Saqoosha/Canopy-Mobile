@@ -37,6 +37,8 @@ struct LiveFirstConversation<Offline: View>: View {
         content
             // An offline view is never touched: only a live view on screen counts as `live`.
             .onChange(of: scenePhase) { _, phase in
+                // A stall budget spent before the trip must not cut short the attaches after it.
+                if phase == .background { stallUntil = nil }
                 if backgroundReturn.phaseChanged(to: phase, live: live != nil && fallback == nil, now: Date()) == .rebuild {
                     attempt += 1
                 }
@@ -93,18 +95,20 @@ struct LiveFirstConversation<Offline: View>: View {
                               },
                               retryStall: {
                                   guard current == attempt else { return true }
-                                  let now = Date()
-                                  let until = MirrorStall.deadline(current: stallUntil, now: now)
-                                  guard now < until else {
+                                  // In the background the drop goes to `BackgroundReturn`, which re-attaches on the return.
+                                  guard !backgroundReturn.inBackground,
+                                        let until = MirrorStall.next(current: stallUntil, now: Date()) else {
+                                      if stallUntil != nil { NSLog("[stall] budget spent; showing the offline view") }
                                       stallUntil = nil
                                       return false
                                   }
+                                  NSLog("[stall] the network lost the attach; re-attaching, attempt %d", attempt + 1)
                                   stallUntil = until
                                   waitingForNetwork = true
                                   Task { @MainActor in
                                       try? await Task.sleep(for: .seconds(MirrorStall.interval))
                                       waitingForNetwork = false
-                                      guard current == attempt else { return }
+                                      guard current == attempt, fallback == nil else { return }
                                       backgroundReturn.cancelReconnect()
                                       attempt += 1
                                   }

@@ -47,13 +47,17 @@ final class MirrorLink {
     var onFile: (([String: Any]) -> Void)?
     /// Set when the Mac answered `attach_error`: a refusal, which waiting will not change.
     private(set) var refusedByMac = false
+    /// The TCP connection to the Mac was established.
+    private(set) var reachedMac = false
     /// The Mac's answer to the attach, `attach_ok` or `attach_error`, has arrived.
     private(set) var attachAnswered = false
     /// The link failed on the network (no route, no answer, a dropped socket), not on anything the Mac said.
+    /// A clean close is counted as the Mac's: the observed stall ended in a reset, and a Mac shutting down closes cleanly.
     private(set) var failedOnNetwork = false
-    /// The attach never got an answer because the network failed: the path to the Mac, not the Mac, is what
-    /// is wrong, and right after the phone changes networks it can recover within a minute or so.
-    var stalledBeforeAttach: Bool { failedOnNetwork && !attachAnswered }
+    /// See `MirrorStall.isStall`.
+    var stalledBeforeAttach: Bool {
+        MirrorStall.isStall(failedOnNetwork: failedOnNetwork, reachedMac: reachedMac, answered: attachAnswered)
+    }
 
     nonisolated(unsafe) private let connection: NWConnection
     nonisolated private let buffer = LineBuffer()
@@ -277,6 +281,7 @@ final class MirrorLink {
         switch state {
         case .ready:
             waitingDeadline?.cancel()
+            reachedMac = true
             logger.notice("connected; attaching \(self.sessionId, privacy: .public)")
             // `compress`: the prefetched replay is one line of a megabyte or more, and that line is what
             // a slow uplink spends its time on. A Mac without Canopy PR #238 ignores the key and keeps sending plain lines.
@@ -490,9 +495,17 @@ enum MirrorStall {
     static let interval: TimeInterval = 1
     static let label = "No answer from the Mac yet. Waiting for the network…"
 
-    /// The deadline the first stall starts; a later stall keeps it, so the budget is not extended forever.
-    nonisolated static func deadline(current: Date?, now: Date) -> Date {
-        current ?? now.addingTimeInterval(budget)
+    /// The Mac was reached and the network then lost its answer. A Mac never reached (asleep, off the tailnet)
+    /// is not retried: that is not a path that recovers in a minute, and the offline view is the answer to it.
+    nonisolated static func isStall(failedOnNetwork: Bool, reachedMac: Bool, answered: Bool) -> Bool {
+        failedOnNetwork && reachedMac && !answered
+    }
+
+    /// The deadline to keep retrying under, or nil once it has passed. The first stall starts it and later
+    /// ones keep it, so the budget is not extended forever.
+    nonisolated static func next(current: Date?, now: Date) -> Date? {
+        let until = current ?? now.addingTimeInterval(budget)
+        return now < until ? until : nil
     }
 }
 

@@ -3,14 +3,21 @@ import Testing
 @testable import CanopyMobile
 
 struct MirrorStallTests {
-    @Test func onlyANetworkFailureAfterReachingTheMacAndBeforeItsAnswerIsAStall() {
-        #expect(MirrorStall.isStall(failedOnNetwork: true, reachedMac: true, answered: false))
+    @Test func aStallStartsOnlyAfterReachingTheMacAndBeforeItsAnswer() {
+        let lost = MirrorStall.Failure(onNetwork: true, reachedMac: true, answered: false)
+        #expect(MirrorStall.isStall(lost, stalling: false))
         // A Mac never reached: asleep or off the tailnet, which a minute of retries does not fix.
-        #expect(!MirrorStall.isStall(failedOnNetwork: true, reachedMac: false, answered: false))
+        let unreached = MirrorStall.Failure(onNetwork: true, reachedMac: false, answered: false)
+        #expect(!MirrorStall.isStall(unreached, stalling: false))
         // A drop after the answer belongs to `BackgroundReturn`.
-        #expect(!MirrorStall.isStall(failedOnNetwork: true, reachedMac: true, answered: true))
+        #expect(!MirrorStall.isStall(MirrorStall.Failure(onNetwork: true, reachedMac: true, answered: true), stalling: true))
         // Something the Mac said (an empty page, an unreadable line).
-        #expect(!MirrorStall.isStall(failedOnNetwork: false, reachedMac: true, answered: false))
+        #expect(!MirrorStall.isStall(MirrorStall.Failure(onNetwork: false, reachedMac: true, answered: false), stalling: true))
+    }
+
+    @Test func anUnreachableAttemptKeepsAStallThatHasStarted() {
+        let unreached = MirrorStall.Failure(onNetwork: true, reachedMac: false, answered: false)
+        #expect(MirrorStall.isStall(unreached, stalling: true))
     }
 
     @Test func theFirstStallStartsTheBudgetAndLaterOnesKeepItUntilItEnds() {
@@ -21,8 +28,9 @@ struct MirrorStallTests {
         #expect(MirrorStall.next(current: first, now: now.addingTimeInterval(MirrorStall.budget)) == nil)
     }
 
-    @Test func theBudgetLeavesRoomForSeveralTenSecondAttempts() {
-        #expect(MirrorStall.budget >= 3 * (10 + MirrorStall.interval))
+    @Test func theBudgetLeavesRoomForSeveralAttempts() {
+        // One attempt is up to 20 s: 10 s to connect, 10 s for the answer.
+        #expect(MirrorStall.budget >= 3 * (20 + MirrorStall.interval))
     }
 
     @MainActor

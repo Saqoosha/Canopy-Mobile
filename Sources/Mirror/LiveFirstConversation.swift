@@ -93,22 +93,33 @@ struct LiveFirstConversation<Offline: View>: View {
                                   }
                                   return true
                               },
-                              retryStall: {
+                              retryStall: { failure in
                                   guard current == attempt else { return true }
+                                  guard MirrorStall.isStall(failure, stalling: stallUntil != nil) else { return false }
                                   // In the background the drop goes to `BackgroundReturn`, which re-attaches on the return.
                                   guard !backgroundReturn.inBackground,
                                         let until = MirrorStall.next(current: stallUntil, now: Date()) else {
-                                      if stallUntil != nil { NSLog("[stall] budget spent; showing the offline view") }
+                                      if stallUntil != nil { NSLog("[stall] budget spent or app away; giving up the retries") }
                                       stallUntil = nil
                                       return false
                                   }
-                                  NSLog("[stall] the network lost the attach; re-attaching, attempt %d", attempt + 1)
+                                  NSLog("[stall] the network lost the attach; re-attaching")
                                   stallUntil = until
                                   waitingForNetwork = true
                                   Task { @MainActor in
                                       try? await Task.sleep(for: .seconds(MirrorStall.interval))
                                       waitingForNetwork = false
                                       guard current == attempt, fallback == nil else { return }
+                                      // Locked during the wait: report the drop so the return re-attaches.
+                                      if backgroundReturn.inBackground {
+                                          switch backgroundReturn.dropped(now: Date()) {
+                                          case .keep: return
+                                          case .rebuild: break
+                                          case .fail:
+                                              fallback = .unavailable("The network lost the connection to the Mac.")
+                                              return
+                                          }
+                                      }
                                       backgroundReturn.cancelReconnect()
                                       attempt += 1
                                   }

@@ -213,7 +213,7 @@ R=$(osascript -e 'tell application "System Events" to tell process "iPhone Mirro
 
 **見分け方**: Mac 側で `[mirror-server] attached <id>` のあと、そのミラーからの `[mirror→shim]` が `get_session_request`（Mac 自身の prefetch）以外 1 本も無く、約 10 秒後に `Connection reset by peer` で切れていれば、この形。成功した attach では直後に `init answered from cache` と、ページのリクエスト群が続く。relay 経由のもの（オフライン表示からの返信、push）は Tailscale を通らないので、同じ時刻でも普通に通る。
 
-**対策**: `MirrorLink.stalledBeforeAttach`（TCP は Mac に繋がった、そのあとネットワーク由来で失敗した、attach への応答は来ていない）のときだけ、`LiveFirstConversation` が自動で再 attach する。`MirrorStall.budget`（90 秒）は最初の失敗から数えるので、タップから諦めるまでは最大で約 2 分（1 回の試行は接続待ち 10 秒 + 応答待ち 10 秒で最長 20 秒、それが最初と最後に付く）。再試行の判断は `[stall]` の NSLog に出る。TCP が繋がらない失敗（Mac がスリープ中、tailnet にいない）は対象外で、今までどおり約 10 秒でオフライン表示に落ちる —— 1 分で治る種類の障害ではないため。バックグラウンド中に落ちたものも対象外で、既存の `BackgroundReturn` が前面復帰時に繋ぎ直す。Mac が拒否したもの（`attach_error`）と、attach 後の切断も対象外。後者には既存の `BackgroundReturn` がある。**Open on Mac の `MirrorLiveView` は対象外**: 最初の attach は `open: .new` で、今回の形では Mac がセッションを開始済みなので、繰り返すと Mac にセッションが二重にできうる。
+**対策**: `MirrorLink.stalledBeforeAttach`（TCP は Mac に繋がった、そのあとネットワーク由来で失敗した、attach への応答は来ていない）のときだけ、`LiveFirstConversation` が自動で再 attach する。再試行が始まったあとは、TCP が繋がらなかった回も続行する（Tailscale が経路を張り直している最中にあたる）。`MirrorStall.budget`（90 秒）は最初の失敗から数えるので、タップから諦めるまでは最大で約 2 分（1 回の試行は接続待ち 10 秒 + 応答待ち 10 秒で最長 20 秒、それが最初と最後に付く）。再試行の判断は `[stall]` の NSLog に出る。TCP が繋がらない失敗（Mac がスリープ中、tailnet にいない）は対象外で、今までどおり約 10 秒でオフライン表示に落ちる —— 1 分で治る種類の障害ではないため。バックグラウンド中に落ちたものも対象外で、既存の `BackgroundReturn` が前面復帰時に繋ぎ直す。Mac が拒否したもの（`attach_error`）と、attach 後の切断も対象外。後者には既存の `BackgroundReturn` がある。**Open on Mac の `MirrorLiveView` は対象外**: 最初の attach は `open: .new` で、今回の形では Mac がセッションを開始済みなので、繰り返すと Mac にセッションが二重にできうる。
 
 ### Worker のデプロイが全 WebSocket を切る
 
@@ -475,7 +475,7 @@ git rebase origin/main --update-refs
 
 | | |
 |---|---|
-| Swift テスト | 295（attach の stall 再試行、+4） |
+| Swift テスト | 296（attach の stall 再試行、+5） |
 | worker テスト | 137（2026-09-11 実測） |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 | DO の append 1 件 | 248 rows_read（3 つの上限すべて満杯、2026-09-11 実測）/ 210（生きているセッション 1 本） |

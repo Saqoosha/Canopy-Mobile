@@ -54,9 +54,9 @@ final class MirrorLink {
     /// The link failed on the network (no route, no answer, a dropped socket), not on anything the Mac said.
     /// A clean close is counted as the Mac's: the observed stall ended in a reset, and a Mac shutting down closes cleanly.
     private(set) var failedOnNetwork = false
-    /// See `MirrorStall.isStall`.
-    var stalledBeforeAttach: Bool {
-        MirrorStall.isStall(failedOnNetwork: failedOnNetwork, reachedMac: reachedMac, answered: attachAnswered)
+    /// What a failure says about the path to the Mac; see `MirrorStall.isStall`.
+    var failureKind: MirrorStall.Failure {
+        MirrorStall.Failure(onNetwork: failedOnNetwork, reachedMac: reachedMac, answered: attachAnswered)
     }
 
     nonisolated(unsafe) private let connection: NWConnection
@@ -495,10 +495,17 @@ enum MirrorStall {
     static let interval: TimeInterval = 1
     static let label = "No answer from the Mac yet. Waiting for the network…"
 
-    /// The Mac was reached and the network then lost its answer. A Mac never reached (asleep, off the tailnet)
-    /// is not retried: that is not a path that recovers in a minute, and the offline view is the answer to it.
-    nonisolated static func isStall(failedOnNetwork: Bool, reachedMac: Bool, answered: Bool) -> Bool {
-        failedOnNetwork && reachedMac && !answered
+    struct Failure: Equatable {
+        var onNetwork: Bool
+        var reachedMac: Bool
+        var answered: Bool
+    }
+
+    /// The network lost the attach before the Mac's answer. A stall starts only once the Mac was reached: a Mac
+    /// never reached (asleep, off the tailnet) is not a path that recovers in a minute. Once `stalling`, an attempt
+    /// that cannot connect is part of the same path change and keeps the retries going.
+    nonisolated static func isStall(_ failure: Failure, stalling: Bool) -> Bool {
+        failure.onNetwork && !failure.answered && (failure.reachedMac || stalling)
     }
 
     /// The deadline to keep retrying under, or nil once it has passed. The first stall starts it and later

@@ -108,9 +108,9 @@ struct MirrorLiveContent: View {
     /// Asked before `onUnavailable` for a drop that was not a refusal, with whether the Mac announced
     /// a restart first; returning true means the caller re-attaches and `onUnavailable` is skipped.
     var retryDrop: ((_ restartAnnounced: Bool) -> Bool)? = nil
-    /// Asked, after `retryDrop`, for an attach the network stopped before the Mac's answer arrived; returning
-    /// true means the caller re-attaches and `onUnavailable` is skipped.
-    var retryStall: (() -> Bool)? = nil
+    /// Asked, after `retryDrop`, with what the failure says about the path; returning true means the caller
+    /// re-attaches and `onUnavailable` is skipped.
+    var retryStall: ((MirrorStall.Failure) -> Bool)? = nil
     /// Replaces "Connecting to …" while the caller is retrying.
     var connectingLabel: String? = nil
     /// Set when this screen parks its attach in `MirrorSessionCache` on close and takes a parked one on open.
@@ -125,7 +125,7 @@ struct MirrorLiveContent: View {
          onUnavailable: ((String) -> Void)?,
          onAttached: ((MirrorLink.Attached) -> Void)? = nil,
          retryDrop: ((_ restartAnnounced: Bool) -> Bool)? = nil,
-         retryStall: (() -> Bool)? = nil,
+         retryStall: ((MirrorStall.Failure) -> Bool)? = nil,
          connectingLabel: String? = nil) {
         self.target = target
         self.sessionId = sessionId
@@ -237,7 +237,7 @@ struct MirrorLiveContent: View {
                 }
                 // The notice is read here, at the drop, so it cannot lose a race with it.
                 if !model.refused, retryDrop?(model.restartAnnounced) == true { return }
-                if model.stalledBeforeAttach, retryStall?() == true { return }
+                if !model.refused, let kind = model.failureKind, retryStall?(kind) == true { return }
                 onUnavailable?(reason)
             }
             .onChange(of: model.attachedCount) { _, _ in
@@ -342,8 +342,8 @@ final class MirrorLiveModel {
     /// The Mac refused the attach; retrying will not change that.
     var refused: Bool { link?.refusedByMac == true }
 
-    /// The network failed before the Mac's answer to the attach arrived; see `MirrorLink.stalledBeforeAttach`.
-    var stalledBeforeAttach: Bool { link?.stalledBeforeAttach == true }
+    /// See `MirrorLink.failureKind`.
+    var failureKind: MirrorStall.Failure? { link?.failureKind }
 
     var failure: String? {
         if case .failed(let reason) = phase { return reason }

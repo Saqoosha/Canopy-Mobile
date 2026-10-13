@@ -108,6 +108,11 @@ struct MirrorLiveContent: View {
     /// Asked before `onUnavailable` for a drop that was not a refusal, with whether the Mac announced
     /// a restart first; returning true means the caller re-attaches and `onUnavailable` is skipped.
     var retryDrop: ((_ restartAnnounced: Bool) -> Bool)? = nil
+    /// Asked, after `retryDrop`, with what the failure says about the path; returning true means the caller
+    /// re-attaches and `onUnavailable` is skipped.
+    var retryStall: ((MirrorStall.Failure) -> Bool)? = nil
+    /// Replaces "Connecting to …" while the caller is retrying.
+    var connectingLabel: String? = nil
     /// Set when this screen parks its attach in `MirrorSessionCache` on close and takes a parked one on open.
     let cacheKey: MirrorSessionCache.Key?
 
@@ -119,7 +124,9 @@ struct MirrorLiveContent: View {
          cacheable: Bool = false,
          onUnavailable: ((String) -> Void)?,
          onAttached: ((MirrorLink.Attached) -> Void)? = nil,
-         retryDrop: ((_ restartAnnounced: Bool) -> Bool)? = nil) {
+         retryDrop: ((_ restartAnnounced: Bool) -> Bool)? = nil,
+         retryStall: ((MirrorStall.Failure) -> Bool)? = nil,
+         connectingLabel: String? = nil) {
         self.target = target
         self.sessionId = sessionId
         self.open = open
@@ -127,6 +134,8 @@ struct MirrorLiveContent: View {
         self.onUnavailable = onUnavailable
         self.onAttached = onAttached
         self.retryDrop = retryDrop
+        self.retryStall = retryStall
+        self.connectingLabel = connectingLabel
         let cacheKey = Self.cacheKey(target: target, sessionId: sessionId, open: open, key: key, cacheable: cacheable)
         self.cacheKey = cacheKey
         _model = State(initialValue: cacheKey.flatMap(MirrorSessionCache.model(for:)) ?? MirrorLiveModel())
@@ -228,6 +237,7 @@ struct MirrorLiveContent: View {
                 }
                 // The notice is read here, at the drop, so it cannot lose a race with it.
                 if !model.refused, retryDrop?(model.restartAnnounced) == true { return }
+                if !model.refused, let kind = model.failureKind, retryStall?(kind) == true { return }
                 onUnavailable?(reason)
             }
             .onChange(of: model.attachedCount) { _, _ in
@@ -242,7 +252,7 @@ struct MirrorLiveContent: View {
     private var content: some View {
         switch model.phase {
         case .connecting:
-            ProgressView("Connecting to \(target.address)…")
+            ProgressView(connectingLabel ?? "Connecting to \(target.address)…")
         case .attached(let attached):
             // A model the cache closed is replaced in `.task`; drawing it first would spend a webview on a dead link.
             if let link = model.link, !model.isClosed {
@@ -331,6 +341,9 @@ final class MirrorLiveModel {
 
     /// The Mac refused the attach; retrying will not change that.
     var refused: Bool { link?.refusedByMac == true }
+
+    /// See `MirrorLink.failureKind`.
+    var failureKind: MirrorStall.Failure? { link?.failureKind }
 
     var failure: String? {
         if case .failed(let reason) = phase { return reason }

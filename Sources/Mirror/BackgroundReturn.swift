@@ -62,6 +62,9 @@ nonisolated struct BackgroundReturn {
         return .fail
     }
 
+    /// The app is in the background, where an attach started can be killed again.
+    var inBackground: Bool { phase == .background }
+
     /// For a rebuild the caller makes on its own, so a window left from an earlier return does not retry it.
     mutating func cancelReconnect() {
         reconnectUntil = nil

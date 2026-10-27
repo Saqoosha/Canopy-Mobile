@@ -54,6 +54,8 @@ final class MirrorLink {
     /// The link failed on the network (no route, no answer, a dropped socket), not on anything the Mac said.
     /// A clean close is counted as the Mac's: the observed stall ended in a reset, and a Mac shutting down closes cleanly.
     private(set) var failedOnNetwork = false
+    /// The Mac said it is starting the session (`attach_pending`), so the answer deadline was extended once.
+    private(set) var sawAttachPending = false
     /// What a failure says about the path to the Mac; see `MirrorStall.isStall`.
     var failureKind: MirrorStall.Failure {
         MirrorStall.Failure(onNetwork: failedOnNetwork, reachedMac: reachedMac, answered: attachAnswered)
@@ -135,6 +137,8 @@ final class MirrorLink {
         }
         if let open {
             message["open"] = open.wire
+            // A Mac with Canopy PR #389 answers `attach_pending` before a start that can outlast the deadline.
+            message["pending"] = true
         }
         if let key, !key.isEmpty {
             message["key"] = key
@@ -378,6 +382,16 @@ final class MirrorLink {
             if let resumeFrom, !resumed { logger.notice("the Mac could not resume from seq \(resumeFrom.seq); rebuilding the page") }
             onAttached?(Attached(html: html, userScripts: scripts, extensionVersion: version,
                                  sessionId: nonEmpty("sessionId"), hostSessionId: nonEmpty("hostSessionId"), resumed: resumed))
+        case "attach_pending":
+            // Not a timeout on the network: retrying would start the session again on the Mac.
+            guard !attachAnswered, !sawAttachPending, !failed else { return }
+            sawAttachPending = true
+            waitingDeadline?.cancel()
+            waitingDeadline = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(120))
+                guard !Task.isCancelled else { return }
+                self?.fail("The Mac did not finish opening the session.")
+            }
         case "attach_error":
             waitingDeadline?.cancel()
             attachAnswered = true

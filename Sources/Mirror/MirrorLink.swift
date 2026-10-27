@@ -54,10 +54,15 @@ final class MirrorLink {
     /// The link failed on the network (no route, no answer, a dropped socket), not on anything the Mac said.
     /// A clean close is counted as the Mac's: the observed stall ended in a reset, and a Mac shutting down closes cleanly.
     private(set) var failedOnNetwork = false
+    /// The Mac said it is starting the session (`attach_pending`), so the answer deadline was extended once.
+    private(set) var sawAttachPending = false
     /// What a failure says about the path to the Mac; see `MirrorStall.isStall`.
     var failureKind: MirrorStall.Failure {
         MirrorStall.Failure(onNetwork: failedOnNetwork, reachedMac: reachedMac, answered: attachAnswered)
     }
+
+    /// How long to wait for the answer once the Mac said it is starting the session; the Mac pane waits as long.
+    static let pendingDeadline = 120
 
     nonisolated(unsafe) private let connection: NWConnection
     nonisolated private let buffer = LineBuffer()
@@ -135,6 +140,8 @@ final class MirrorLink {
         }
         if let open {
             message["open"] = open.wire
+            // A Mac on Canopy 3.17.4+ answers `attach_pending` before a start that can outlast the deadline.
+            message["pending"] = true
         }
         if let key, !key.isEmpty {
             message["key"] = key
@@ -378,6 +385,16 @@ final class MirrorLink {
             if let resumeFrom, !resumed { logger.notice("the Mac could not resume from seq \(resumeFrom.seq); rebuilding the page") }
             onAttached?(Attached(html: html, userScripts: scripts, extensionVersion: version,
                                  sessionId: nonEmpty("sessionId"), hostSessionId: nonEmpty("hostSessionId"), resumed: resumed))
+        case "attach_pending":
+            // Running out of this deadline is not a network stall: the Mac is reachable and still starting.
+            guard open != nil, !attachAnswered, !sawAttachPending, !failed, !closed else { return }
+            sawAttachPending = true
+            waitingDeadline?.cancel()
+            waitingDeadline = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(Self.pendingDeadline))
+                guard !Task.isCancelled else { return }
+                self?.fail("The Mac did not finish opening the session in 2 minutes. Check Canopy on the Mac, then open it again.")
+            }
         case "attach_error":
             waitingDeadline?.cancel()
             attachAnswered = true

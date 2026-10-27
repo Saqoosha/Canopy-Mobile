@@ -11,7 +11,7 @@ struct MirrorPendingTests {
 
     @MainActor
     @Test func pendingIsRecordedAndNotPostedToThePage() {
-        let link = MirrorLink(host: "127.0.0.1", port: 1, sessionId: "s", token: "t")
+        let link = MirrorLink(host: "127.0.0.1", port: 1, sessionId: "s", token: "t", open: .resume)
         var frames: [String] = []
         link.onFrame = { frames.append($0) }
         link.handleLine(Data(#"{"type":"attach_pending"}"#.utf8))
@@ -22,8 +22,15 @@ struct MirrorPendingTests {
 
     @MainActor
     @Test func pendingAfterTheAnswerChangesNothing() {
-        let link = MirrorLink(host: "127.0.0.1", port: 1, sessionId: "s", token: "t")
+        let link = MirrorLink(host: "127.0.0.1", port: 1, sessionId: "s", token: "t", open: .resume)
         link.handleLine(Data(#"{"type":"attach_ok","html":"<p>"}"#.utf8))
+        link.handleLine(Data(#"{"type":"attach_pending"}"#.utf8))
+        #expect(!link.sawAttachPending)
+    }
+
+    @MainActor
+    @Test func pendingIsIgnoredByAnAttachThatOpensNothing() {
+        let link = MirrorLink(host: "127.0.0.1", port: 1, sessionId: "s", token: "t")
         link.handleLine(Data(#"{"type":"attach_pending"}"#.utf8))
         #expect(!link.sawAttachPending)
     }

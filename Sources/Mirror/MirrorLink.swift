@@ -61,6 +61,9 @@ final class MirrorLink {
         MirrorStall.Failure(onNetwork: failedOnNetwork, reachedMac: reachedMac, answered: attachAnswered)
     }
 
+    /// How long to wait for the answer once the Mac said it is starting the session; the Mac pane waits as long.
+    static let pendingDeadline = 120
+
     nonisolated(unsafe) private let connection: NWConnection
     nonisolated private let buffer = LineBuffer()
     private let queue = DispatchQueue(label: "sh.saqoo.canopy-app.MirrorLink")
@@ -137,7 +140,7 @@ final class MirrorLink {
         }
         if let open {
             message["open"] = open.wire
-            // A Mac with Canopy PR #389 answers `attach_pending` before a start that can outlast the deadline.
+            // A Mac on Canopy 3.17.4+ answers `attach_pending` before a start that can outlast the deadline.
             message["pending"] = true
         }
         if let key, !key.isEmpty {
@@ -383,14 +386,14 @@ final class MirrorLink {
             onAttached?(Attached(html: html, userScripts: scripts, extensionVersion: version,
                                  sessionId: nonEmpty("sessionId"), hostSessionId: nonEmpty("hostSessionId"), resumed: resumed))
         case "attach_pending":
-            // Not a timeout on the network: retrying would start the session again on the Mac.
-            guard !attachAnswered, !sawAttachPending, !failed else { return }
+            // Running out of this deadline is not a network stall: the Mac is reachable and still starting.
+            guard open != nil, !attachAnswered, !sawAttachPending, !failed, !closed else { return }
             sawAttachPending = true
             waitingDeadline?.cancel()
             waitingDeadline = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(120))
+                try? await Task.sleep(for: .seconds(Self.pendingDeadline))
                 guard !Task.isCancelled else { return }
-                self?.fail("The Mac did not finish opening the session.")
+                self?.fail("The Mac did not finish opening the session in 2 minutes. Check Canopy on the Mac, then open it again.")
             }
         case "attach_error":
             waitingDeadline?.cancel()

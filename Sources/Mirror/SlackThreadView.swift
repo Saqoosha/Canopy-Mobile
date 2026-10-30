@@ -81,7 +81,7 @@ struct SlackThreadSheet: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        Button("Disconnect", role: .destructive) { Task { await unbind(binding) } }
+                        Button("Disconnect", role: .destructive) { start { await unbind(binding) } }
                             .buttonStyle(.borderless)
                             .disabled(busy)
                     }
@@ -98,7 +98,7 @@ struct SlackThreadSheet: View {
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                Button("Connect") { Task { await bind() } }
+                Button("Connect") { start { await bind() } }
                     .disabled(busy || permalink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             } header: {
                 Text(bindings.isEmpty ? "Connect" : "Connect another")
@@ -116,33 +116,46 @@ struct SlackThreadSheet: View {
         return try await body(control)
     }
 
+    /// `busy` is set before the task starts, so a second tap in the same frame does nothing.
+    private func start(_ action: @escaping () async -> Void) {
+        guard !busy else { return }
+        busy = true
+        actionError = nil
+        Task {
+            await action()
+            busy = false
+        }
+    }
+
     private func fetch() async throws -> [SlackBinding] {
         try await withControl { try await $0.slackBindings() }
             .filter { $0.belongs(sessionId: sessionId, resumeId: resumeId) }
     }
 
     private func bind() async {
-        busy = true
-        defer { busy = false }
-        actionError = nil
         do {
-            try await withControl { try await $0.slackBind(key: sessionId, resumeId: resumeId, permalink: permalink) }
+            let (bound, list) = try await withControl { (control: MachineControl) async throws -> (SlackBinding?, [SlackBinding]?) in
+                let bound = try await control.slackBind(key: sessionId, resumeId: resumeId, permalink: permalink)
+                // The bind stands on its own; a failed refresh keeps the row the result gave.
+                do {
+                    return (bound, try await control.slackBindings())
+                } catch {
+                    _ = Self.report("slack_bindings", error)
+                    return (bound, nil)
+                }
+            }
+            permalink = ""
+            if let list {
+                bindings = list.filter { $0.belongs(sessionId: sessionId, resumeId: resumeId) }
+            } else if let bound, !bindings.contains(where: { $0.id == bound.id }) {
+                bindings.append(bound)
+            }
         } catch {
             actionError = Self.report("slack_bind", error)
-            return
-        }
-        permalink = ""
-        do {
-            bindings = try await fetch()
-        } catch {
-            actionError = "Connected, but the list could not be refreshed: " + Self.report("slack_bindings", error)
         }
     }
 
     private func unbind(_ binding: SlackBinding) async {
-        busy = true
-        defer { busy = false }
-        actionError = nil
         do {
             try await withControl { try await $0.slackUnbind(binding) }
             bindings.removeAll { $0.id == binding.id }
@@ -166,7 +179,8 @@ struct SlackThreadToolbar: ViewModifier {
     let resumeId: String?
     let title: String
 
-    @State private var showing = false
+    /// The target the open sheet was opened for, kept if the stored connection changes meanwhile.
+    @State private var presented: MirrorTarget?
 
     func body(content: Content) -> some View {
         content
@@ -174,7 +188,7 @@ struct SlackThreadToolbar: ViewModifier {
                 if target != nil {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
-                            showing = true
+                            presented = target
                         } label: {
                             Image(systemName: "bubble.left.and.text.bubble.right")
                         }
@@ -182,9 +196,9 @@ struct SlackThreadToolbar: ViewModifier {
                     }
                 }
             }
-            .sheet(isPresented: $showing) {
-                if let target {
-                    SlackThreadSheet(target: target, sessionId: sessionId, resumeId: resumeId, title: title)
+            .sheet(isPresented: Binding(get: { presented != nil }, set: { if !$0 { presented = nil } })) {
+                if let presented {
+                    SlackThreadSheet(target: presented, sessionId: sessionId, resumeId: resumeId, title: title)
                 }
             }
     }

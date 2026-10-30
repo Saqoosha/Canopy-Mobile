@@ -22,10 +22,11 @@ struct SlackThreadTests {
         ])
     }
 
-    @Test func listIsNilWhenItemsIsMissingOrMalformed() {
-        #expect(SlackBinding.list(from: [:]) == nil)
-        #expect(SlackBinding.list(from: ["items": ["not an object"]]) == nil)
-        #expect(SlackBinding.list(from: ["items": [[String: Any]]()]) == [])
+    @Test func listIsNilOnlyWhenItemsIsNotAList() {
+        #expect(SlackBinding.list(from: ["items": "x"]) == nil)
+        // A missing list is empty, as the Mac reads it; a stray element is skipped, not fatal.
+        #expect(SlackBinding.list(from: [:]) == [])
+        #expect(SlackBinding.list(from: ["items": ["x", ["channel": "C", "threadTs": "1.2"]]])?.map(\.id) == ["C/1.2"])
     }
 
     @Test func threadURLDropsTheDot() {

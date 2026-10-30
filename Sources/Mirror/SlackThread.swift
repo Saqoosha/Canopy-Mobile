@@ -20,12 +20,13 @@ struct SlackBinding: Identifiable, Equatable {
         URL(string: "https://slack.com/archives/\(channel)/p\(threadTs.replacingOccurrences(of: ".", with: ""))")
     }
 
-    /// Nil when `items` is missing or not a list of objects, so a broken answer is not read as "none".
-    /// Rows without a channel or thread are skipped.
+    /// Nil when `items` is not a list, so a broken answer is not read as "none". A missing
+    /// `items` is an empty list, as the Mac reads it. Rows without a channel or thread are skipped.
     static func list(from result: [String: Any]) -> [SlackBinding]? {
-        guard let rows = result["items"] as? [[String: Any]] else { return nil }
-        let list = rows.compactMap { row -> SlackBinding? in
-            guard let channel = row["channel"] as? String, !channel.isEmpty,
+        guard let rows = result["items"].map({ $0 as? [Any] }) ?? [] else { return nil }
+        let list = rows.compactMap { item -> SlackBinding? in
+            guard let row = item as? [String: Any],
+                  let channel = row["channel"] as? String, !channel.isEmpty,
                   let threadTs = row["threadTs"] as? String, !threadTs.isEmpty
             else { return nil }
             return SlackBinding(
@@ -77,8 +78,11 @@ extension MachineControl {
         return list
     }
 
-    func slackBind(key: String, resumeId: String?, permalink: String) async throws {
-        _ = try await request("slack_bind", SlackBinding.bindParams(key: key, resumeId: resumeId, permalink: permalink))
+    /// The new binding, from the result; nil when the result names no thread.
+    func slackBind(key: String, resumeId: String?, permalink: String) async throws -> SlackBinding? {
+        let result = try await request("slack_bind", SlackBinding.bindParams(key: key, resumeId: resumeId, permalink: permalink))
+        let row = result.merging(["sessionKey": resumeId.flatMap { $0.isEmpty ? nil : $0 } ?? key]) { have, _ in have }
+        return SlackBinding.list(from: ["items": [row]])?.first
     }
 
     func slackUnbind(_ binding: SlackBinding) async throws {

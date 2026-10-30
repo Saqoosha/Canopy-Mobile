@@ -65,6 +65,8 @@ struct CanopyMobileApp: App {
     /// the field on a demo run cannot rewrite the real stored URL.
     @State private var demoURL = "https://demo.invalid"
     @State private var showingSettings = false
+    /// Bumped by every notification tap, so sheets owned below the stack (the Slack thread) close too.
+    @State private var notificationTaps = 0
     /// Sheet item for Open on Mac (paired machines only).
     @State private var openOnMac: OpenOnMacItem?
     @State private var stopError: String?
@@ -594,6 +596,7 @@ struct CanopyMobileApp: App {
         showingSettings = false
         pendingOpenOnMacLive = nil
         openOnMac = nil
+        notificationTaps += 1
         // **Already here? Then stay.** A second push for the session on
         // screen used to re-assign `path` with a target that legitimately
         // differed — the first tap may have opened under the placeholder with
@@ -736,7 +739,8 @@ struct CanopyMobileApp: App {
         let pane = livePane(for: target)
         // The Mac matches on resumeId; a session without one cannot attach, and one the roster reports as not live would only be refused.
         // Nil for BOTH views, so the offline screen offers no Live button either.
-        let live = (target.resumeId == nil || pane?.isLive == false) ? nil : mirrorStore.target(for: target.machine)
+        let mirror = mirrorStore.target(for: target.machine)
+        let live = (target.resumeId == nil || pane?.isLive == false) ? nil : mirror
         let title = pane.flatMap { $0.title.isEmpty ? nil : $0.title } ?? target.title
         return LiveFirstConversation(
             live: live,
@@ -745,6 +749,11 @@ struct CanopyMobileApp: App {
         ) { liveUnavailable, showLive in
             offlineConversation(target, pane: pane, title: title, liveUnavailable: liveUnavailable, showLive: showLive)
         }
+        // Not gated on `live`: a binding can be listed or made while the session is not attachable.
+        // The roster's ids first: a route from an old push can carry a sessionId a Mac restart replaced.
+        .modifier(SlackThreadToolbar(target: mirror, sessionId: pane?.sessionId ?? target.sessionId,
+                                     resumeId: pane?.resumeId ?? target.resumeId, title: title,
+                                     dismissal: notificationTaps))
         // Recorded on the wrapper, live branch included, so `SessionConversationView`
         // keeps no opinion about the app's socket table — it asks, and something
         // else decides whether the ask can be delivered yet.

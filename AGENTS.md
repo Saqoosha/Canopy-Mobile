@@ -231,7 +231,7 @@ DO が再起動するので publisher も watcher も落ちる。Canopy 側は p
 
 **修正**: 会話に `.id(ConversationIdentity(machine:, sessionId:))` を付ける。`onAppear` / `onDisappear` より**外側**に置く —— 内側だと中だけが作り直されて `viewedSession` が A のまま残る。`.id(target)` は不可（title / subtitle がハッシュに入るので、見た目の違いで作り直しになる）。`resumeId ?? sessionId` でキーするのも試して戻した —— Mac 再起動で sessionId が変わったときに view が使い回され、`viewedSession` が古い id のまま残ってバックフィルが落ちる。
 
-**セッション画面はカバーにしない。** 全画面カバーやシートが開いていると、その下で `path` が変わってもタップが何もしなかったように見える。ライブ画面は全部スタックに積む（Open on Mac は `Route.live`）。通知タップは Settings / Open on Mac のシートを閉じてから遷移する。残っている全画面表示は画像ビューア（`SessionConversationView`）と、Mac から届いたファイルの QuickLook プレビュー（`MirrorLiveContent`）。
+**セッション画面はカバーにしない。** 全画面カバーやシートが開いていると、その下で `path` が変わってもタップが何もしなかったように見える。ライブ画面は全部スタックに積む（Open on Mac は `Route.live`）。通知タップは Settings / Open on Mac / Slack スレッドのシートを閉じてから遷移する（Slack のシートは会話画面の中にあるので、`notificationTaps` を上げて閉じさせる）。残っている全画面表示は画像ビューア（`SessionConversationView`）と、Mac から届いたファイルの QuickLook プレビュー（`MirrorLiveContent`）。
 
 ### コールドスタートの通知タップは `NotificationCenter` に間に合わない
 

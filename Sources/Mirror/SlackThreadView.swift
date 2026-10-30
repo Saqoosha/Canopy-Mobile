@@ -178,6 +178,8 @@ struct SlackThreadToolbar: ViewModifier {
     let sessionId: String
     let resumeId: String?
     let title: String
+    /// Changes on every notification tap; the sheet would hide what the tap opens.
+    let dismissal: Int
 
     /// The target the open sheet was opened for, kept if the stored connection changes meanwhile.
     @State private var presented: MirrorTarget?
@@ -201,5 +203,6 @@ struct SlackThreadToolbar: ViewModifier {
                     SlackThreadSheet(target: presented, sessionId: sessionId, resumeId: resumeId, title: title)
                 }
             }
+            .onChange(of: dismissal) { _, _ in presented = nil }
     }
 }

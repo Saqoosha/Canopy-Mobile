@@ -745,6 +745,13 @@ struct CanopyMobileApp: App {
         ) { liveUnavailable, showLive in
             offlineConversation(target, pane: pane, title: title, liveUnavailable: liveUnavailable, showLive: showLive)
         }
+        // Not gated on `live`: a binding can be listed or made while the session is not attachable.
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                SlackThreadButton(target: mirrorStore.target(for: target.machine), sessionId: target.sessionId,
+                                  resumeId: target.resumeId, title: title)
+            }
+        }
         // Recorded on the wrapper, live branch included, so `SessionConversationView`
         // keeps no opinion about the app's socket table — it asks, and something
         // else decides whether the ask can be delivered yet.

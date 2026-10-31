@@ -21,8 +21,9 @@ struct LiveFirstConversation<Offline: View>: View {
     let dismissal: Int
     @ViewBuilder let offline: (_ liveUnavailable: String?) -> Offline
 
-    /// The context the open Slack sheet was opened with, kept whole if the roster or the stored connection changes meanwhile.
-    @State private var slackPresented: SlackThreadContext?
+    /// The target the open Slack sheet was opened for, kept if the stored connection changes meanwhile.
+    /// The ids are read live: a Mac restart mints a new sessionId, and a binding is keyed on it.
+    @State private var slackPresented: MirrorTarget?
 
     @State private var fallback: Fallback?
     /// Bumped to rebuild the live view with a fresh link; iOS closes the socket while the app is in the background.
@@ -54,9 +55,9 @@ struct LiveFirstConversation<Offline: View>: View {
                 }
             }
             .sheet(isPresented: Binding(get: { slackPresented != nil }, set: { if !$0 { slackPresented = nil } })) {
-                if let slackPresented {
-                    SlackThreadSheet(target: slackPresented.target, sessionId: slackPresented.sessionId,
-                                     resumeId: slackPresented.resumeId, title: slackPresented.title)
+                if let slackPresented, let slack {
+                    SlackThreadSheet(target: slackPresented, sessionId: slack.sessionId,
+                                     resumeId: slack.resumeId, title: slack.title)
                 }
             }
             .onChange(of: dismissal) { _, _ in slackPresented = nil }
@@ -172,7 +173,7 @@ struct LiveFirstConversation<Offline: View>: View {
                         switch item {
                         case .slack:
                             Button {
-                                slackPresented = slack
+                                slackPresented = slack?.target
                             } label: {
                                 Label("Slack Thread", systemImage: "bubble.left.and.text.bubble.right")
                             }

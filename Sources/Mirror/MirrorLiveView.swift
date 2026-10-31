@@ -393,6 +393,10 @@ final class MirrorLiveModel {
         link.onFile = { [weak self] frame in
             self?.files.handle(frame)
         }
+        link.onSignInPage = { [weak self] url in
+            NSLog("[MirrorLink] opening the sign-in page in-app")
+            self?.page.openSignInPage(url)
+        }
         link.onStatus = { [weak self] status in
             self?.status = status
             self?.remember(status)

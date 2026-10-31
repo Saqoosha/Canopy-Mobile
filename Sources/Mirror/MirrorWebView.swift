@@ -1,3 +1,4 @@
+import SafariServices
 import SwiftUI
 import WebKit
 import os
@@ -64,6 +65,10 @@ final class MirrorPage {
     fileprivate var coordinator: MirrorWebView.Coordinator?
     fileprivate var handler: MirrorAssetSchemeHandler?
     fileprivate var proxy: WeakMessageProxy?
+
+    func openSignInPage(_ url: URL) {
+        MirrorWebView.presentSignInPage(url, over: webView)
+    }
 
     /// Unhooks the page from its link. Not done when the view leaves the screen: a parked page keeps receiving frames.
     func close() {
@@ -170,7 +175,43 @@ struct MirrorWebView: UIViewRepresentable {
     /// Settings › Composer. Off turns the page's Return-sends into a newline.
     let sendWithReturn: Bool
 
-    static let handlerNames = ["vscodeHost", "consoleLog", "canopyLink", "canopyInputWidth"]
+    static let handlerNames = ["vscodeHost", "consoleLog", "canopyLink", "canopyInputWidth", "canopySignIn"]
+
+    /// Opens `url` in an in-app Safari sheet over the page, so the app stays in the foreground:
+    /// a trip to Safari closes the socket and the return rebuilds the page, losing its code field.
+    static func presentSignInPage(_ url: URL, over view: UIView?) {
+        var top = view?.window?.rootViewController
+        while let presented = top?.presentedViewController { top = presented }
+        // A parked page has no window; a sheet over another screen, or a trip to Safari, would be worse than nothing.
+        guard let top else {
+            NSLog("[MirrorWebView] sign-in page not opened: the page is not on screen")
+            return
+        }
+        guard !(top is SFSafariViewController) else { return }
+        let safari = SFSafariViewController(url: url)
+        // A card, not full screen: covering the live view fires its `onDisappear`, which parks the session.
+        safari.modalPresentationStyle = .pageSheet
+        top.present(safari, animated: true)
+    }
+
+    /// Reports what the sign-in step's URL field and copy button hold, so a closed sheet can be reopened.
+    static let signInReopenScript = #"""
+    (function () {
+      const post = (s) => {
+        if (typeof s === "string" && s.startsWith("https://")) {
+          try { window.webkit.messageHandlers.canopySignIn.postMessage(s); } catch (e) {}
+        }
+      };
+      const clip = navigator.clipboard;
+      if (clip && clip.writeText) {
+        const write = clip.writeText.bind(clip);
+        clip.writeText = (t) => { post(t); return write(t); };
+      }
+      document.addEventListener("click", (e) => {
+        if (e.target && e.target.tagName === "INPUT") post(e.target.value);
+      }, true);
+    })();
+    """#
 
     func makeCoordinator() -> Coordinator {
         if let kept = page.coordinator { return kept }
@@ -189,6 +230,7 @@ struct MirrorWebView: UIViewRepresentable {
         let ucc = prepared.webView.configuration.userContentController
         ucc.addUserScript(WKUserScript(source: Self.sendWithReturnScript(sendWithReturn), injectionTime: .atDocumentStart, forMainFrameOnly: true))
         context.coordinator.sendWithReturn = sendWithReturn
+        ucc.addUserScript(WKUserScript(source: Self.signInReopenScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         for script in attached.userScripts {
             ucc.addUserScript(WKUserScript(
                 source: script.source,
@@ -288,6 +330,11 @@ struct MirrorWebView: UIViewRepresentable {
                 }
             case "consoleLog":
                 logger.notice("[js] \(String(describing: message.body), privacy: .private)")
+            case "canopySignIn":
+                if message.frameInfo.isMainFrame, let text = message.body as? String,
+                   let url = link?.signInPageToReopen(text) {
+                    MirrorWebView.presentSignInPage(url, over: message.webView)
+                }
             case "canopyLink":
                 if let text = message.body as? String, let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased()) {
                     UIApplication.shared.open(url)

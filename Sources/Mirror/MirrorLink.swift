@@ -45,6 +45,8 @@ final class MirrorLink {
     var onRestarting: (() -> Void)?
     /// A `MirrorFileWire` frame: a file this phone clicked, coming back from the Mac.
     var onFile: (([String: Any]) -> Void)?
+    /// The sign-in page of a login this phone's page started, to open in-app; the frame still goes to the page.
+    var onSignInPage: ((URL) -> Void)?
     /// Set when the Mac answered `attach_error`: a refusal, which waiting will not change.
     private(set) var refusedByMac = false
     /// The TCP connection to the Mac was established.
@@ -92,6 +94,7 @@ final class MirrorLink {
     private(set) var tracker = MirrorResumeTracker()
     /// Every prompt the page draws passes here; see `MirrorDialogGate`.
     private var dialogs = MirrorDialogGate()
+    private var signIn = MirrorSignIn()
     /// Where this link's page stands, for the next link to resume from; nil when it cannot.
     var resumePoint: MirrorResumePoint? { tracker.point }
 
@@ -176,11 +179,17 @@ final class MirrorLink {
         failPendingAssets()
     }
 
+    /// The open sign-in page, when the page reported exactly its URL from its URL field or copy button.
+    func signInPageToReopen(_ text: String) -> URL? {
+        signIn.pageToReopen(text)
+    }
+
     func send(_ object: [String: Any]) {
         if claimsPageSessionRequest(object) { return }
         // Counted even when dropped below: a request that never left still waits for an answer.
         tracker.noteSent(object)
         dialogs.noteSent(object)
+        signIn.noteSent(object)
         guard !closed, !failed, let data = try? JSONSerialization.data(withJSONObject: object) else { return }
         connection.send(content: data + Data([0x0A]), completion: .contentProcessed { error in
             if let error {
@@ -427,6 +436,7 @@ final class MirrorLink {
                 continuation.resume(throwing: AssetError.refused(object["error"] as? String ?? "unreadable"))
             }
         default:
+            if let page = signIn.pageToOpen(object) { onSignInPage?(page) }
             if let pending = pageSessionResponseId,
                (object["message"] as? [String: Any])?["requestId"] as? String == pending
             {

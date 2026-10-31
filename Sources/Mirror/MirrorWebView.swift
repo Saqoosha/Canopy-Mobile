@@ -338,6 +338,10 @@ struct MirrorWebView: UIViewRepresentable {
             case "canopyLink":
                 if let text = message.body as? String, let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased()) {
                     UIApplication.shared.open(url)
+                } else if let body = message.body as? [String: Any], body["type"] as? String == "openImage",
+                          let url = body["url"] as? String {
+                    // The Mac's thumbnail script asks its host for a native window; here that is Quick Look.
+                    link?.onOpenImage?(url, body["file"] as? String)
                 }
             default:
                 break

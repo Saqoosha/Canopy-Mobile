@@ -125,4 +125,52 @@ struct MirrorFileReceiverTests {
         #expect(!MirrorFileWire.isFileFrame("status"))
         #expect(!MirrorFileWire.isFileFrame(nil))
     }
+
+    @Test func imageSourcesFromThePagesURLs() {
+        let png = Data([0x89, 0x50, 0x4E, 0x47])
+        #expect(MirrorFileWire.imageSource("data:image/png;base64," + png.base64EncodedString()) == .inline(png))
+        #expect(MirrorFileWire.imageSource("canopy-asset://ext/img/ab12") == .asset("imgfull/ab12"))
+        #expect(MirrorFileWire.imageSource("canopy-asset://ext/img/") == nil)
+        #expect(MirrorFileWire.imageSource("data:image/svg+xml,<svg/>") == nil)
+        #expect(MirrorFileWire.imageSource("https://example.com/a.png") == nil)
+    }
+
+    @Test func aLiveThumbnailOpensFromItsOwnBytes() async throws {
+        let (receiver, root) = makeReceiver()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let png = Data([0x89, 0x50, 0x4E, 0x47])
+        await receiver.showImage(url: "data:image/png;base64," + png.base64EncodedString(), name: "list.png") { _ in
+            Issue.record("an inline image needs no request")
+            return Data()
+        }
+        let url = try #require(receiver.received)
+        #expect(url.lastPathComponent == "list.png")
+        #expect(try Data(contentsOf: url) == png)
+    }
+
+    @Test func aReplayThumbnailAsksTheMacForTheOriginal() async throws {
+        let (receiver, root) = makeReceiver()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var asked: [String] = []
+        await receiver.showImage(url: "canopy-asset://ext/img/ab12", name: "../evil") { path in
+            asked.append(path)
+            return Data("full".utf8)
+        }
+        #expect(asked == ["imgfull/ab12"])
+        let url = try #require(receiver.received)
+        #expect(url.lastPathComponent == "image.png")
+        #expect(try Data(contentsOf: url) == Data("full".utf8))
+    }
+
+    @Test func aFailedImageFetchSaysSoAndLeavesATransferRunning() async {
+        let (receiver, root) = makeReceiver()
+        defer { try? FileManager.default.removeItem(at: root) }
+        receiver.handle(["type": "file_begin", "id": "a", "name": "a.txt", "size": 1])
+        await receiver.showImage(url: "canopy-asset://ext/img/ab12", name: "list.png") { _ in
+            throw MirrorLink.AssetError.refused("not found")
+        }
+        #expect(receiver.received == nil)
+        #expect(receiver.lastError?.hasPrefix("list.png: ") == true)
+        #expect(receiver.current?.id == "a")
+    }
 }

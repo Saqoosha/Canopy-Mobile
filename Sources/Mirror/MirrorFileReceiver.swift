@@ -17,6 +17,23 @@ enum MirrorFileWire {
         type == begin || type == chunk || type == end || type == url
     }
 
+    /// Where the bytes of an image the page asks to open full size come from.
+    enum ImageSource: Equatable {
+        /// A `data:` URL: a Read result the page got live.
+        case inline(Data)
+        /// The `asset_request` path of the original behind a replay thumbnail's `canopy-asset://ext/img/<id>`.
+        case asset(String)
+    }
+
+    static func imageSource(_ url: String) -> ImageSource? {
+        if url.hasPrefix("data:"), let comma = url.firstIndex(of: ","), url[..<comma].hasSuffix(";base64") {
+            return Data(base64Encoded: String(url[url.index(after: comma)...])).map(ImageSource.inline)
+        }
+        let prefix = "canopy-asset://ext/img/"
+        guard url.hasPrefix(prefix), url.count > prefix.count else { return nil }
+        return .asset("imgfull/" + url.dropFirst(prefix.count))
+    }
+
     /// The name a `file_begin` may carry: a bare file name, never a path.
     static func sanitizedName(_ raw: String?) -> String? {
         guard let raw, !raw.isEmpty, !raw.contains("/"), !raw.contains("\0"),
@@ -151,6 +168,36 @@ final class MirrorFileReceiver {
         logger.notice("received \(transfer.name, privacy: .private)")
     }
 
+    /// Opens an image the page asked for full size (a Read thumbnail's tap) in the same Quick Look as a file.
+    /// `fetch` answers an `asset_request` path; an in-flight transfer is left alone.
+    func showImage(url: String, name: String?, fetch: (String) async throws -> Data) async {
+        let fileName = MirrorFileWire.sanitizedName(name) ?? "image.png"
+        let data: Data
+        switch MirrorFileWire.imageSource(url) {
+        case .inline(let bytes)?:
+            data = bytes
+        case .asset(let path)?:
+            do {
+                data = try await fetch(path)
+            } catch {
+                report("\(fileName): \(error.localizedDescription)")
+                return
+            }
+        case nil:
+            report("\(fileName): not an image this app can open")
+            return
+        }
+        let dir = root.appendingPathComponent(UUID().uuidString)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try data.write(to: dir.appendingPathComponent(fileName))
+        } catch {
+            report("Could not save \(fileName): \(error.localizedDescription)")
+            return
+        }
+        received = dir.appendingPathComponent(fileName)
+    }
+
     private func fail(_ message: String) {
         abort(reason: message)
     }
@@ -171,6 +218,11 @@ final class MirrorFileReceiver {
         current = nil
         showsOverlay = false
         guard let reason else { return }
+        report(reason)
+    }
+
+    /// Logs `reason` and shows it in the overlay for `errorHold`.
+    private func report(_ reason: String) {
         logger.error("\(reason, privacy: .private)")
         lastError = reason
         errorTask?.cancel()

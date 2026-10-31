@@ -6,8 +6,8 @@ import SwiftUI
 /// the same whichever one is on screen.
 struct SessionHeader: ToolbarContent {
     let title: String
-    /// Shown when the roster does not list the session — the machine, or
-    /// "machine · project" frozen into the route.
+    /// The route's project or machine name, shown when the roster does not list the session.
+    /// A History tap carries the machine name, which the roster's project replaces, as on the row.
     let subtitle: String
     /// The roster's live row, or nil when it does not list one. A nil pane
     /// draws no dot and no state — grey means idle in this palette, and "the
@@ -47,11 +47,17 @@ struct SessionHeader: ToolbarContent {
     /// The project comes from the roster when it lists the session, so a
     /// branch switch shows here; the route's subtitle is the fallback.
     private func statusLine(now: Date) -> Text {
-        guard let pane else { return Text(subtitle).foregroundStyle(.secondary) }
+        let parts = Self.statusParts(pane: pane, subtitle: subtitle, now: now)
+        let rest = Text(parts.rest).foregroundStyle(.secondary)
+        guard let pane, let state = parts.state else { return rest }
+        return Text(state).foregroundStyle(SessionActivityStyle.color(for: pane.state))
+            + Text(" · ").foregroundStyle(.secondary) + rest
+    }
+
+    /// The state leg ("Working 3m"), nil without a pane, and the project or subtitle after it.
+    nonisolated static func statusParts(pane: PaneRow?, subtitle: String, now: Date) -> (state: String?, rest: String) {
+        guard let pane else { return (nil, subtitle) }
         let age = SessionActivityStyle.elapsed(since: pane.stateSince, now: now)
-        let project = pane.project.isEmpty ? subtitle : pane.project
-        return Text("\(pane.state.capitalized) \(age)")
-            .foregroundStyle(SessionActivityStyle.color(for: pane.state))
-            + Text(" · \(project)").foregroundStyle(.secondary)
+        return ("\(pane.state.capitalized) \(age)", pane.project.isEmpty ? subtitle : pane.project)
     }
 }

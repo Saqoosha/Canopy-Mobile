@@ -15,12 +15,14 @@ struct LiveFirstConversation<Offline: View>: View {
     let subtitle: String
     /// The roster's live row for the header's dot and state, nil when it does not list the session.
     let pane: PaneRow?
-    /// What the menu's Slack Thread item opens; no item when its `target` is nil.
+    /// What the menu's Slack Thread item opens; nil when no paste covers the Mac, and then there is no item.
     let slack: SlackThreadContext?
+    /// Changes on every notification tap; an open sheet would hide what the tap opens.
+    let dismissal: Int
     @ViewBuilder let offline: (_ liveUnavailable: String?) -> Offline
 
-    /// The target the open Slack sheet was opened for, kept if the stored connection changes meanwhile.
-    @State private var slackPresented: MirrorTarget?
+    /// The context the open Slack sheet was opened with, kept whole if the roster or the stored connection changes meanwhile.
+    @State private var slackPresented: SlackThreadContext?
 
     @State private var fallback: Fallback?
     /// Bumped to rebuild the live view with a fresh link; iOS closes the socket while the app is in the background.
@@ -52,12 +54,12 @@ struct LiveFirstConversation<Offline: View>: View {
                 }
             }
             .sheet(isPresented: Binding(get: { slackPresented != nil }, set: { if !$0 { slackPresented = nil } })) {
-                if let slackPresented, let slack {
-                    SlackThreadSheet(target: slackPresented, sessionId: slack.sessionId,
-                                     resumeId: slack.resumeId, title: slack.title)
+                if let slackPresented {
+                    SlackThreadSheet(target: slackPresented.target, sessionId: slackPresented.sessionId,
+                                     resumeId: slackPresented.resumeId, title: slackPresented.title)
                 }
             }
-            .onChange(of: slack?.dismissal) { _, _ in slackPresented = nil }
+            .onChange(of: dismissal) { _, _ in slackPresented = nil }
     }
 
     @ViewBuilder
@@ -147,42 +149,45 @@ struct LiveFirstConversation<Offline: View>: View {
             .toolbar { liveToolbar }
         } else {
             offline(unavailableReason)
-                .toolbar { menu(showingLive: false) }
+                .toolbar { menu }
         }
     }
 
     @ToolbarContentBuilder
     private var liveToolbar: some ToolbarContent {
-        menu(showingLive: true)
+        menu
         SessionHeader(title: title, subtitle: subtitle, pane: pane)
     }
 
     /// Every action for the session behind one button, so the header keeps the width.
     /// The offline view's header is its own; only the menu is added to it.
     @ToolbarContentBuilder
-    private func menu(showingLive: Bool) -> some ToolbarContent {
-        let canSwitch = showingLive || live != nil
-        if slack?.target != nil || canSwitch {
+    private var menu: some ToolbarContent {
+        let items = SessionMenu.items(hasSlack: slack != nil, showingLive: live != nil && fallback == nil,
+                                      canAttach: live != nil)
+        if !items.isEmpty {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    if let target = slack?.target {
-                        Button {
-                            slackPresented = target
-                        } label: {
-                            Label("Slack Thread", systemImage: "bubble.left.and.text.bubble.right")
-                        }
-                    }
-                    if showingLive {
-                        Button {
-                            showOffline()
-                        } label: {
-                            Label("Show Offline View", systemImage: "rectangle.on.rectangle.slash")
-                        }
-                    } else if live != nil {
-                        Button {
-                            showLive()
-                        } label: {
-                            Label("Open Live Session", systemImage: "rectangle.on.rectangle")
+                    ForEach(items, id: \.self) { item in
+                        switch item {
+                        case .slack:
+                            Button {
+                                slackPresented = slack
+                            } label: {
+                                Label("Slack Thread", systemImage: "bubble.left.and.text.bubble.right")
+                            }
+                        case .showOffline:
+                            Button {
+                                showOffline()
+                            } label: {
+                                Label("Show Offline View", systemImage: "rectangle.on.rectangle.slash")
+                            }
+                        case .openLive:
+                            Button {
+                                showLive()
+                            } label: {
+                                Label("Open Live Session", systemImage: "rectangle.on.rectangle")
+                            }
                         }
                     }
                 } label: {
@@ -216,5 +221,25 @@ struct LiveFirstConversation<Offline: View>: View {
     private var unavailableReason: String? {
         if case .unavailable(let reason) = fallback { return reason }
         return nil
+    }
+}
+
+/// Which items a conversation's menu offers, in order; empty means no menu button at all.
+enum SessionMenu {
+    enum Item: Hashable {
+        case slack
+        case showOffline
+        case openLive
+    }
+
+    /// The Slack item is not gated on attaching: a binding can be listed or made while the session is not attachable.
+    static func items(hasSlack: Bool, showingLive: Bool, canAttach: Bool) -> [Item] {
+        var items: [Item] = hasSlack ? [.slack] : []
+        if showingLive {
+            items.append(.showOffline)
+        } else if canAttach {
+            items.append(.openLive)
+        }
+        return items
     }
 }

@@ -170,15 +170,10 @@ struct SlackThreadSheet: View {
     }
 }
 
-/// The toolbar button and the sheet it opens. The sheet's state sits outside the
-/// toolbar, which is rebuilt whenever the conversation switches between live and offline.
 /// What a conversation's menu needs to open the Slack thread sheet.
 struct SlackThreadContext {
-    /// Nil when no paste covers the Mac: then the menu has no Slack item.
-    let target: MirrorTarget?
+    let target: MirrorTarget
     let sessionId: String
     let resumeId: String?
     let title: String
-    /// Changes on every notification tap; the sheet would hide what the tap opens.
-    let dismissal: Int
 }

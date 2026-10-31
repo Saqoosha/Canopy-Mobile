@@ -738,7 +738,7 @@ struct CanopyMobileApp: App {
         // to answer it differently.
         let pane = livePane(for: target)
         // The Mac matches on resumeId; a session without one cannot attach, and one the roster reports as not live would only be refused.
-        // Nil for BOTH views, so the offline screen offers no Live button either.
+        // Nil for BOTH views, so the offline screen's menu offers no Open Live Session either.
         let mirror = mirrorStore.target(for: target.machine)
         let live = (target.resumeId == nil || pane?.isLive == false) ? nil : mirror
         let title = pane.flatMap { $0.title.isEmpty ? nil : $0.title } ?? target.title
@@ -750,9 +750,11 @@ struct CanopyMobileApp: App {
             pane: pane,
             // Not gated on `live`: a binding can be listed or made while the session is not attachable.
             // The roster's ids first: a route from an old push can carry a sessionId a Mac restart replaced.
-            slack: SlackThreadContext(target: mirror, sessionId: pane?.sessionId ?? target.sessionId,
-                                      resumeId: pane?.resumeId ?? target.resumeId, title: title,
-                                      dismissal: notificationTaps)
+            slack: mirror.map {
+                SlackThreadContext(target: $0, sessionId: pane?.sessionId ?? target.sessionId,
+                                   resumeId: pane?.resumeId ?? target.resumeId, title: title)
+            },
+            dismissal: notificationTaps
         ) { liveUnavailable in
             offlineConversation(target, pane: pane, title: title, liveUnavailable: liveUnavailable)
         }

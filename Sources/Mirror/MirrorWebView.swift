@@ -8,7 +8,7 @@ private let logger = Logger(subsystem: "sh.saqoo.canopy-app", category: "MirrorW
 /// Serves the entry page and, through the link, the Mac extension's assets.
 @MainActor
 final class MirrorAssetSchemeHandler: NSObject, WKURLSchemeHandler {
-    static let scheme = "canopy-asset"
+    nonisolated static let scheme = "canopy-asset"
     static let entryURL = URL(string: "canopy-asset://ext/__entry.html")!
 
     /// Set when the pooled webview is handed to an attach; nil while it waits in the pool.
@@ -338,10 +338,16 @@ struct MirrorWebView: UIViewRepresentable {
             case "canopyLink":
                 if let text = message.body as? String, let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased()) {
                     UIApplication.shared.open(url)
-                } else if let body = message.body as? [String: Any], body["type"] as? String == "openImage",
-                          let url = body["url"] as? String {
+                } else if message.frameInfo.isMainFrame, let body = message.body as? [String: Any],
+                          body["type"] as? String == "openImage", let url = body["url"] as? String {
                     // The Mac's thumbnail script asks its host for a native window; here that is Quick Look.
-                    link?.onOpenImage?(url, body["file"] as? String)
+                    guard let open = link?.onOpenImage else {
+                        logger.error("openImage dropped: the page has no live link")
+                        break
+                    }
+                    open(url, body["file"] as? String)
+                } else if let body = message.body as? [String: Any] {
+                    logger.error("canopyLink: unhandled message \((body["type"] as? String) ?? "?", privacy: .public)")
                 }
             default:
                 break

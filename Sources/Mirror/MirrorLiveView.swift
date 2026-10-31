@@ -398,7 +398,7 @@ final class MirrorLiveModel {
             Task {
                 await self.files.showImage(url: url, name: name) { path in
                     guard let link else { throw MirrorLink.AssetError.closed }
-                    return try await link.requestAsset(path: path).data
+                    return try await link.requestAsset(path: path)
                 }
             }
         }
@@ -465,6 +465,12 @@ private struct MirrorFileOverlay: View {
             if let error = files.lastError {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.red)
+            } else if let name = files.openingImage {
+                Label {
+                    Text("Opening \(name)…").lineLimit(1).truncationMode(.middle)
+                } icon: {
+                    ProgressView()
+                }
             } else if files.showsOverlay, let transfer = files.current {
                 VStack(alignment: .leading, spacing: 6) {
                     Label(transfer.name, systemImage: "arrow.down.doc")

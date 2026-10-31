@@ -391,7 +391,13 @@ final class MirrorLiveModel {
             self?.transcriptDelivered = true
         }
         link.onFile = { [weak self] frame in
-            self?.files.handle(frame)
+            guard let self else { return }
+            if let url = MirrorFileWire.signInPage(frame) {
+                NSLog("[MirrorLink] the Mac sent a sign-in page; opening it in-app")
+                self.page.openSignInPage(url)
+                return
+            }
+            self.files.handle(frame)
         }
         link.onStatus = { [weak self] status in
             self?.status = status

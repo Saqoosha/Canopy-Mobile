@@ -118,6 +118,15 @@ struct MirrorFileReceiverTests {
         #expect(receiver.lastError == nil)
     }
 
+    @Test func anOpenURLFrameCarriesASignInPage() {
+        let page = MirrorFileWire.signInPage(["type": "open_url", "url": "https://claude.com/cai/oauth/authorize?code=true"])
+        #expect(page?.host == "claude.com")
+        #expect(MirrorFileWire.signInPage(["type": "open_url", "url": "file:///etc/passwd"]) == nil)
+        #expect(MirrorFileWire.signInPage(["type": "open_url", "url": "vscode://x"]) == nil)
+        #expect(MirrorFileWire.signInPage(["type": "open_url"]) == nil)
+        #expect(MirrorFileWire.signInPage(["type": "file_begin", "url": "https://claude.com/"]) == nil)
+    }
+
     @Test func fileFramesAreRecognised() {
         for type in ["file_begin", "file_chunk", "file_end", "open_url"] {
             #expect(MirrorFileWire.isFileFrame(type))

@@ -131,6 +131,8 @@ final class MirrorLink {
             "restart": true,
             // A file link tapped here comes back as `MirrorFileWire` frames instead of opening on the Mac.
             "files": true,
+            // A sign-in started here sends its OAuth page here as `open_url`, not to the Mac's browser.
+            "authPages": true,
             // The Mac buffers this session's frames, so a later attach can resume a kept page.
             "resume": true,
         ]

@@ -4,15 +4,23 @@ import SwiftUI
 ///
 /// Both are the same screen on the stack: the live attempt runs first and, on
 /// any failure or drop, the offline view takes its place with the reason on a
-/// banner; the toolbar button switches to it without one. The offline view's
-/// own Live button switches back, on the same screen.
+/// banner; the toolbar menu switches to it without one, and back, on the same
+/// screen.
 struct LiveFirstConversation<Offline: View>: View {
     /// The caller passes nil when no paste covers this Mac or the session has no `resumeId` to attach by.
     let live: MirrorTarget?
     let sessionId: String
     let title: String
-    /// `showLive` is nil when `live` is.
-    @ViewBuilder let offline: (_ liveUnavailable: String?, _ showLive: (() -> Void)?) -> Offline
+    /// The header's fallback second line; see `SessionHeader`.
+    let subtitle: String
+    /// The roster's live row for the header's dot and state, nil when it does not list the session.
+    let pane: PaneRow?
+    /// What the menu's Slack Thread item opens; no item when its `target` is nil.
+    let slack: SlackThreadContext?
+    @ViewBuilder let offline: (_ liveUnavailable: String?) -> Offline
+
+    /// The target the open Slack sheet was opened for, kept if the stored connection changes meanwhile.
+    @State private var slackPresented: MirrorTarget?
 
     @State private var fallback: Fallback?
     /// Bumped to rebuild the live view with a fresh link; iOS closes the socket while the app is in the background.
@@ -43,6 +51,13 @@ struct LiveFirstConversation<Offline: View>: View {
                     attempt += 1
                 }
             }
+            .sheet(isPresented: Binding(get: { slackPresented != nil }, set: { if !$0 { slackPresented = nil } })) {
+                if let slackPresented, let slack {
+                    SlackThreadSheet(target: slackPresented, sessionId: slack.sessionId,
+                                     resumeId: slack.resumeId, title: slack.title)
+                }
+            }
+            .onChange(of: slack?.dismissal) { _, _ in slackPresented = nil }
     }
 
     @ViewBuilder
@@ -51,12 +66,12 @@ struct LiveFirstConversation<Offline: View>: View {
             ProgressView("The Mac is restarting for an update. Reconnecting…")
                 .navigationTitle(title)
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { offlineButton }
+                .toolbar { liveToolbar }
         } else if live != nil, fallback == nil, waitingForNetwork {
             ProgressView(MirrorStall.label)
                 .navigationTitle(title)
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { offlineButton }
+                .toolbar { liveToolbar }
         } else if let live, fallback == nil {
             let current = attempt
             MirrorLiveContent(target: live, sessionId: sessionId, open: resumeOnAttach ? .resume : nil,
@@ -129,30 +144,61 @@ struct LiveFirstConversation<Offline: View>: View {
             .id(attempt)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { offlineButton }
+            .toolbar { liveToolbar }
         } else {
-            offline(unavailableReason, showLiveAction)
+            offline(unavailableReason)
+                .toolbar { menu(showingLive: false) }
         }
     }
 
-    private var offlineButton: some ToolbarContent {
-        ToolbarItem(placement: .topBarTrailing) {
-            Button {
-                waitingForRestart = false
-                restartUntil = nil
-                waitingForNetwork = false
-                stallUntil = nil
-                fallback = .chosen
-            } label: {
-                Image(systemName: "rectangle.on.rectangle.slash")
+    @ToolbarContentBuilder
+    private var liveToolbar: some ToolbarContent {
+        menu(showingLive: true)
+        SessionHeader(title: title, subtitle: subtitle, pane: pane)
+    }
+
+    /// Every action for the session behind one button, so the header keeps the width.
+    /// The offline view's header is its own; only the menu is added to it.
+    @ToolbarContentBuilder
+    private func menu(showingLive: Bool) -> some ToolbarContent {
+        let canSwitch = showingLive || live != nil
+        if slack?.target != nil || canSwitch {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    if let target = slack?.target {
+                        Button {
+                            slackPresented = target
+                        } label: {
+                            Label("Slack Thread", systemImage: "bubble.left.and.text.bubble.right")
+                        }
+                    }
+                    if showingLive {
+                        Button {
+                            showOffline()
+                        } label: {
+                            Label("Show Offline View", systemImage: "rectangle.on.rectangle.slash")
+                        }
+                    } else if live != nil {
+                        Button {
+                            showLive()
+                        } label: {
+                            Label("Open Live Session", systemImage: "rectangle.on.rectangle")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .accessibilityLabel("Session actions")
             }
-            .accessibilityLabel("Show offline view")
         }
     }
 
-    private var showLiveAction: (() -> Void)? {
-        guard live != nil else { return nil }
-        return { showLive() }
+    private func showOffline() {
+        waitingForRestart = false
+        restartUntil = nil
+        waitingForNetwork = false
+        stallUntil = nil
+        fallback = .chosen
     }
 
     /// A fresh attempt, so the live view that gave up is not the one shown again.

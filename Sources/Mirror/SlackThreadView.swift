@@ -172,37 +172,13 @@ struct SlackThreadSheet: View {
 
 /// The toolbar button and the sheet it opens. The sheet's state sits outside the
 /// toolbar, which is rebuilt whenever the conversation switches between live and offline.
-struct SlackThreadToolbar: ViewModifier {
-    /// Nil when no paste covers the Mac: then there is no button.
+/// What a conversation's menu needs to open the Slack thread sheet.
+struct SlackThreadContext {
+    /// Nil when no paste covers the Mac: then the menu has no Slack item.
     let target: MirrorTarget?
     let sessionId: String
     let resumeId: String?
     let title: String
     /// Changes on every notification tap; the sheet would hide what the tap opens.
     let dismissal: Int
-
-    /// The target the open sheet was opened for, kept if the stored connection changes meanwhile.
-    @State private var presented: MirrorTarget?
-
-    func body(content: Content) -> some View {
-        content
-            .toolbar {
-                if target != nil {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            presented = target
-                        } label: {
-                            Image(systemName: "bubble.left.and.text.bubble.right")
-                        }
-                        .accessibilityLabel("Slack thread")
-                    }
-                }
-            }
-            .sheet(isPresented: Binding(get: { presented != nil }, set: { if !$0 { presented = nil } })) {
-                if let presented {
-                    SlackThreadSheet(target: presented, sessionId: sessionId, resumeId: resumeId, title: title)
-                }
-            }
-            .onChange(of: dismissal) { _, _ in presented = nil }
-    }
 }

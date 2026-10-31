@@ -745,15 +745,17 @@ struct CanopyMobileApp: App {
         return LiveFirstConversation(
             live: live,
             sessionId: target.resumeId ?? target.sessionId,
-            title: title
-        ) { liveUnavailable, showLive in
-            offlineConversation(target, pane: pane, title: title, liveUnavailable: liveUnavailable, showLive: showLive)
+            title: title,
+            subtitle: target.subtitle,
+            pane: pane,
+            // Not gated on `live`: a binding can be listed or made while the session is not attachable.
+            // The roster's ids first: a route from an old push can carry a sessionId a Mac restart replaced.
+            slack: SlackThreadContext(target: mirror, sessionId: pane?.sessionId ?? target.sessionId,
+                                      resumeId: pane?.resumeId ?? target.resumeId, title: title,
+                                      dismissal: notificationTaps)
+        ) { liveUnavailable in
+            offlineConversation(target, pane: pane, title: title, liveUnavailable: liveUnavailable)
         }
-        // Not gated on `live`: a binding can be listed or made while the session is not attachable.
-        // The roster's ids first: a route from an old push can carry a sessionId a Mac restart replaced.
-        .modifier(SlackThreadToolbar(target: mirror, sessionId: pane?.sessionId ?? target.sessionId,
-                                     resumeId: pane?.resumeId ?? target.resumeId, title: title,
-                                     dismissal: notificationTaps))
         // Recorded on the wrapper, live branch included, so `SessionConversationView`
         // keeps no opinion about the app's socket table — it asks, and something
         // else decides whether the ask can be delivered yet.
@@ -791,7 +793,7 @@ struct CanopyMobileApp: App {
     }
 
     private func offlineConversation(_ target: ConversationTarget, pane: PaneRow?, title: String,
-                                     liveUnavailable: String?, showLive: (() -> Void)?) -> some View {
+                                     liveUnavailable: String?) -> some View {
         SessionConversationView(
             machine: target.machine,
             base: baseURL,
@@ -816,7 +818,6 @@ struct CanopyMobileApp: App {
             // not list this session — the header then shows no dot at all,
             // because grey means idle here and "we don't know" is not idle.
             pane: pane,
-            onShowLive: showLive,
             liveUnavailable: liveUnavailable,
             onDecision: { item, decision in
                 try await sendDecision(item: item, decision: decision)

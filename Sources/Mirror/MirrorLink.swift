@@ -47,6 +47,8 @@ final class MirrorLink {
     var onFile: (([String: Any]) -> Void)?
     /// The sign-in page of a login this phone's page started, to open in-app; the frame still goes to the page.
     var onSignInPage: ((URL) -> Void)?
+    /// A Read thumbnail the page asked to open full size: its `data:` or `canopy-asset` URL, and the file name.
+    var onOpenImage: ((String, String?) -> Void)?
     /// Set when the Mac answered `attach_error`: a refusal, which waiting will not change.
     private(set) var refusedByMac = false
     /// The TCP connection to the Mac was established.

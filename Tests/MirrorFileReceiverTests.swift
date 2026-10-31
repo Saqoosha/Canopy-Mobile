@@ -125,4 +125,84 @@ struct MirrorFileReceiverTests {
         #expect(!MirrorFileWire.isFileFrame("status"))
         #expect(!MirrorFileWire.isFileFrame(nil))
     }
+
+    @Test func imageSourcesFromThePagesURLs() {
+        let png = Data([0x89, 0x50, 0x4E, 0x47])
+        #expect(MirrorFileWire.imageSource("data:image/png;base64," + png.base64EncodedString()) == .inline(png, mime: "image/png"))
+        #expect(MirrorFileWire.imageSource("data:image/jpeg;name=a.jpg;base64," + png.base64EncodedString()) == .inline(png, mime: "image/jpeg"))
+        #expect(MirrorFileWire.imageSource("canopy-asset://ext/img/ab12") == .asset("imgfull/ab12"))
+        #expect(MirrorFileWire.imageSource("canopy-asset://ext/img/") == nil)
+        #expect(MirrorFileWire.imageSource("data:image/svg+xml,<svg/>") == nil)
+        #expect(MirrorFileWire.imageSource("https://example.com/a.png") == nil)
+    }
+
+    @Test func theImageFileNameFollowsItsMIMEType() {
+        #expect(MirrorFileWire.imageFileName("list.png", mime: "image/png") == "list.png")
+        #expect(MirrorFileWire.imageFileName("shot.jpeg", mime: "image/jpeg") == "shot.jpeg")
+        #expect(MirrorFileWire.imageFileName("pic.avif", mime: "image/png") == "pic.png")
+        #expect(MirrorFileWire.imageFileName("image", mime: "image/jpeg") == "image.jpg")
+        #expect(MirrorFileWire.imageFileName("odd.png", mime: "application/x-unknown") == "odd.png")
+    }
+
+    @Test func aLiveThumbnailOpensFromItsOwnBytes() async throws {
+        let (receiver, root) = makeReceiver()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let png = Data([0x89, 0x50, 0x4E, 0x47])
+        await receiver.showImage(url: "data:image/png;base64," + png.base64EncodedString(), name: "list.png") { _ in
+            Issue.record("an inline image needs no request")
+            return (Data(), "")
+        }
+        let url = try #require(receiver.received)
+        #expect(url.lastPathComponent == "list.png")
+        #expect(try Data(contentsOf: url) == png)
+    }
+
+    @Test func aReplayThumbnailAsksTheMacForTheOriginal() async throws {
+        let (receiver, root) = makeReceiver()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var asked: [String] = []
+        await receiver.showImage(url: "canopy-asset://ext/img/ab12", name: "../evil") { path in
+            asked.append(path)
+            #expect(receiver.openingImage == "image.png")
+            return (Data("full".utf8), "image/jpeg")
+        }
+        #expect(asked == ["imgfull/ab12"])
+        #expect(receiver.openingImage == nil)
+        let url = try #require(receiver.received)
+        #expect(url.lastPathComponent == "image.jpg")
+        #expect(try Data(contentsOf: url) == Data("full".utf8))
+    }
+
+    @Test func aFailedImageFetchSaysSoAndLeavesATransferRunning() async {
+        let (receiver, root) = makeReceiver()
+        defer { try? FileManager.default.removeItem(at: root) }
+        receiver.handle(["type": "file_begin", "id": "a", "name": "a.txt", "size": 1])
+        await receiver.showImage(url: "canopy-asset://ext/img/ab12", name: "list.png") { _ in
+            throw MirrorLink.AssetError.refused("not found")
+        }
+        #expect(receiver.received == nil)
+        #expect(receiver.openingImage == nil)
+        #expect(receiver.lastError?.hasPrefix("list.png: ") == true)
+        #expect(receiver.current?.id == "a")
+    }
+
+    @Test func aFetchThatAnswersAfterALaterTapOrADropIsDiscarded() async throws {
+        let (receiver, root) = makeReceiver()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let png = Data([0x89, 0x50, 0x4E, 0x47])
+        await receiver.showImage(url: "canopy-asset://ext/img/old", name: "old.png") { _ in
+            // The user taps a second thumbnail while the first is still on its way.
+            await receiver.showImage(url: "data:image/png;base64," + png.base64EncodedString(), name: "new.png") { _ in (Data(), "") }
+            return (Data("old".utf8), "image/png")
+        }
+        #expect(try #require(receiver.received).lastPathComponent == "new.png")
+        // The superseded fetch's "Opening" went with the later tap, not with the stale answer.
+        #expect(receiver.openingImage == nil)
+        await receiver.showImage(url: "canopy-asset://ext/img/late", name: "late.png") { _ in
+            receiver.connectionDropped()
+            return (Data("late".utf8), "image/png")
+        }
+        #expect(try #require(receiver.received).lastPathComponent == "new.png")
+        #expect(receiver.openingImage == nil)
+    }
 }

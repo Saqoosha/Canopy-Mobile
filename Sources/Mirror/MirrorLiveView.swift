@@ -393,6 +393,15 @@ final class MirrorLiveModel {
         link.onFile = { [weak self] frame in
             self?.files.handle(frame)
         }
+        link.onOpenImage = { [weak self, weak link] url, name in
+            guard let self else { return }
+            Task {
+                await self.files.showImage(url: url, name: name) { path in
+                    guard let link else { throw MirrorLink.AssetError.closed }
+                    return try await link.requestAsset(path: path)
+                }
+            }
+        }
         link.onSignInPage = { [weak self] url in
             NSLog("[MirrorLink] opening the sign-in page in-app")
             self?.page.openSignInPage(url)
@@ -456,6 +465,12 @@ private struct MirrorFileOverlay: View {
             if let error = files.lastError {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.red)
+            } else if let name = files.openingImage {
+                Label {
+                    Text("Opening \(name)…").lineLimit(1).truncationMode(.middle)
+                } icon: {
+                    ProgressView()
+                }
             } else if files.showsOverlay, let transfer = files.current {
                 VStack(alignment: .leading, spacing: 6) {
                     Label(transfer.name, systemImage: "arrow.down.doc")

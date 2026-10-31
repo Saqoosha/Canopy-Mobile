@@ -5,8 +5,8 @@ private let logger = Logger(subsystem: "sh.saqoo.canopy-app", category: "MirrorF
 
 /// A file the phone clicked in a live session, sent back by the Mac as `file_begin` /
 /// `file_chunk`* / `file_end`. The Mac sends these only to a client whose `attach` carried
-/// `"files": true`. Mirrors `MirrorFileWire` in the Canopy repo. Its `open_url` reaches the phone
-/// only for a sign-in the phone started (attach `"authPages": true`): see `signInPage`.
+/// `"files": true`. Mirrors `MirrorFileWire` in the Canopy repo, whose `open_url` serves only a
+/// Mac's `open` redirect: it is recognised here so it stays out of the page, and never opened.
 enum MirrorFileWire {
     static let begin = "file_begin"
     static let chunk = "file_chunk"
@@ -15,14 +15,6 @@ enum MirrorFileWire {
 
     static func isFileFrame(_ type: String?) -> Bool {
         type == begin || type == chunk || type == end || type == url
-    }
-
-    /// The http(s) page an `open_url` frame carries; nil for any other frame or scheme.
-    static func signInPage(_ frame: [String: Any]) -> URL? {
-        guard frame["type"] as? String == url, let text = frame["url"] as? String,
-              let page = URL(string: text), ["http", "https"].contains(page.scheme?.lowercased())
-        else { return nil }
-        return page
     }
 
     /// The name a `file_begin` may carry: a bare file name, never a path.

@@ -79,7 +79,6 @@ struct MachineControlTests {
         #expect(message["status"] as? Bool == true)
         #expect(message["compress"] as? String == MirrorWire.compressionName)
         #expect(message["files"] as? Bool == true)
-        #expect(message["authPages"] as? Bool == true)
         #expect(!message.keys.contains("open"))
     }
 

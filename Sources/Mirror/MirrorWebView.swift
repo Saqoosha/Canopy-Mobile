@@ -66,9 +66,21 @@ final class MirrorPage {
     fileprivate var handler: MirrorAssetSchemeHandler?
     fileprivate var proxy: WeakMessageProxy?
 
-    /// Opens a sign-in page the Mac sent over the page, in the in-app Safari sheet.
+    /// Opens `url` in an in-app Safari sheet over the page, so the app stays in the foreground:
+    /// a trip to Safari closes the socket and the return rebuilds the page, losing its code field.
     func openSignInPage(_ url: URL) {
-        MirrorWebView.openInApp(url, over: webView)
+        var top = webView?.window?.rootViewController
+        while let presented = top?.presentedViewController { top = presented }
+        // A parked page has no window; a sheet over another screen, or a trip to Safari, would be worse than nothing.
+        guard let top else {
+            logger.notice("sign-in page not opened: the page is not on screen")
+            return
+        }
+        guard !(top is SFSafariViewController) else { return }
+        let safari = SFSafariViewController(url: url)
+        // A card, not full screen: covering the live view fires its `onDisappear`, which parks the session.
+        safari.modalPresentationStyle = .pageSheet
+        top.present(safari, animated: true)
     }
 
     /// Unhooks the page from its link. Not done when the view leaves the screen: a parked page keeps receiving frames.
@@ -194,7 +206,6 @@ struct MirrorWebView: UIViewRepresentable {
         prepared.proxy.target = context.coordinator
         let ucc = prepared.webView.configuration.userContentController
         ucc.addUserScript(WKUserScript(source: Self.sendWithReturnScript(sendWithReturn), injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        ucc.addUserScript(WKUserScript(source: Self.oauthLinkScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         context.coordinator.sendWithReturn = sendWithReturn
         for script in attached.userScripts {
             ucc.addUserScript(WKUserScript(
@@ -242,53 +253,6 @@ struct MirrorWebView: UIViewRepresentable {
         coordinator.deliver = link.onFrame
     }
 
-    /// In an in-app Safari sheet, so the app stays in the foreground: a trip to Safari closes
-    /// the socket, the return rebuilds the page, and a sign-in waiting for its pasted code is lost.
-    static func openInApp(_ url: URL, over view: UIView?) {
-        var top = view?.window?.rootViewController
-        while let presented = top?.presentedViewController { top = presented }
-        guard let top else {
-            UIApplication.shared.open(url)
-            return
-        }
-        // The copy button can report the same URL twice; one sheet is enough.
-        guard !(top is SFSafariViewController) else { return }
-        let safari = SFSafariViewController(url: url)
-        // A card, not full screen: covering the live view fires its `onDisappear`, which parks
-        // the session and rebuilds the page on the way back.
-        safari.modalPresentationStyle = .pageSheet
-        top.present(safari, animated: true)
-    }
-
-    /// The sign-in page's "Continue in browser" step: the Mac opens the OAuth page on its own
-    /// screen, so the phone only gets a URL field and a copy button. Tapping either opens the
-    /// page in the in-app Safari sheet; a trip to Safari would rebuild the page and lose the
-    /// field the code is pasted into.
-    static let oauthLinkScript = #"""
-    (function () {
-      const isAuth = (s) => typeof s === "string" && /^https:\/\/\S+\/oauth\/authorize\?/.test(s.trim());
-      const open = (s) => { try { window.webkit.messageHandlers.canopyLink.postMessage(s.trim()); } catch (e) {} };
-      const clip = navigator.clipboard;
-      if (clip && clip.writeText) {
-        const write = clip.writeText.bind(clip);
-        clip.writeText = (t) => { if (isAuth(t)) open(t); return write(t); };
-      }
-      const exec = document.execCommand.bind(document);
-      document.execCommand = function (cmd) {
-        if (String(cmd).toLowerCase() === "copy") {
-          const el = document.activeElement;
-          const t = el && "value" in el ? el.value : String(window.getSelection() || "");
-          if (isAuth(t)) open(t);
-        }
-        return exec.apply(document, arguments);
-      };
-      document.addEventListener("click", (e) => {
-        const el = e.target;
-        if (el && el.tagName === "INPUT" && isAuth(el.value)) open(el.value);
-      }, true);
-    })();
-    """#
-
     fileprivate static func sendWithReturnScript(_ on: Bool) -> String {
         "window.__canopyReturnSends=\(on)"
     }
@@ -334,10 +298,6 @@ struct MirrorWebView: UIViewRepresentable {
             logger.error("entry page failed to load: \(error.localizedDescription, privacy: .public)")
         }
 
-        func open(_ url: URL, over webView: WKWebView?) {
-            MirrorWebView.openInApp(url, over: webView)
-        }
-
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
             switch message.name {
             case "vscodeHost":
@@ -348,7 +308,7 @@ struct MirrorWebView: UIViewRepresentable {
                 logger.notice("[js] \(String(describing: message.body), privacy: .private)")
             case "canopyLink":
                 if let text = message.body as? String, let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased()) {
-                    open(url, over: message.webView)
+                    UIApplication.shared.open(url)
                 }
             default:
                 break

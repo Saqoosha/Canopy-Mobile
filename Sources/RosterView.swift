@@ -151,7 +151,9 @@ struct RosterView: View {
     }
 
     @ViewBuilder private func quotaMeters(_ snapshot: MachineSnapshot) -> some View {
-        CanopyUsageMeter(title: "5h usage", percentage: snapshot.sessionPct)
+        if snapshot.hasSessionWindow ?? true {
+            CanopyUsageMeter(title: "5h usage", percentage: snapshot.sessionPct)
+        }
         CanopyUsageMeter(title: "Weekly usage", percentage: snapshot.weeklyPct)
     }
 

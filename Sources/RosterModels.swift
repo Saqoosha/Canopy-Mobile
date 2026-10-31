@@ -31,4 +31,7 @@ struct MachineSnapshot: Codable, Equatable {
     let sessionPct: Int
     let weeklyPct: Int
     let panes: [PaneRow]
+    /// False when the Mac's account has no 5-hour window (verified Ultra).
+    /// Nil from a Mac older than the field, read as true.
+    var hasSessionWindow: Bool? = nil
 }

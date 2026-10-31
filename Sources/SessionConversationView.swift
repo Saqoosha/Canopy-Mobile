@@ -97,8 +97,6 @@ struct SessionConversationView: View {
     /// "asking". A nil pane draws no dot — grey means idle in this palette,
     /// and "the roster doesn't list it" is not idle.
     let pane: PaneRow?
-    /// Switches this screen back to the Mac's live view; nil when the session cannot attach, and then no Live button is drawn.
-    let onShowLive: (() -> Void)?
     /// Why the live attempt that preceded this view gave up, shown on a banner; nil when there was none.
     let liveUnavailable: String?
     /// Throwing, because a decision that was not recorded has to reach the
@@ -356,59 +354,10 @@ struct SessionConversationView: View {
                     .background(.bar)
             }
         }
+        // The trailing menu, Open Live Session included, is `LiveFirstConversation`'s.
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                if let onShowLive {
-                    Button {
-                        onShowLive()
-                    } label: {
-                        Image(systemName: "rectangle.on.rectangle")
-                    }
-                    .accessibilityLabel("Open live session")
-                }
-            }
-            ToolbarItem(placement: .principal) {
-                // Ticks so the elapsed figure advances while you read. Only
-                // the header is inside it — wrapping the transcript would
-                // re-evaluate every rendered Markdown block once a second.
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    VStack(spacing: 1) {
-                        HStack(spacing: 5) {
-                            if let pane {
-                                Circle()
-                                    .fill(SessionActivityStyle.color(for: pane.state))
-                                    .frame(width: 7, height: 7)
-                            }
-                            Text(title)
-                                .font(.headline)
-                                .lineLimit(1)
-                        }
-                        Text(statusLine(now: context.date))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-            }
+            SessionHeader(title: title, subtitle: subtitle, pane: pane)
         }
-    }
-
-    /// "asking 2m · Canopy · main" — what the session is doing and for how
-    /// long, then the project the header already carried.
-    ///
-    /// **The state leads because the line truncates from the end.** With the
-    /// project first, a long "host · project" tail-truncated away exactly the
-    /// text this header was added to show, leaving the part that was already
-    /// there — the feature defeating itself on the sessions with the longest
-    /// names. Losing the project to truncation costs nothing: it is on the
-    /// row you tapped to get here.
-    ///
-    /// The state is dropped rather than guessed when the roster does not list
-    /// this session, so the line shortens instead of claiming something.
-    private func statusLine(now: Date) -> String {
-        guard let pane else { return subtitle }
-        let age = SessionActivityStyle.elapsed(since: pane.stateSince, now: now)
-        return "\(pane.state) \(age) · \(subtitle)"
     }
 
     private var composer: some View {

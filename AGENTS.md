@@ -475,7 +475,7 @@ git rebase origin/main --update-refs
 
 | | |
 |---|---|
-| Swift テスト | 306（Slack スレッドの紐付け、+6） |
+| Swift テスト | 319（Slack 紐付けで 312、セッション画面のヘッダとメニューで +7） |
 | worker テスト | 137（2026-09-11 実測） |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 | DO の append 1 件 | 248 rows_read（3 つの上限すべて満杯、2026-09-11 実測）/ 210（生きているセッション 1 本） |

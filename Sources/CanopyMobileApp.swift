@@ -738,22 +738,26 @@ struct CanopyMobileApp: App {
         // to answer it differently.
         let pane = livePane(for: target)
         // The Mac matches on resumeId; a session without one cannot attach, and one the roster reports as not live would only be refused.
-        // Nil for BOTH views, so the offline screen offers no Live button either.
+        // Nil for BOTH views, so the offline screen's menu offers no Open Live Session either.
         let mirror = mirrorStore.target(for: target.machine)
         let live = (target.resumeId == nil || pane?.isLive == false) ? nil : mirror
         let title = pane.flatMap { $0.title.isEmpty ? nil : $0.title } ?? target.title
         return LiveFirstConversation(
             live: live,
             sessionId: target.resumeId ?? target.sessionId,
-            title: title
-        ) { liveUnavailable, showLive in
-            offlineConversation(target, pane: pane, title: title, liveUnavailable: liveUnavailable, showLive: showLive)
+            title: title,
+            subtitle: target.subtitle,
+            pane: pane,
+            // Not gated on `live`: a binding can be listed or made while the session is not attachable.
+            // The roster's ids first: a route from an old push can carry a sessionId a Mac restart replaced.
+            slack: mirror.map {
+                SlackThreadContext(target: $0, sessionId: pane?.sessionId ?? target.sessionId,
+                                   resumeId: pane?.resumeId ?? target.resumeId, title: title)
+            },
+            dismissal: notificationTaps
+        ) { liveUnavailable in
+            offlineConversation(target, pane: pane, title: title, liveUnavailable: liveUnavailable)
         }
-        // Not gated on `live`: a binding can be listed or made while the session is not attachable.
-        // The roster's ids first: a route from an old push can carry a sessionId a Mac restart replaced.
-        .modifier(SlackThreadToolbar(target: mirror, sessionId: pane?.sessionId ?? target.sessionId,
-                                     resumeId: pane?.resumeId ?? target.resumeId, title: title,
-                                     dismissal: notificationTaps))
         // Recorded on the wrapper, live branch included, so `SessionConversationView`
         // keeps no opinion about the app's socket table — it asks, and something
         // else decides whether the ask can be delivered yet.
@@ -791,7 +795,7 @@ struct CanopyMobileApp: App {
     }
 
     private func offlineConversation(_ target: ConversationTarget, pane: PaneRow?, title: String,
-                                     liveUnavailable: String?, showLive: (() -> Void)?) -> some View {
+                                     liveUnavailable: String?) -> some View {
         SessionConversationView(
             machine: target.machine,
             base: baseURL,
@@ -816,7 +820,6 @@ struct CanopyMobileApp: App {
             // not list this session — the header then shows no dot at all,
             // because grey means idle here and "we don't know" is not idle.
             pane: pane,
-            onShowLive: showLive,
             liveUnavailable: liveUnavailable,
             onDecision: { item, decision in
                 try await sendDecision(item: item, decision: decision)

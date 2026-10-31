@@ -40,6 +40,17 @@ struct MirrorSignInTests {
         #expect(signIn.pageToOpen(authURL("file:///etc/passwd")) == nil)
     }
 
+    @Test func onlyTheOpenPagesExactURLReopens() {
+        var signIn = MirrorSignIn()
+        #expect(signIn.pageToReopen(manualURL) == nil)
+        signIn.noteSent(login)
+        _ = signIn.pageToOpen(authURL(manualURL))
+        #expect(signIn.pageToReopen(" \(manualURL)\n")?.absoluteString == manualURL)
+        #expect(signIn.pageToReopen("https://github.com/login/oauth/authorize?x=1") == nil)
+        _ = signIn.pageToOpen(["type": "from-extension", "message": ["type": "response", "requestId": "L1"]])
+        #expect(signIn.pageToReopen(manualURL) == nil)
+    }
+
     @Test func otherRequestsAreNotLogins() {
         var signIn = MirrorSignIn()
         signIn.noteSent(["type": "request", "requestId": "L1", "request": ["type": "submit_oauth_code", "code": "x"]])

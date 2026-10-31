@@ -179,6 +179,11 @@ final class MirrorLink {
         failPendingAssets()
     }
 
+    /// The open sign-in page, when the page reported exactly its URL from its URL field or copy button.
+    func signInPageToReopen(_ text: String) -> URL? {
+        signIn.pageToReopen(text)
+    }
+
     func send(_ object: [String: Any]) {
         if claimsPageSessionRequest(object) { return }
         // Counted even when dropped below: a request that never left still waits for an answer.

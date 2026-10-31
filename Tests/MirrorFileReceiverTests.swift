@@ -129,6 +129,7 @@ struct MirrorFileReceiverTests {
     @Test func imageSourcesFromThePagesURLs() {
         let png = Data([0x89, 0x50, 0x4E, 0x47])
         #expect(MirrorFileWire.imageSource("data:image/png;base64," + png.base64EncodedString()) == .inline(png, mime: "image/png"))
+        #expect(MirrorFileWire.imageSource("data:image/jpeg;name=a.jpg;base64," + png.base64EncodedString()) == .inline(png, mime: "image/jpeg"))
         #expect(MirrorFileWire.imageSource("canopy-asset://ext/img/ab12") == .asset("imgfull/ab12"))
         #expect(MirrorFileWire.imageSource("canopy-asset://ext/img/") == nil)
         #expect(MirrorFileWire.imageSource("data:image/svg+xml,<svg/>") == nil)
@@ -162,7 +163,7 @@ struct MirrorFileReceiverTests {
         var asked: [String] = []
         await receiver.showImage(url: "canopy-asset://ext/img/ab12", name: "../evil") { path in
             asked.append(path)
-            #expect(receiver.openingImage == "image")
+            #expect(receiver.openingImage == "image.png")
             return (Data("full".utf8), "image/jpeg")
         }
         #expect(asked == ["imgfull/ab12"])
@@ -195,6 +196,8 @@ struct MirrorFileReceiverTests {
             return (Data("old".utf8), "image/png")
         }
         #expect(try #require(receiver.received).lastPathComponent == "new.png")
+        // The superseded fetch's "Opening" went with the later tap, not with the stale answer.
+        #expect(receiver.openingImage == nil)
         await receiver.showImage(url: "canopy-asset://ext/img/late", name: "late.png") { _ in
             receiver.connectionDropped()
             return (Data("late".utf8), "image/png")

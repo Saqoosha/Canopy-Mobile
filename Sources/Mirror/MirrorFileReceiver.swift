@@ -28,7 +28,7 @@ enum MirrorFileWire {
 
     static func imageSource(_ url: String) -> ImageSource? {
         if url.hasPrefix("data:"), let comma = url.firstIndex(of: ","), url[..<comma].hasSuffix(";base64") {
-            let mime = String(url[url.index(url.startIndex, offsetBy: 5)..<comma].dropLast(";base64".count))
+            let mime = String(url[url.index(url.startIndex, offsetBy: 5)..<comma].prefix { $0 != ";" })
             return Data(base64Encoded: String(url[url.index(after: comma)...])).map { .inline($0, mime: mime) }
         }
         let prefix = "\(MirrorAssetSchemeHandler.scheme)://ext/img/"
@@ -190,7 +190,9 @@ final class MirrorFileReceiver {
     func showImage(url: String, name: String?, fetch: (String) async throws -> (data: Data, mime: String)) async {
         imageRequest += 1
         let request = imageRequest
-        let shownName = MirrorFileWire.sanitizedName(name) ?? "image"
+        // Whatever an earlier tap was fetching is superseded, so its "Opening" goes now.
+        openingImage = nil
+        let shownName = MirrorFileWire.sanitizedName(name) ?? "image.png"
         guard let source = MirrorFileWire.imageSource(url) else {
             logger.error("openImage: unsupported URL (\(url.prefix(while: { $0 != ":" }).prefix(24), privacy: .public))")
             report("\(shownName): not an image this app can open")

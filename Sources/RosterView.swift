@@ -77,11 +77,19 @@ struct RosterView: View {
     }
 
     private func attentionPanes(now: Date) -> [(machine: String, pane: PaneRow)] {
-        sortedMachineIds.flatMap { id -> [(machine: String, pane: PaneRow)] in
+        Self.attentionOrder(sortedMachineIds.flatMap { id -> [(machine: String, pane: PaneRow)] in
             guard let snapshot = snapshots[id], errors[id] == nil,
                   !isStale(snapshot: snapshot, now: now) else { return [] }
             return snapshot.panes.filter { $0.state == "asking" || JobDisplay.needsAttention($0) }.map { (id, $0) }
-        }
+        })
+    }
+
+    /// Asks first: the banner opens the first entry, and an ask blocks a tool call.
+    nonisolated static func attentionOrder(_ panes: [(machine: String, pane: PaneRow)]) -> [(machine: String, pane: PaneRow)] {
+        panes.enumerated().sorted { a, b in
+            let aAsk = a.element.pane.state == "asking", bAsk = b.element.pane.state == "asking"
+            return aAsk != bAsk ? aAsk : a.offset < b.offset
+        }.map(\.element)
     }
 
     private func machineSection(id: String, now: Date) -> some View {
@@ -181,7 +189,7 @@ struct RosterView: View {
                         .font(.caption)
                 }
                 Spacer(minLength: 4)
-                if let job = Self.trailingJob(pane) {
+                if let job = pane.job {
                     let t = JobDisplay.trailing(job, now: now)
                     VStack(alignment: .trailing, spacing: 0) {
                         Text(t.top)
@@ -239,22 +247,18 @@ struct RosterView: View {
         }
     }
 
-    /// HIG: no confirmation for a common action that can be undone. An idle session can be
-    /// reopened from Open on Mac, so it stops at once; work in flight cannot be resumed.
-    /// The job whose time (or 完了) takes the elapsed time's place. A finished job keeps its
-    /// 完了: the Mac falls back to its unread mark, which the roster never carries.
-    static func trailingJob(_ pane: PaneRow) -> PaneJob? {
-        pane.job
-    }
-
-    /// The Mac sidebar's second line: a stalled job's count, else the attention line while the
-    /// session asks or has an unseen result.
-    static func attentionLine(_ pane: PaneRow) -> String? {
-        if let job = pane.job, job.state == "stalled" { return JobDisplay.stalledLine(job) }
+    /// The Mac sidebar's second line: an ask's own line wins over a stall (it ranks above
+    /// one); otherwise a stall shows its count; otherwise the line while asking or unread.
+    nonisolated static func attentionLine(_ pane: PaneRow) -> String? {
+        if pane.state != "asking", pane.state != "error", let job = pane.job, job.state == "stalled" {
+            return JobDisplay.stalledLine(job)
+        }
         guard pane.state == "asking" || pane.state == "unread" else { return nil }
         return pane.attentionLine
     }
 
+    /// HIG: no confirmation for a common action that can be undone. An idle session can be
+    /// reopened from Open on Mac, so it stops at once; work in flight cannot be resumed.
     static func stopNeedsConfirmation(_ pane: PaneRow) -> Bool {
         ["working", "background", "asking"].contains(pane.state)
     }

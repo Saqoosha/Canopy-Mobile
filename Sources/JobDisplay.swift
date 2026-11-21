@@ -1,12 +1,17 @@
 import Foundation
 
-/// How a job looks on a roster row. Mirrors Canopy's `JobDisplay` (Sources/Canopy/Jobs/JobDisplay.swift)
-/// string for string, so the phone row reads like the Mac sidebar row; diff the two when either changes.
+/// How a job looks on a roster row. Its strings match Canopy's `JobDisplay` (Sources/Canopy/Jobs/JobDisplay.swift);
+/// diff the two when either changes. Unlike the Mac, a finished job keeps showing 完了.
 /// A display-level override only: `PaneRow.state` keeps its meaning everywhere else.
 enum JobDisplay {
+    /// `H:mm` today, `明日 H:mm` tomorrow, `M/d H:mm` after that.
     static func timeLabel(_ eta: Date, now: Date, calendar: Calendar = .current) -> String {
         let clock = String(format: "%d:%02d", calendar.component(.hour, from: eta), calendar.component(.minute, from: eta))
-        return calendar.isDate(eta, inSameDayAs: now) ? clock : "明日 \(clock)"
+        if calendar.isDate(eta, inSameDayAs: now) { return clock }
+        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now), calendar.isDate(eta, inSameDayAs: tomorrow) {
+            return "明日 \(clock)"
+        }
+        return "\(calendar.component(.month, from: eta))/\(calendar.component(.day, from: eta)) \(clock)"
     }
 
     static func trailing(_ job: PaneJob, now: Date, calendar: Calendar = .current)

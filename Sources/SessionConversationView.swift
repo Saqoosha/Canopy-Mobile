@@ -964,11 +964,7 @@ private struct MessageBlock: View {
     private var unansweredForm: [AskChoice]? { item.answerableForm }
 
     private var icon: String {
-        switch item.kind {
-        case "asking": "hand.raised.fill"
-        case "sent": "arrow.up.circle.fill"
-        default: "checkmark.circle"
-        }
+        item.kind == "completed" ? "checkmark.circle" : HistoryKindStyle.symbol(for: item.kind, filled: true)
     }
 
     /// Send one Allow/Deny and put the failure back on the card.

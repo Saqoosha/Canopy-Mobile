@@ -61,11 +61,35 @@ struct JobDisplayTests {
 
     @Test func aFinishedJobShowsDoneWhereTheTimeWas() {
         let done = PaneJob(label: "IG LOD", done: 793, total: 793, state: "done")
-        let pane = PaneRow(sessionId: "s", resumeId: "r", paneIndex: 0, title: "T", project: "P", state: "idle",
-                           stateSince: 0, contextPct: 0, model: "", messageCount: 0, live: true, job: done)
-        #expect(RosterView.trailingJob(pane) == done)
         #expect(JobDisplay.trailing(done, now: now, calendar: Self.cal).top == "完了")
         #expect(!JobDisplay.drawsRing(done))
+    }
+
+    @Test func twoDaysOutShowsTheDate() {
+        #expect(JobDisplay.timeLabel(at(23, 13, 5), now: now, calendar: Self.cal) == "11/23 13:05")
+    }
+
+    private func pane(_ state: String, job: PaneJob?, line: String? = nil) -> PaneRow {
+        PaneRow(sessionId: "s", resumeId: "r", paneIndex: 0, title: "T", project: "P", state: state,
+                stateSince: 0, contextPct: 0, model: "", messageCount: 0, live: true, attentionLine: line, job: job)
+    }
+
+    @Test func anAskingRowKeepsItsQuestionOverAStall() {
+        #expect(RosterView.attentionLine(pane("asking", job: stalled, line: "Bash: make")) == "Bash: make")
+        #expect(RosterView.attentionLine(pane("idle", job: stalled)) == "680/1077 で止まっている")
+        #expect(RosterView.attentionLine(pane("idle", job: running, line: "x")) == nil)
+    }
+
+    @Test func askingPanesComeBeforeStalledJobs() {
+        let ordered = RosterView.attentionOrder([("a", pane("idle", job: stalled)), ("b", pane("asking", job: nil))])
+        #expect(ordered.map { $0.machine } == ["b", "a"])
+    }
+
+    @Test func historyIconsTellAStallFromACompletion() {
+        #expect(HistoryKindStyle.symbol(for: "job_stalled", filled: false) == "exclamationmark.triangle")
+        #expect(HistoryKindStyle.symbol(for: "job_done", filled: false) == "flag.checkered")
+        #expect(HistoryKindStyle.symbol(for: "completed", filled: false) == "checkmark.circle")
+        #expect(HistoryKindStyle.symbol(for: "asking", filled: true) == "hand.raised.fill")
     }
 
     @Test func decodesJobAndAttentionLine() throws {

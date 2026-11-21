@@ -54,8 +54,8 @@ struct HistoryView: View {
 
     private func row(_ item: NotificationHistoryItem) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: item.kind == "asking" ? "hand.raised" : item.kind == "sent" ? "arrow.up.circle" : "checkmark.circle")
-                .foregroundStyle(item.kind == "asking" ? Color.orange : Color.secondary)
+            Image(systemName: HistoryKindStyle.symbol(for: item.kind, filled: false))
+                .foregroundStyle(HistoryKindStyle.tint(for: item.kind))
                 .frame(width: 22)
                 .padding(.top, 2)
                 .accessibilityHidden(true)

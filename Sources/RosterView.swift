@@ -80,7 +80,7 @@ struct RosterView: View {
         sortedMachineIds.flatMap { id -> [(machine: String, pane: PaneRow)] in
             guard let snapshot = snapshots[id], errors[id] == nil,
                   !isStale(snapshot: snapshot, now: now) else { return [] }
-            return snapshot.panes.filter { $0.state == "asking" }.map { (id, $0) }
+            return snapshot.panes.filter { $0.state == "asking" || JobDisplay.needsAttention($0) }.map { (id, $0) }
         }
     }
 
@@ -167,24 +167,39 @@ struct RosterView: View {
     private func paneRow(_ pane: PaneRow, machineId: String, now: Date) -> some View {
         Button { onSelectPane(machineId, pane) } label: {
             HStack(alignment: .top, spacing: 10) {
-                Circle()
-                    .fill(SessionActivityStyle.color(for: pane.state))
-                    .frame(width: 7, height: 7)
-                    .padding(.top, 7)
+                JobRingDot(state: pane.state, job: pane.job)
+                    .padding(.top, 3)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(pane.title).font(.body.weight(.medium))
                         .foregroundStyle(.primary)
+                    if let line = Self.attentionLine(pane) {
+                        Text(line).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
                     (Text("\(pane.project) · ").foregroundStyle(.secondary)
                      + Text(pane.state.capitalized).foregroundStyle(SessionActivityStyle.color(for: pane.state)))
                         .font(.caption)
                 }
                 Spacer(minLength: 4)
-                Text(SessionActivityStyle.elapsed(since: pane.stateSince, now: now))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                if let job = pane.job, JobDisplay.drawsRing(job) {
+                    let t = JobDisplay.trailing(job, now: now)
+                    VStack(alignment: .trailing, spacing: 0) {
+                        Text(t.top)
+                            .font(.caption.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(t.isAlert ? SessionActivityStyle.color(for: "error") : .primary)
+                        if let bottom = t.bottom {
+                            Text(bottom).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                    }
                     .fixedSize()
                     .padding(.top, 3)
+                } else {
+                    Text(SessionActivityStyle.elapsed(since: pane.stateSince, now: now))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                        .padding(.top, 3)
+                }
                 CanopyDisclosure().padding(.top, 5)
             }
             .padding(.vertical, 2)
@@ -226,6 +241,14 @@ struct RosterView: View {
 
     /// HIG: no confirmation for a common action that can be undone. An idle session can be
     /// reopened from Open on Mac, so it stops at once; work in flight cannot be resumed.
+    /// The Mac sidebar's second line: a stalled job's count, else the attention line while the
+    /// session asks or has an unseen result.
+    static func attentionLine(_ pane: PaneRow) -> String? {
+        if let job = pane.job, job.state == "stalled" { return JobDisplay.stalledLine(job) }
+        guard pane.state == "asking" || pane.state == "unread" else { return nil }
+        return pane.attentionLine
+    }
+
     static func stopNeedsConfirmation(_ pane: PaneRow) -> Bool {
         ["working", "background", "asking"].contains(pane.state)
     }
@@ -236,5 +259,32 @@ struct RosterView: View {
         if let error = error as? RosterError { return error.message }
         if let error = error as? RosterSocketError { return error.message }
         return error.localizedDescription
+    }
+}
+
+/// The activity dot inside a progress ring while the session has a job running; both in the
+/// row's own state color (`JobDisplay.ringState`), as on the Mac sidebar.
+private struct JobRingDot: View {
+    let state: String
+    let job: PaneJob?
+
+    var body: some View {
+        if let job, JobDisplay.drawsRing(job) {
+            let color = SessionActivityStyle.color(for: JobDisplay.ringState(state, job: job))
+            ZStack {
+                Circle().stroke(color.opacity(0.18), lineWidth: 2)
+                Circle()
+                    .trim(from: 0, to: JobDisplay.fraction(job))
+                    .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Circle().fill(color).frame(width: 7, height: 7)
+            }
+            .frame(width: 15, height: 15)
+        } else {
+            Circle()
+                .fill(SessionActivityStyle.color(for: state))
+                .frame(width: 7, height: 7)
+                .padding(4)
+        }
     }
 }

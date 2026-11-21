@@ -28,7 +28,7 @@ Mac の [Canopy](https://github.com/Saqoosha/Canopy) で動いているセッシ
 # worker
 cd worker && npm test                 # vitest
 cd worker && npx tsc --noEmit         # 型検査。テストが緑でもここで落ちることがある
-cd worker && npx wrangler deploy
+cd worker && cf deploy                 # cloudflare.config.ts。cf の saqoosha プロファイル（a@saqoo.sh）で。wrangler.toml は vitest 用に残している
 
 # Swift（シミュレータ。udid は xcrun simctl list devices available から）
 xcodebuild test -project CanopyMobile.xcodeproj -scheme CanopyMobile \
@@ -60,7 +60,7 @@ asc builds add-groups --app 6810164313 --latest \
 | | |
 |---|---|
 | Worker | `canopy-mobile-relay` / <https://canopy-mobile-relay.saqoosha.workers.dev> |
-| Cloudflare account | `0f56ad2619afc619cc2975dd0728f8a9`（`wrangler.toml` に固定。デプロイ時に選択を訊かれない） |
+| Cloudflare account | `0f56ad2619afc619cc2975dd0728f8a9`（`cloudflare.config.ts` と `wrangler.toml` に固定。デプロイ時に選択を訊かれない） |
 | KV namespace `MACHINES` | `34a34a05b2194af6b9f2c89847a57ea1`。電話が列挙できる唯一の機械一覧 |
 | Bundle ID | `sh.saqoo.canopy-app`（+ `.NotificationService` / `.tests`） |
 | Development team | `VCFY2GFR89` |

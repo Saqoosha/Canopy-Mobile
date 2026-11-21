@@ -128,6 +128,36 @@ describe("push notifications", () => {
     expect(res.status).toBe(400);
   });
 
+  for (const kind of ["job_stalled", "job_done"]) {
+    it(`notify accepts a ${kind} push without a requestId`, async () => {
+      const res = await SELF.fetch("https://x/notify", {
+        method: "POST",
+        headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+        body: JSON.stringify({ machine: "m1", sessionId: "s1", title: "h7", body: "680/1077 で止まっている", kind }),
+      });
+      // Past validation: refused only because no device has registered.
+      expect(res.status).toBe(503);
+    });
+
+    it(`notify rejects a requestId on a ${kind} push`, async () => {
+      const res = await SELF.fetch("https://x/notify", {
+        method: "POST",
+        headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+        body: JSON.stringify({ machine: "m1", sessionId: "s1", title: "t", body: "b", kind, requestId: "r1" }),
+      });
+      expect(res.status).toBe(400);
+    });
+  }
+
+  it("notify names every accepted kind when it refuses one", async () => {
+    const res = await SELF.fetch("https://x/notify", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: "m1", sessionId: "s1", title: "t", body: "b", kind: "gossip" }),
+    });
+    expect(await res.json()).toEqual({ error: "kind must be completed, asking, job_stalled or job_done" });
+  });
+
   it("notify rejects a requestId on a completed push", async () => {
     const res = await SELF.fetch("https://x/notify", {
       method: "POST",

@@ -59,6 +59,15 @@ struct JobDisplayTests {
         #expect(!JobDisplay.needsAttention(calm))
     }
 
+    @Test func aFinishedJobShowsDoneWhereTheTimeWas() {
+        let done = PaneJob(label: "IG LOD", done: 793, total: 793, state: "done")
+        let pane = PaneRow(sessionId: "s", resumeId: "r", paneIndex: 0, title: "T", project: "P", state: "idle",
+                           stateSince: 0, contextPct: 0, model: "", messageCount: 0, live: true, job: done)
+        #expect(RosterView.trailingJob(pane) == done)
+        #expect(JobDisplay.trailing(done, now: now, calendar: Self.cal).top == "完了")
+        #expect(!JobDisplay.drawsRing(done))
+    }
+
     @Test func decodesJobAndAttentionLine() throws {
         let json = Data(#"{"sessionId":"s","paneIndex":0,"title":"","project":"","state":"background","stateSince":0,"contextPct":0,"model":"","messageCount":0,"attentionLine":"Bash: make","job":{"label":"IG LOD","done":328,"total":793,"etaAt":1795000000,"state":"running"}}"#.utf8)
         let row = try JSONDecoder().decode(PaneRow.self, from: json)

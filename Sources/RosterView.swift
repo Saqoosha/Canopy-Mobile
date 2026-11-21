@@ -181,7 +181,7 @@ struct RosterView: View {
                         .font(.caption)
                 }
                 Spacer(minLength: 4)
-                if let job = pane.job, JobDisplay.drawsRing(job) {
+                if let job = Self.trailingJob(pane) {
                     let t = JobDisplay.trailing(job, now: now)
                     VStack(alignment: .trailing, spacing: 0) {
                         Text(t.top)
@@ -241,6 +241,12 @@ struct RosterView: View {
 
     /// HIG: no confirmation for a common action that can be undone. An idle session can be
     /// reopened from Open on Mac, so it stops at once; work in flight cannot be resumed.
+    /// The job whose time (or 完了) takes the elapsed time's place. A finished job keeps its
+    /// 完了: the Mac falls back to its unread mark, which the roster never carries.
+    static func trailingJob(_ pane: PaneRow) -> PaneJob? {
+        pane.job
+    }
+
     /// The Mac sidebar's second line: a stalled job's count, else the attention line while the
     /// session asks or has an unseen result.
     static func attentionLine(_ pane: PaneRow) -> String? {

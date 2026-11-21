@@ -26,9 +26,11 @@ Mac の [Canopy](https://github.com/Saqoosha/Canopy) で動いているセッシ
 
 ```bash
 # worker
+# 設定は 2 つ: cloudflare.config.ts（deploy）と wrangler.toml（vitest と、secret・KV を扱う wrangler コマンド）。binding や日付を変えたら両方そろえる。
+# wrangler のコマンドは relay のアカウント（0f56ad…）でログインしていないと通らない。
 cd worker && npm test                 # vitest
 cd worker && npx tsc --noEmit         # 型検査。テストが緑でもここで落ちることがある
-cd worker && cf deploy                 # cloudflare.config.ts。cf の saqoosha プロファイル（a@saqoo.sh）で。wrangler.toml は vitest 用に残している
+cd worker && npm run deploy           # cf deploy（ロックした cf で）。cloudflare.config.ts を使う。cf の saqoosha プロファイル（a@saqoo.sh）で
 
 # Swift（シミュレータ。udid は xcrun simctl list devices available から）
 xcodebuild test -project CanopyMobile.xcodeproj -scheme CanopyMobile \

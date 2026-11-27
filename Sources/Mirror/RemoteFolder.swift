@@ -8,6 +8,37 @@ enum RemoteFolder {
         return (base as NSString).appendingPathComponent(name)
     }
 
+    /// Canopy's name for the folder sessions run in when started without a project.
+    static let noFolderName = "No folder"
+
+    /// Where Canopy keeps No folder under the Mac's home (Canopy's `NoFolder.directory`).
+    static func noFolderPath(home: String?) -> String? {
+        guard let home, home.hasPrefix("/") else { return nil }
+        return (home as NSString).appendingPathComponent("Library/Application Support/Canopy/no-folder")
+    }
+
+    /// The directory above `path`, or nil at `/`.
+    /// Pure string work: `standardizingPath` would consult the iPhone's file system.
+    static func parent(of path: String) -> String? {
+        let trimmed = canonical(path)
+        guard trimmed.hasPrefix("/"), trimmed != "/" else { return nil }
+        let parent = (trimmed as NSString).deletingLastPathComponent
+        return parent.isEmpty ? "/" : parent
+    }
+
+    /// `path` without trailing slashes, keeping `/` itself.
+    static func canonical(_ path: String) -> String {
+        var trimmed = path
+        while trimmed.count > 1, trimmed.hasSuffix("/") { trimmed.removeLast() }
+        return trimmed
+    }
+
+    /// Last path component, or the path itself for `/`.
+    static func displayName(of path: String) -> String {
+        let name = (path as NSString).lastPathComponent
+        return name.isEmpty || name == "/" ? path : name
+    }
+
     /// Returns a user-visible reason when the name is not acceptable locally, before hitting the Mac.
     static func validateName(_ raw: String) -> String? {
         let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -179,8 +179,10 @@ struct OpenOnMacView: View {
             phase = .ready
             // Folders are a quick read on the Mac; don't hold them behind the session scan.
             async let folders: Void = loadFolders()
+            async let noFolder: Void = loadNoFolderPath()
             await loadSessions(failSheet: true)
             await folders
+            await noFolder
         } catch let error as MachineControl.ControlError {
             phase = .failed(error.message)
         } catch {
@@ -205,31 +207,23 @@ struct OpenOnMacView: View {
         }
     }
 
-    /// Recent folders and No folder land together, so neither shifts rows under a tap.
     private func loadFolders() async {
-        async let noFolder = fetchNoFolderPath()
-        var listed: [String] = []
-        var listError: String?
         do {
             let result = try await control.request("list_folders", ["limit": 20])
-            listed = (result["folders"] as? [String]) ?? []
+            folders = (result["folders"] as? [String]) ?? []
         } catch {
-            listError = "Can't list recent folders: " + ((error as? MachineControl.ControlError)?.message ?? MachineControl.ControlError.notReachable.message)
+            foldersError = "Can't list recent folders: " + ((error as? MachineControl.ControlError)?.message ?? MachineControl.ControlError.notReachable.message)
         }
-        noFolderPath = await noFolder
-        folders = listed
-        foldersError = listError
     }
 
     /// `browse_dir` without a path answers with the Mac's home directory. Canopy 3.24.3+ creates
     /// No folder on open, so the path needs to exist only as a name here.
-    private func fetchNoFolderPath() async -> String? {
+    private func loadNoFolderPath() async {
         do {
             let result = try await control.request("browse_dir", ["showHidden": false])
-            return RemoteFolder.noFolderPath(home: result["path"] as? String)
+            noFolderPath = RemoteFolder.noFolderPath(home: result["path"] as? String)
         } catch {
             NSLog("[open-on-mac] no home directory for No folder: %@", String(describing: error))
-            return nil
         }
     }
 
@@ -247,6 +241,8 @@ struct FolderBrowserView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var path: String
+    /// The last folder that listed, so a failed move up can return to it.
+    @State private var lastListedPath: String?
     @State private var phase: Phase = .loading
     @State private var entries: [DirEntry] = []
     @State private var showingNewFolder = false
@@ -261,8 +257,8 @@ struct FolderBrowserView: View {
          onOpen: @escaping (String, OpenRequest, String) -> Void) {
         self.control = control
         self.onOpen = onOpen
-        self.previousPath = previousPath
-        _path = State(initialValue: startPath)
+        self.previousPath = previousPath.map(RemoteFolder.canonical)
+        _path = State(initialValue: RemoteFolder.canonical(startPath))
     }
 
     private var folderTitle: String {
@@ -276,8 +272,18 @@ struct FolderBrowserView: View {
             case .loading:
                 ProgressView()
             case .failed(let message):
-                ContentUnavailableView("Can't browse", systemImage: "folder.badge.questionmark",
-                                       description: Text(message))
+                ContentUnavailableView {
+                    Label("Can't browse", systemImage: "folder.badge.questionmark")
+                } description: {
+                    Text(message)
+                } actions: {
+                    if let lastListedPath, lastListedPath != path {
+                        Button("Back to \(RemoteFolder.displayName(of: lastListedPath))") {
+                            phase = .loading
+                            path = lastListedPath
+                        }
+                    }
+                }
             case .ready:
                 List {
                     if let parent = RemoteFolder.parent(of: path) {
@@ -352,6 +358,7 @@ struct FolderBrowserView: View {
             let result = try await control.request("browse_dir", ["path": requested, "showHidden": false])
             guard requested == path else { return }
             entries = DirEntry.list(from: result)
+            lastListedPath = requested
             phase = .ready
         } catch let error as MachineControl.ControlError {
             guard requested == path else { return }

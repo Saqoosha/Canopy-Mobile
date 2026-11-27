@@ -19,6 +19,11 @@ struct RemoteFolderTests {
         #expect(RemoteFolder.parent(of: "/private/var/x") == "/private/var")
     }
 
+    @Test func canonicalDropsTrailingSlashes() {
+        #expect(RemoteFolder.canonical("/Users/me//") == "/Users/me")
+        #expect(RemoteFolder.canonical("/") == "/")
+    }
+
     @Test func displayNameKeepsRoot() {
         #expect(RemoteFolder.displayName(of: "/Users/me") == "me")
         #expect(RemoteFolder.displayName(of: "/") == "/")

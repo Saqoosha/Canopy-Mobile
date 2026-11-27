@@ -17,7 +17,7 @@ struct OpenOnMacView: View {
     @State private var loadedSessions = false
     /// Why `list_folders` failed; shown in the Folders tab only, so the loaded sessions stay.
     @State private var foldersError: String?
-    /// The Mac's No folder path, derived from its home directory; nil until known.
+    /// The Mac's No folder path, from `list_folders` or, on an older Mac, its home; nil until known.
     @State private var noFolderPath: String?
 
     private enum Tab: String, CaseIterable, Identifiable {
@@ -211,12 +211,12 @@ struct OpenOnMacView: View {
             folders = (result["folders"] as? [String]) ?? []
             if let named = RemoteFolder.noFolderPath(listFolders: result) {
                 noFolderPath = named
-                return
+            } else {
+                await loadNoFolderPath()
             }
         } catch {
             foldersError = "Can't list recent folders: " + ((error as? MachineControl.ControlError)?.message ?? MachineControl.ControlError.notReachable.message)
         }
-        await loadNoFolderPath()
     }
 
     /// For a Mac whose `list_folders` does not name No folder: `browse_dir` without a path answers

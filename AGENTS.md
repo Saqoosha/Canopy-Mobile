@@ -479,7 +479,7 @@ git rebase origin/main --update-refs
 
 | | |
 |---|---|
-| Swift テスト | 341（CI の床に合わせた値。Open on Mac のフォルダ移動と No folder で +4） |
+| Swift テスト | 342（CI の床に合わせた値） |
 | worker テスト | 137（2026-09-11 実測） |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 | DO の append 1 件 | 248 rows_read（3 つの上限すべて満杯、2026-09-11 実測）/ 210（生きているセッション 1 本） |
@@ -493,5 +493,5 @@ append と wake の数字は `machine.test.ts` の 2 本のコスト上限テス
 
 - **`trimEvictionMarks` の `through` 順（上記の節）。** 生きているセッションのマークが短命セッション 200 本に負けて消え、`evictedThrough` が 0 に戻る。`main` から続く既存の穴で、rows_read の修正では触っていない。直すなら `session` にまだ居るセッションを優先する順序
 - **索引ドリフトの取りこぼし 1 件。** `MAX` 比較は「索引無しの書き込みが次の wake の時点でまだ最新」に依存する。`appendEvent` 以外の書き込み経路（bulk import、管理用の修復）を足すと成立しなくなり、安く厳密に検出する手は無い（`event` に居て `session` に居ないセッションを探すのはスキャン）
-- **No folder のパスを電話が複製している**（`docs/open-on-mac-create-folder.md`）。Mac の `list_folders` が `noFolder` を返し、電話がそれを読めば、複製も、ホームを一覧してパスだけ使う往復も消える。Canopy 側と電話側の両方の変更が要る。`noFolder` を返さない古い Mac 向けに、今の組み立て方は残す
+- **No folder のパスの複製は、古い Mac 向けにだけ残っている**（`docs/open-on-mac-create-folder.md`）。`noFolder` を返す Canopy が全 Mac に行き渡ったら、`RemoteFolder.noFolderPath(home:)` とホームを一覧する往復を消せる
 - **ドリフト検出も修復もログを出さない。** 発火したかどうかを本番から知る手段が無い。`console.error` 1 行で足りるが、この PR の範囲外として見送った

@@ -10,7 +10,7 @@ Paths from the Mac are handled with string operations only (`RemoteFolder.parent
 
 ## No folder
 
-Canopy's No folder is `~/Library/Application Support/Canopy/no-folder` on the Mac (`NoFolder.directory` in Canopy). The control API does not report it: `list_folders` returns recent folders only. The phone calls `browse_dir` with no `path`, which lists the Mac's home and echoes its path, and builds the No folder path from that (`RemoteFolder.noFolderPath(home:)`). The path is a copy of Canopy's constant; if Canopy moves it, the phone must change too.
+Canopy's No folder is `~/Library/Application Support/Canopy/no-folder` on the Mac (`NoFolder.directory` in Canopy). A Canopy that has it in `list_folders`' result as `noFolder` (beside `folders`, never inside it) gives the phone the path directly (`RemoteFolder.noFolderPath(listFolders:)`). For an older Mac, the phone calls `browse_dir` with no `path`, which lists the Mac's home and echoes its path, and builds the No folder path from that (`RemoteFolder.noFolderPath(home:)`). That fallback is a copy of Canopy's constant; drop it once every Mac sends `noFolder`.
 
 The folder may not exist yet. Canopy 3.24.3+ creates it when a mirror `open` names it (`MirrorServer`, `NoFolder.prepare()`). An older Mac refuses with `cannot open`, which the phone shows as "its folder or transcript is gone". That message is wrong for this case, but every Mac in use is newer.
 

@@ -11,7 +11,13 @@ enum RemoteFolder {
     /// Canopy's name for the folder sessions run in when started without a project.
     static let noFolderName = "No folder"
 
-    /// Where Canopy keeps No folder under the Mac's home (Canopy's `NoFolder.directory`).
+    /// No folder as the Mac's `list_folders` names it; nil from a Canopy that predates `noFolder`.
+    static func noFolderPath(listFolders result: [String: Any]) -> String? {
+        guard let path = result["noFolder"] as? String, path.hasPrefix("/") else { return nil }
+        return path
+    }
+
+    /// Where Canopy keeps No folder under the Mac's home (Canopy's `NoFolder.directory`), for older Macs.
     static func noFolderPath(home: String?) -> String? {
         guard let home, home.hasPrefix("/") else { return nil }
         return (home as NSString).appendingPathComponent("Library/Application Support/Canopy/no-folder")

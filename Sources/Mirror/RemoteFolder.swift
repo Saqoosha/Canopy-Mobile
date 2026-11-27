@@ -8,6 +8,29 @@ enum RemoteFolder {
         return (base as NSString).appendingPathComponent(name)
     }
 
+    /// Canopy's name for the folder sessions run in when started without a project.
+    static let noFolderName = "No folder"
+
+    /// Where Canopy keeps No folder under the Mac's home (Canopy's `NoFolder.directory`).
+    static func noFolderPath(home: String?) -> String? {
+        guard let home, home.hasPrefix("/") else { return nil }
+        return (home as NSString).appendingPathComponent("Library/Application Support/Canopy/no-folder")
+    }
+
+    /// The directory above `path`, or nil at `/`.
+    static func parent(of path: String) -> String? {
+        let standardized = (path as NSString).standardizingPath
+        guard standardized != "/", !standardized.isEmpty else { return nil }
+        let parent = (standardized as NSString).deletingLastPathComponent
+        return parent.isEmpty ? "/" : parent
+    }
+
+    /// Last path component, or the path itself for `/`.
+    static func displayName(of path: String) -> String {
+        let name = (path as NSString).lastPathComponent
+        return name.isEmpty || name == "/" ? path : name
+    }
+
     /// Returns a user-visible reason when the name is not acceptable locally, before hitting the Mac.
     static func validateName(_ raw: String) -> String? {
         let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)

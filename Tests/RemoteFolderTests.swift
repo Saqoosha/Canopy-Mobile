@@ -11,6 +11,24 @@ struct RemoteFolderTests {
         #expect(RemoteFolder.join(base: "/Users/me", name: "app") == "/Users/me/app")
     }
 
+    @Test func parentWalksUpToRoot() {
+        #expect(RemoteFolder.parent(of: "/Users/me/repos/Work") == "/Users/me/repos")
+        #expect(RemoteFolder.parent(of: "/Users/me/") == "/Users")
+        #expect(RemoteFolder.parent(of: "/Users") == "/")
+        #expect(RemoteFolder.parent(of: "/") == nil)
+    }
+
+    @Test func displayNameKeepsRoot() {
+        #expect(RemoteFolder.displayName(of: "/Users/me") == "me")
+        #expect(RemoteFolder.displayName(of: "/") == "/")
+    }
+
+    @Test func noFolderPathMatchesCanopy() {
+        #expect(RemoteFolder.noFolderPath(home: "/Users/me") == "/Users/me/Library/Application Support/Canopy/no-folder")
+        #expect(RemoteFolder.noFolderPath(home: nil) == nil)
+        #expect(RemoteFolder.noFolderPath(home: "relative") == nil)
+    }
+
     @Test func validateRejectsEmptyAndSeparators() {
         #expect(RemoteFolder.validateName("") != nil)
         #expect(RemoteFolder.validateName("   ") != nil)

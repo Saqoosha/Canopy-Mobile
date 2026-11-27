@@ -17,6 +17,8 @@ struct OpenOnMacView: View {
     @State private var loadedSessions = false
     /// Why `list_folders` failed; shown in the Folders tab only, so the loaded sessions stay.
     @State private var foldersError: String?
+    /// The Mac's No folder path, derived from its home directory; nil until known.
+    @State private var noFolderPath: String?
 
     private enum Tab: String, CaseIterable, Identifiable {
         case sessions = "Sessions"
@@ -127,6 +129,16 @@ struct OpenOnMacView: View {
 
     private var foldersList: some View {
         List {
+            if let noFolderPath {
+                Button {
+                    onOpen(UUID().uuidString.lowercased(), .new(cwd: noFolderPath), RemoteFolder.noFolderName)
+                } label: {
+                    Label(RemoteFolder.noFolderName, systemImage: "bubble.left")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
             NavigationLink {
                 FolderBrowserView(control: control, path: browseRoot, onOpen: onOpen)
             } label: {
@@ -167,8 +179,10 @@ struct OpenOnMacView: View {
             phase = .ready
             // Folders are a quick read on the Mac; don't hold them behind the session scan.
             async let folders: Void = loadFolders()
+            async let noFolder: Void = loadNoFolderPath()
             await loadSessions(failSheet: true)
             await folders
+            await noFolder
         } catch let error as MachineControl.ControlError {
             phase = .failed(error.message)
         } catch {
@@ -199,6 +213,17 @@ struct OpenOnMacView: View {
             folders = (result["folders"] as? [String]) ?? []
         } catch {
             foldersError = "Can't list recent folders: " + ((error as? MachineControl.ControlError)?.message ?? MachineControl.ControlError.notReachable.message)
+        }
+    }
+
+    /// `browse_dir` without a path answers with the Mac's home directory. Canopy 3.24.3+ creates
+    /// No folder on open, so the path needs to exist only as a name here.
+    private func loadNoFolderPath() async {
+        do {
+            let result = try await control.request("browse_dir", ["showHidden": false])
+            noFolderPath = RemoteFolder.noFolderPath(home: result["path"] as? String)
+        } catch {
+            NSLog("[open-on-mac] no home directory for No folder: %@", String(describing: error))
         }
     }
 
@@ -238,6 +263,13 @@ struct FolderBrowserView: View {
                                        description: Text(message))
             case .ready:
                 List {
+                    if let parent = RemoteFolder.parent(of: path) {
+                        NavigationLink {
+                            FolderBrowserView(control: control, path: parent, onOpen: onOpen)
+                        } label: {
+                            Label(RemoteFolder.displayName(of: parent), systemImage: "arrow.turn.left.up")
+                        }
+                    }
                     ForEach(entries) { entry in
                         if entry.isDirectory {
                             NavigationLink {

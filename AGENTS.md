@@ -57,7 +57,7 @@ asc builds add-groups --app 6810164313 --latest \
 
 `npm test` が緑でも `npx tsc --noEmit` は別に落ちうる。CI は両方回すので、テストだけ通して push すると CI で気付くことになる。
 
-**エージェントが実機で動かして画面を確かめるとき**は、Apple の `xcode` プラグイン（`xcode@claude-plugins-official`）と mobile-mcp（user スコープに登録済み）を組み合わせる。手順は `XcodeOpenWorkspace` → `RunProject` → `GetConsoleOutput`。`XcodeOpenWorkspace` は初回、このフォルダへのアクセス承認のダイアログを Saqoosha の画面に出す。run destination が実機の `S` なら、`RunProject` がビルド、インストール、起動までやる（約 20 秒）。`GetConsoleOutput` でログが読める。タップ、スクショ、要素一覧は mobile-mcp の `mobile_list_elements_on_screen` / `mobile_click_on_screen_at_coordinates` を使う。Xcode 側の Device Interaction は、公開版の Xcode 27.2 ではシミュレータ専用で、実機を受け付けない。**ライブ画面は本物の Claude セッションに繋がっているので、確認は読むだけにする。** 文字入力はしない。送信、承認、拒否、停止のボタンも押さない。`RunProject` は普段使いのアプリを Debug 版で上書きするが、push は relay が sandbox に切り替えるので届き続ける（`docs/testflight.md`）。
+**エージェントが実機で動かして画面を確かめるとき**は、Apple の `xcode` プラグイン（`xcode@claude-plugins-official`）と mobile-mcp（user スコープに登録済み）を組み合わせる。手順は `XcodeOpenWorkspace` → `RunProject` → `GetConsoleOutput`。`XcodeOpenWorkspace` は初回、このフォルダへのアクセス承認のダイアログを Saqoosha の画面に出す。run destination が実機の `S` なら、`RunProject` がビルド、インストール、起動までやる（約 20 秒）。`GetConsoleOutput` でログが読める。要素一覧は mobile-mcp の `mobile_list_elements_on_screen`、タップは `mobile_click_on_screen_at_coordinates`、スクショは `mobile_take_screenshot` を使う。Xcode 側の Device Interaction は、公開版の Xcode 27.2 ではシミュレータ専用で、実機を受け付けない。**ライブ画面は本物の Claude セッションに繋がっているので、確認は読むだけにする。** 文字入力はしない。送信、承認、拒否、停止のボタンも押さない。`RunProject` は普段使いのアプリを Debug 版で上書きするが、push は relay が sandbox に切り替えるので届き続ける（`docs/testflight.md`）。
 
 ## インフラ台帳
 
@@ -493,5 +493,5 @@ append と wake の数字は `machine.test.ts` の 2 本のコスト上限テス
 
 - **`trimEvictionMarks` の `through` 順（上記の節）。** 生きているセッションのマークが短命セッション 200 本に負けて消え、`evictedThrough` が 0 に戻る。`main` から続く既存の穴で、rows_read の修正では触っていない。直すなら `session` にまだ居るセッションを優先する順序
 - **索引ドリフトの取りこぼし 1 件。** `MAX` 比較は「索引無しの書き込みが次の wake の時点でまだ最新」に依存する。`appendEvent` 以外の書き込み経路（bulk import、管理用の修復）を足すと成立しなくなり、安く厳密に検出する手は無い（`event` に居て `session` に居ないセッションを探すのはスキャン）
-- **No folder のパスを電話が複製している**（`docs/open-on-mac-create-folder.md`）。Mac の `list_folders` が `noFolder` を返せば、複製も、ホームを一覧してパスだけ使う往復も消える。直し場所は Canopy 側
+- **No folder のパスを電話が複製している**（`docs/open-on-mac-create-folder.md`）。Mac の `list_folders` が `noFolder` を返し、電話がそれを読めば、複製も、ホームを一覧してパスだけ使う往復も消える。Canopy 側と電話側の両方の変更が要る。`noFolder` を返さない古い Mac 向けに、今の組み立て方は残す
 - **ドリフト検出も修復もログを出さない。** 発火したかどうかを本番から知る手段が無い。`console.error` 1 行で足りるが、この PR の範囲外として見送った

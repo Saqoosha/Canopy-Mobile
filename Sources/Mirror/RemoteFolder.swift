@@ -18,10 +18,12 @@ enum RemoteFolder {
     }
 
     /// The directory above `path`, or nil at `/`.
+    /// Pure string work: `standardizingPath` would consult the iPhone's file system.
     static func parent(of path: String) -> String? {
-        let standardized = (path as NSString).standardizingPath
-        guard standardized != "/", !standardized.isEmpty else { return nil }
-        let parent = (standardized as NSString).deletingLastPathComponent
+        var trimmed = path
+        while trimmed.count > 1, trimmed.hasSuffix("/") { trimmed.removeLast() }
+        guard trimmed.hasPrefix("/"), trimmed != "/" else { return nil }
+        let parent = (trimmed as NSString).deletingLastPathComponent
         return parent.isEmpty ? "/" : parent
     }
 

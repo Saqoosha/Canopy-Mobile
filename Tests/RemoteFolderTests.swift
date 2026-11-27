@@ -16,6 +16,7 @@ struct RemoteFolderTests {
         #expect(RemoteFolder.parent(of: "/Users/me/") == "/Users")
         #expect(RemoteFolder.parent(of: "/Users") == "/")
         #expect(RemoteFolder.parent(of: "/") == nil)
+        #expect(RemoteFolder.parent(of: "/private/var/x") == "/private/var")
     }
 
     @Test func displayNameKeepsRoot() {

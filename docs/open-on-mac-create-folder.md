@@ -1,6 +1,18 @@
-# Open on Mac: create folder from iPhone
+# Open on Mac: folders from iPhone
 
-Canopy Mobile's **Open on Mac → Folders → Browse** flow can ask the Mac to create a directory before starting a live session. The phone side is `RemoteFolder.swift` and `NewRemoteFolderSheet` in `OpenOnMacView.swift`.
+Canopy Mobile's **Open on Mac → Folders** tab picks the folder a new live session starts in: No folder, Browse…, or a recent folder. Browse can also create a directory first. The phone side is `RemoteFolder.swift` and `OpenOnMacView.swift` (`FolderBrowserView`, `NewRemoteFolderSheet`).
+
+## Browsing up
+
+Browse… starts at the parent of the first recent folder (`browseRoot`; `/` when there are none), so the first screen is often something like `~/repos/Work`. The top row of every browser screen is its parent folder, up to `/`. Tapping it goes Back when the parent is the screen below (`previousPath`); otherwise the same screen switches to the parent in place. Pushing a new screen per step up made Back walk down again and let the stack grow without limit. When a folder cannot be listed (typically a parent after moving up), the error screen offers "Back to <last listed folder>" if some earlier folder on that screen listed; it has none when the very first listing fails. Without it the only way out would be leaving the browser.
+
+Paths from the Mac are handled with string operations only (`RemoteFolder.parent(of:)`, `canonical(_:)`). `NSString.standardizingPath` consults the iPhone's file system (it drops `/private` when `/var` exists locally), so it must not touch Mac paths.
+
+## No folder
+
+Canopy's No folder is `~/Library/Application Support/Canopy/no-folder` on the Mac (`NoFolder.directory` in Canopy). The control API does not report it: `list_folders` returns recent folders only. The phone calls `browse_dir` with no `path`, which lists the Mac's home and echoes its path, and builds the No folder path from that (`RemoteFolder.noFolderPath(home:)`). The path is a copy of Canopy's constant; if Canopy moves it, the phone must change too.
+
+The folder may not exist yet. Canopy 3.24.3+ creates it when a mirror `open` names it (`MirrorServer`, `NoFolder.prepare()`). An older Mac refuses with `cannot open`, which the phone shows as "its folder or transcript is gone". That message is wrong for this case, but every Mac in use is newer.
 
 ## Mac control verb: `mkdir`
 

@@ -4,7 +4,7 @@ Canopy Mobile's **Open on Mac → Folders** tab picks the folder a new live sess
 
 ## Browsing up
 
-Browse… starts at the parent of the first recent folder (`browseRoot`), so the first screen is often something like `~/repos/Work`. The top row of every browser screen is its parent folder, up to `/`. Tapping it goes Back when the parent is the screen below (`previousPath`); otherwise the same screen switches to the parent in place. Pushing a new screen per step up made Back walk down again and let the stack grow without limit. If the parent cannot be listed, the error screen offers "Back to <last listed folder>"; otherwise the only way out would be leaving the browser.
+Browse… starts at the parent of the first recent folder (`browseRoot`; `/` when there are none), so the first screen is often something like `~/repos/Work`. The top row of every browser screen is its parent folder, up to `/`. Tapping it goes Back when the parent is the screen below (`previousPath`); otherwise the same screen switches to the parent in place. Pushing a new screen per step up made Back walk down again and let the stack grow without limit. When a folder cannot be listed (typically a parent after moving up), the error screen offers "Back to <last listed folder>"; otherwise the only way out would be leaving the browser.
 
 Paths from the Mac are handled with string operations only (`RemoteFolder.parent(of:)`, `canonical(_:)`). `NSString.standardizingPath` consults the iPhone's file system (it drops `/private` when `/var` exists locally), so it must not touch Mac paths.
 

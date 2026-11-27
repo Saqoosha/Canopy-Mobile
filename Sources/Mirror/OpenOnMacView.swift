@@ -17,7 +17,7 @@ struct OpenOnMacView: View {
     @State private var loadedSessions = false
     /// Why `list_folders` failed; shown in the Folders tab only, so the loaded sessions stay.
     @State private var foldersError: String?
-    /// The Mac's No folder path, derived from its home directory; nil until known.
+    /// The Mac's No folder path, from `list_folders` or, on an older Mac, its home; nil until known.
     @State private var noFolderPath: String?
 
     private enum Tab: String, CaseIterable, Identifiable {
@@ -179,10 +179,8 @@ struct OpenOnMacView: View {
             phase = .ready
             // Folders are a quick read on the Mac; don't hold them behind the session scan.
             async let folders: Void = loadFolders()
-            async let noFolder: Void = loadNoFolderPath()
             await loadSessions(failSheet: true)
             await folders
-            await noFolder
         } catch let error as MachineControl.ControlError {
             phase = .failed(error.message)
         } catch {
@@ -211,13 +209,18 @@ struct OpenOnMacView: View {
         do {
             let result = try await control.request("list_folders", ["limit": 20])
             folders = (result["folders"] as? [String]) ?? []
+            if let named = RemoteFolder.noFolderPath(listFolders: result) {
+                noFolderPath = named
+            } else {
+                await loadNoFolderPath()
+            }
         } catch {
             foldersError = "Can't list recent folders: " + ((error as? MachineControl.ControlError)?.message ?? MachineControl.ControlError.notReachable.message)
         }
     }
 
-    /// `browse_dir` without a path answers with the Mac's home directory. Canopy 3.24.3+ creates
-    /// No folder on open, so the path needs to exist only as a name here.
+    /// For a Mac whose `list_folders` does not name No folder: `browse_dir` without a path answers
+    /// with the Mac's home directory. Canopy 3.24.3+ creates No folder on open.
     private func loadNoFolderPath() async {
         do {
             let result = try await control.request("browse_dir", ["showHidden": false])

@@ -29,6 +29,12 @@ struct RemoteFolderTests {
         #expect(RemoteFolder.displayName(of: "/") == "/")
     }
 
+    @Test func noFolderPathFromListFolders() {
+        #expect(RemoteFolder.noFolderPath(listFolders: ["folders": [], "noFolder": "/Users/me/nf"]) == "/Users/me/nf")
+        #expect(RemoteFolder.noFolderPath(listFolders: ["folders": []]) == nil)
+        #expect(RemoteFolder.noFolderPath(listFolders: ["noFolder": "relative"]) == nil)
+    }
+
     @Test func noFolderPathMatchesCanopy() {
         #expect(RemoteFolder.noFolderPath(home: "/Users/me") == "/Users/me/Library/Application Support/Canopy/no-folder")
         #expect(RemoteFolder.noFolderPath(home: nil) == nil)

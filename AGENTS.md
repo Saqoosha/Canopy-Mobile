@@ -57,6 +57,8 @@ asc builds add-groups --app 6810164313 --latest \
 
 `npm test` が緑でも `npx tsc --noEmit` は別に落ちうる。CI は両方回すので、テストだけ通して push すると CI で気付くことになる。
 
+**エージェントが実機で動かして画面を確かめるとき**は、Apple の `xcode` プラグイン（`xcode@claude-plugins-official`）と mobile-mcp（user スコープに登録済み）を組み合わせる。手順は `XcodeOpenWorkspace` → `RunProject` → `GetConsoleOutput`。`XcodeOpenWorkspace` は初回、このフォルダへのアクセス承認のダイアログを Saqoosha の画面に出す。run destination が実機の `S` なら、`RunProject` がビルド、インストール、起動までやる（約 20 秒）。`GetConsoleOutput` でログが読める。タップ、スクショ、要素一覧は mobile-mcp の `mobile_list_elements_on_screen` / `mobile_click_on_screen_at_coordinates` を使う。Xcode 側の Device Interaction は、公開版の Xcode 27.2 ではシミュレータ専用で、実機を受け付けない。**ライブ画面は本物の Claude セッションに繋がっているので、確認は読むだけにする。** 文字入力はしない。送信、承認、拒否、停止のボタンも押さない。`RunProject` は普段使いのアプリを Debug 版で上書きするが、push は relay が sandbox に切り替えるので届き続ける（`docs/testflight.md`）。
+
 ## インフラ台帳
 
 | | |
@@ -469,7 +471,7 @@ git rebase origin/main --update-refs
 
 **`## 検証で使える基準値` のテーブルは、並行 PR が必ずコンフリクトする。** Swift 行と worker 行が隣接しているので、テスト数を動かす PR が 2 本あれば必ずぶつかる。`ci.yml` の `EXPECTED_*` も同じ。**解決は足し算** — 両方入るなら 109 と 97 ではなく 111。1 本ずつマージして残りを rebase するのが結局いちばん速い。
 
-**worktree 隔離セッションは `main` を動かせない。** `git fetch origin main:main` は `refusing to fetch into branch 'refs/heads/main' checked out at <本体>` で落ちる。checkout 中のブランチはその worktree からしか動かせないので、**本体の更新は `ExitWorktree` で抜けてから `git pull`**。隔離が解けるまで本体には触れない。**`gh pr merge` はリポジトリの外から `--repo Saqoosha/Canopy-Mobile` で呼ぶ** —— そうすると gh はリモートのマージとブランチ削除だけをして、ローカルの `main` をチェックアウトしようとしない。worktree の中から呼ぶと `fatal: 'main' is already used by worktree` を出す（マージ自体は成功しているが、その行だけ見ると失敗に見える）。成否は exit code ではなく `gh pr view --json state,mergedAt` で見る。
+**worktree 隔離セッションは `main` を動かせない。** `git fetch origin main:main` は `refusing to fetch into branch 'refs/heads/main' checked out at <本体>` で落ちる。checkout 中のブランチはその worktree からしか動かせないので、**本体の更新は `ExitWorktree` で抜けてから `git pull`**。隔離が解けるまで本体には触れない。**`gh pr merge` はリポジトリの外から `--repo Saqoosha/Canopy-Mobile` で呼ぶ** —— そうすると gh はリモートのマージとブランチ削除だけをして、ローカルの `main` をチェックアウトしようとしない。worktree の中から呼ぶと `fatal: 'main' is already used by worktree` を出す（マージ自体は成功しているが、その行だけ見ると失敗に見える）。成否は exit code ではなく `gh pr view --json state,mergedAt` で見る。本体のツリーに未コミットの変更があるときも同じで、リモートのマージは通るのに、ローカルの切り替えが `Please commit your changes or stash them before you switch branches.` で止まる。
 
 **`--force-with-lease` は URL 直指定の push では効かない。** リモート追跡 ref を名前で解決できず `stale info` で拒否される。`--force-with-lease=<branch>:<sha>` と明示する。sha は記憶で書かない（`cannot parse expected object name` で落ちる）— `git rev-parse origin/<branch>` で取る。
 
@@ -491,4 +493,5 @@ append と wake の数字は `machine.test.ts` の 2 本のコスト上限テス
 
 - **`trimEvictionMarks` の `through` 順（上記の節）。** 生きているセッションのマークが短命セッション 200 本に負けて消え、`evictedThrough` が 0 に戻る。`main` から続く既存の穴で、rows_read の修正では触っていない。直すなら `session` にまだ居るセッションを優先する順序
 - **索引ドリフトの取りこぼし 1 件。** `MAX` 比較は「索引無しの書き込みが次の wake の時点でまだ最新」に依存する。`appendEvent` 以外の書き込み経路（bulk import、管理用の修復）を足すと成立しなくなり、安く厳密に検出する手は無い（`event` に居て `session` に居ないセッションを探すのはスキャン）
+- **No folder のパスを電話が複製している**（`docs/open-on-mac-create-folder.md`）。Mac の `list_folders` が `noFolder` を返せば、複製も、ホームを一覧してパスだけ使う往復も消える。直し場所は Canopy 側
 - **ドリフト検出も修復もログを出さない。** 発火したかどうかを本番から知る手段が無い。`console.error` 1 行で足りるが、この PR の範囲外として見送った

@@ -174,7 +174,7 @@ struct NotificationHistoryItem: Codable, Identifiable, Hashable, Sendable {
     let bodyShort: String?
     let machine: String
     let sessionId: String
-    /// "completed" or "asking" — mirrors `NotifyBody.kind` in the worker.
+    /// "completed", "asking", "job_stalled" or "job_done" — mirrors `NotifyBody.kind` in the worker.
     let kind: String
     /// Present only when `kind == "asking"`; the id the phone answers with.
     let requestId: String?

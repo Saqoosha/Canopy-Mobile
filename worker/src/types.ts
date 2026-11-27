@@ -18,6 +18,25 @@ export interface PaneRow {
    *  succeed. Absent from a Mac older than the flag. The relay does not read
    *  it; recorded here because this file is the wire's documentation. */
   live?: boolean;
+  /** What the session last asked for or said, one line, as the Mac sidebar shows it.
+   *  Absent while there is none. Added 2026-11-21: the roster's first conversation content. */
+  attentionLine?: string;
+  /** A long job the session registered (`canopyctl job watch`), measured on the Mac.
+   *  Times are unix seconds. Absent while no job is registered. */
+  job?: PaneJob;
+}
+
+export interface PaneJob {
+  label: string;
+  done: number;
+  total: number;
+  /** Finish time; present only while `state` is "running". */
+  etaAt?: number;
+  state: "measuring" | "running" | "stalled" | "unknown" | "done";
+  /** When the count last moved; present only while `state` is "stalled". */
+  stalledSince?: number;
+  /** Why a reading is missing, e.g. an ssh auth failure. */
+  note?: string;
 }
 
 /** What Canopy posts to /notify for `kind: "battery"`: a machine-level notice with no
@@ -36,8 +55,9 @@ export interface NotifyBody {
   sessionId: string;
   title: string;
   body: string;
-  /** Which activity raised this. Only these two push. */
-  kind: "completed" | "asking";
+  /** Which activity raised this. `job_stalled` / `job_done`: a registered job stopped
+   *  moving or finished (Canopy's JobWatcher); like `completed`, they take no requestId. */
+  kind: "completed" | "asking" | "job_stalled" | "job_done";
   /** The full text, before any shortening. Rides in the push payload so the
    *  Notification Service Extension can store it — the extension has no
    *  credential to fetch anything with. */

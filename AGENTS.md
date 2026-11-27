@@ -26,9 +26,11 @@ Mac の [Canopy](https://github.com/Saqoosha/Canopy) で動いているセッシ
 
 ```bash
 # worker
+# 設定は 2 つ: cloudflare.config.ts（deploy）と wrangler.toml（vitest と、secret・KV を扱う wrangler コマンド）。binding や日付を変えたら両方そろえる。
+# wrangler のコマンドは relay のアカウント（0f56ad…）でログインしていないと通らない。
 cd worker && npm test                 # vitest
 cd worker && npx tsc --noEmit         # 型検査。テストが緑でもここで落ちることがある
-cd worker && npx wrangler deploy
+cd worker && npm run deploy           # cf deploy（ロックした cf で）。cloudflare.config.ts を使う。cf の saqoosha プロファイル（a@saqoo.sh）で
 
 # Swift（シミュレータ。udid は xcrun simctl list devices available から）
 xcodebuild test -project CanopyMobile.xcodeproj -scheme CanopyMobile \
@@ -60,7 +62,7 @@ asc builds add-groups --app 6810164313 --latest \
 | | |
 |---|---|
 | Worker | `canopy-mobile-relay` / <https://canopy-mobile-relay.saqoosha.workers.dev> |
-| Cloudflare account | `0f56ad2619afc619cc2975dd0728f8a9`（`wrangler.toml` に固定。デプロイ時に選択を訊かれない） |
+| Cloudflare account | `0f56ad2619afc619cc2975dd0728f8a9`（`cloudflare.config.ts` と `wrangler.toml` に固定。デプロイ時に選択を訊かれない） |
 | KV namespace `MACHINES` | `34a34a05b2194af6b9f2c89847a57ea1`。電話が列挙できる唯一の機械一覧 |
 | Bundle ID | `sh.saqoo.canopy-app`（+ `.NotificationService` / `.tests`） |
 | Development team | `VCFY2GFR89` |
@@ -475,7 +477,7 @@ git rebase origin/main --update-refs
 
 | | |
 |---|---|
-| Swift テスト | 329（直前の CI の床 325 に、Open on Mac のフォルダ移動と No folder で +4） |
+| Swift テスト | 341（CI の床に合わせた値。Open on Mac のフォルダ移動と No folder で +4） |
 | worker テスト | 137（2026-09-11 実測） |
 | `relay-event-probe.mjs` | 12 チェック全 PASS |
 | DO の append 1 件 | 248 rows_read（3 つの上限すべて満杯、2026-09-11 実測）/ 210（生きているセッション 1 本） |

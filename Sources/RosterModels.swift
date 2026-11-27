@@ -20,8 +20,27 @@ struct PaneRow: Codable, Identifiable, Equatable {
     /// Nil from a Mac older than the flag, read as true so nothing changes there.
     let live: Bool?
     var isLive: Bool { live ?? true }
+    /// What the session last asked for or said, one line, as the Mac sidebar shows it.
+    /// Nil from a Mac older than the field (before 2026-11-21) and while there is none.
+    var attentionLine: String? = nil
+    /// The session's registered long job, measured on the Mac. Nil while none.
+    var job: PaneJob? = nil
 
     var id: String { sessionId }
+}
+
+/// `worker/src/types.ts` `PaneJob`; Canopy's `JobSnapshot`. Times are unix seconds.
+struct PaneJob: Codable, Equatable {
+    let label: String
+    let done: Int
+    let total: Int
+    /// Present only while `state` is "running".
+    var etaAt: Int? = nil
+    /// "measuring", "running", "stalled", "unknown" or "done".
+    let state: String
+    /// Present only while `state` is "stalled".
+    var stalledSince: Int? = nil
+    var note: String? = nil
 }
 
 struct MachineSnapshot: Codable, Equatable {

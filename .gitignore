@@ -10,3 +10,4 @@ Sources/CanopyMobileNotificationService.entitlements
 build*/
 node_modules/
 worker/.dev.vars
+.cloudflare/

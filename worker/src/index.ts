@@ -160,15 +160,15 @@ export default {
       // (it is one short line Canopy wrote), and no ids for the phone to file it under.
       if (body?.kind === "battery") return notifyBattery(env, body);
       if (!body?.machine || !body.sessionId) return json({ error: "machine and sessionId required" }, 400);
-      if (body.kind !== "completed" && body.kind !== "asking") {
-        return json({ error: "kind must be completed or asking" }, 400);
+      if (!["completed", "asking", "job_stalled", "job_done"].includes(body.kind)) {
+        return json({ error: "kind must be completed, asking, job_stalled or job_done" }, 400);
       }
       // A decision needs something to answer, and a completion has nothing to
       // answer — the phone's Allow/Deny actions are meaningless without an id
       // to send them back with, and attaching one to a completed push would
       // let a stale action fire against a session that already moved on.
       if (body.kind === "asking" && !body.requestId) return json({ error: "asking requires requestId" }, 400);
-      if (body.kind === "completed" && body.requestId) return json({ error: "completed takes no requestId" }, 400);
+      if (body.kind !== "asking" && body.requestId) return json({ error: `${body.kind} takes no requestId` }, 400);
       // Validated because the two reads below are `.length` — without this a
       // caller omitting both fields got an opaque 500 from a TypeError rather
       // than being told what was missing.
